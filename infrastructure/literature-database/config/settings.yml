@@ -1,0 +1,35 @@
+# Zotero Configuration
+zotero:
+  # Path to Zotero data directory on Windows
+  windows_path: "/mnt/c/Users/dreec/Zotero"
+  # Your Zotero library ID (if using API)
+  library_id: ""
+  library_type: "user"  # or "group"
+  # API key (keep in credentials.yml for security)
+  
+# Database Configuration  
+database:
+  type: "sqlite"  # or "postgresql"
+  path: "data/metadata/literature.db"
+  
+# PDF Processing
+pdf:
+  storage_path: "data/pdfs"
+  extract_text: true
+  extract_images: false
+  ocr_enabled: false
+  
+# Logging
+logging:
+  level: "INFO"
+  file: "logs/litdb.log"
+  
+# Search
+search:
+  index_path: "data/cache/search_index"
+  
+# Features
+features:
+  auto_sync: false
+  watch_folder: false
+  web_ui: false
