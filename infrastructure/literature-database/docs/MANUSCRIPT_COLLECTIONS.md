@@ -1,5 +1,9 @@
 # Manuscript Collections Guide
 
+Citation management feature for the literature-database service.
+
+**Service Context**: Port 8001 | Run from: `infrastructure/literature-database/`
+
 ## Overview
 
 The manuscript collections feature allows you to organize and manage citations for your research papers and manuscripts. This system helps you:

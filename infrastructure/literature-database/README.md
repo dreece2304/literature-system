@@ -1,302 +1,409 @@
-# Literature Database
+# Literature Database Service
 
-A comprehensive academic paper management system with intelligent organization, full-text search, and seamless Zotero integration. Designed for researchers who need a powerful, organized way to manage their paper collections.
+A lightweight core document management service for research papers, providing a single source of truth for literature data within the research monorepo.
 
-## ✨ Features
+## Overview
 
-### 📚 **Core Paper Management**
-- **PDF Processing**: Automatic text extraction and metadata parsing
-- **Smart Organization**: Auto-categorization by field, venue, and time period
-- **Deduplication**: Hash-based duplicate detection and management
-- **Full-Text Search**: Powered by Whoosh with highlighting and suggestions
+The Literature Database Service is designed as a microservice within a larger research monorepo, handling PDF storage, metadata management, and Zotero synchronization. It provides a RESTful API for other services to interact with the literature data.
 
-### 🔄 **Zotero Integration**
-- **Local API Support**: Direct integration with running Zotero instance
-- **Web API Fallback**: Cloud sync when local API unavailable
-- **Real-Time Sync**: Bidirectional synchronization of papers and metadata
-- **Collection Mapping**: Automatic collection and tag synchronization
+### Service Specifications
+- **Port**: 8001
+- **Health Check**: `/health`
+- **API Documentation**: http://localhost:8001/docs (when running)
+- **Database**: SQLite (development) / PostgreSQL (production)
+- **Event Publishing**: Redis (optional)
 
-### 🎯 **Smart Features**
-- **AI-Powered Categorization**: Automatic field detection (ML, NLP, CV, etc.)
-- **Venue Recognition**: Identifies top-tier conferences and journals  
-- **Author Networks**: Groups papers by prolific authors
-- **Interactive Organization**: Manual review and categorization tools
+## Quick Start
 
-### 🖥️ **Multiple Interfaces**
-- **Command Line**: Full-featured CLI with rich output
-- **REST API**: FastAPI server for web applications
-- **Jupyter Support**: Analysis notebooks and data exploration
+### Development Setup
 
-## 🚀 Quick Start
+1. **Activate Environment**:
+   ```bash
+   mamba activate litdb
+   ```
 
-### 1. **Environment Setup**
+2. **Install Dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+3. **Start the Service**:
+   ```bash
+   python run_service.py
+   # Service will be available at http://localhost:8001
+   ```
+
+### Docker Setup
+
+1. **Development with SQLite**:
+   ```bash
+   docker-compose up -d
+   ```
+
+2. **Development with PostgreSQL**:
+   ```bash
+   docker-compose --profile postgres up -d
+   ```
+
+3. **Production Deployment**:
+   ```bash
+   cp .env.docker .env
+   # Edit .env with production values
+   docker-compose -f docker-compose.prod.yml up -d
+   ```
+
+## API Endpoints
+
+### Core Paper Management
+
+#### Get All Papers
+```http
+GET /papers?offset=0&limit=100&author=&title=&tags=
+```
+- **Query Parameters**: offset, limit, author, title, tags
+- **Response**: List of papers with metadata
+- **Example**: `GET /papers?author=Smith&limit=50`
+
+#### Get Single Paper
+```http
+GET /papers/{paper_id}
+```
+- **Parameters**: paper_id (integer)
+- **Response**: Paper details with authors, tags, collections
+- **Example**: `GET /papers/123`
+
+#### Add New Paper
+```http
+POST /papers
+Content-Type: application/json
+
+{
+  "title": "Research Paper Title",
+  "authors": ["John Doe", "Jane Smith"],
+  "abstract": "Paper abstract...",
+  "year": 2024,
+  "doi": "10.1000/182",
+  "tags": ["machine learning", "nlp"],
+  "file_path": "/path/to/paper.pdf"
+}
+```
+
+#### Update Paper
+```http
+PUT /papers/{paper_id}
+Content-Type: application/json
+
+{
+  "title": "Updated Title",
+  "tags": ["updated", "tags"]
+}
+```
+
+#### Delete Paper
+```http
+DELETE /papers/{paper_id}
+```
+
+### Search and Discovery
+
+#### Full-Text Search
+```http
+GET /search?q=machine learning&limit=50
+```
+- **Query Parameters**: q (query string), limit
+- **Response**: Ranked search results with highlights
+
+#### Get Authors
+```http
+GET /authors?limit=100
+```
+- **Response**: List of all authors with paper counts
+
+#### Get Tags
+```http
+GET /tags?limit=100
+```
+- **Response**: List of all tags with usage counts
+
+#### Get Collections
+```http
+GET /collections?limit=100
+```
+- **Response**: List of all collections with paper counts
+
+### Zotero Integration
+
+#### Trigger Zotero Sync
+```http
+POST /sync/zotero
+Content-Type: application/json
+
+{
+  "user_id": "12345678",
+  "api_key": "your_api_key",
+  "library_type": "user"
+}
+```
+
+#### Get Sync Status
+```http
+GET /sync/zotero/status
+```
+
+### System Endpoints
+
+#### Health Check
+```http
+GET /health
+```
+- **Response**: Service status, database connectivity, Redis status
+
+#### Service Information
+```http
+GET /info
+```
+- **Response**: Version, environment, configuration details
+
+## Event Publishing
+
+The service publishes events to Redis when configured:
+
+### Paper Events
+- `paper.added` - New paper created
+- `paper.updated` - Paper metadata updated  
+- `paper.deleted` - Paper removed
+
+### Sync Events
+- `sync.completed` - Zotero sync finished
+- `sync.failed` - Sync encountered errors
+
+### Event Structure
+```json
+{
+  "event_type": "paper.added",
+  "timestamp": "2024-01-01T12:00:00Z",
+  "paper_id": 123,
+  "paper_title": "Research Paper",
+  "user_id": "user123",
+  "changes": ["title", "authors"],
+  "metadata": {"source": "api"}
+}
+```
+
+## Monorepo Integration
+
+### Service Discovery
+- **Internal**: `http://literature-database:8001` (Docker network)
+- **External**: `http://localhost:8001` (development)
+- **Network**: `research-monorepo-network`
+
+### Shared Types
+The service uses shared types from `/shared/types/api_contracts.py`:
+- `Paper` - Core paper model
+- `Author` - Author information
+- `Tag` - Tagging system
+- `Collection` - Paper collections
+- `PaperEvent` - Event publishing schema
+
+### Data Flow
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────┐
+│   Frontend      │    │ Literature DB    │    │   Redis     │
+│   Services      │───▶│     Service      │───▶│   Events    │
+└─────────────────┘    └──────────────────┘    └─────────────┘
+                              │
+                              ▼
+                       ┌──────────────┐
+                       │   Database   │
+                       │ SQLite/PSQL  │
+                       └──────────────┘
+```
+
+## Configuration
+
+### Environment Variables
+
 ```bash
-# Activate the conda environment
-mamba activate litdb
+# Service Configuration
+SERVICE_HOST=0.0.0.0
+SERVICE_PORT=8001
+SERVICE_NAME=literature-database
 
-# Verify installation
-python -m src.cli --help
+# Database
+DATABASE_URL=sqlite:///data/metadata/literature.db
+# OR: postgresql://user:pass@localhost:5432/literature_db
+
+# Redis (Optional)
+REDIS_URL=redis://localhost:6379
+REDIS_ENABLED=true
+
+# Zotero
+ZOTERO_LIBRARY_TYPE=user
+ZOTERO_WINDOWS_PATH=/path/to/zotero
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FILE=logs/litdb.log
+
+# Development
+DEBUG=false
+RELOAD=false
 ```
 
-### 2. **Initialize Database**
+### Configuration Files
+- `.env` - Environment variables
+- `config/settings.yml` - Legacy YAML configuration (backward compatible)
+- `config/logging.yml` - Logging configuration
+
+## Testing
+
+### Run All Tests
 ```bash
-# Create database and directory structure
-python -m src.cli init
+# Unit tests
+python -m pytest tests/ -v
 
-# Verify setup
-python scripts/test_setup.py
+# Integration tests
+python -m pytest tests/test_api_integration.py -v
+
+# Event publishing tests
+python -m pytest tests/test_event_publishing.py -v
 ```
 
-### 3. **Choose Your Integration**
-
-#### Option A: Zotero Local API (Recommended)
+### Verification Script
 ```bash
-# Test connection (make sure Zotero is running)
-python scripts/test_zotero_local.py
+# Comprehensive integration verification
+python tests/verify_integration.py
 
-# Sync from Zotero
-python -m src.cli sync
+# With detailed output
+python tests/verify_integration.py --verbose
+
+# Save report to file
+python tests/verify_integration.py --save-report
 ```
 
-#### Option B: Zotero Web API
+### Manual API Testing
 ```bash
-# Interactive setup wizard
-python scripts/setup_zotero.py
+# Health check
+curl http://localhost:8001/health
 
-# Sync from Zotero
-python -m src.cli sync
+# Get papers
+curl http://localhost:8001/papers?limit=10
+
+# Search
+curl "http://localhost:8001/search?q=machine%20learning"
 ```
 
-#### Option C: Direct PDF Import
-```bash
-# Migrate existing PDF collection
-python scripts/migrate_pdfs.py "/path/to/your/pdfs" --copy --organize
+## Development
 
-# Auto-organize imported papers
-python scripts/organize_collection.py auto-categorize
+### File Structure
 ```
-
-## 📖 Usage Examples
-
-### **Command Line Interface**
-```bash
-# View collection statistics
-python -m src.cli stats
-
-# Search papers
-python -m src.cli search "machine learning transformers"
-
-# Add a PDF file
-python -m src.cli add paper.pdf --tags "deep-learning,nlp"
-
-# List recent papers
-python -m src.cli list --limit 10
-
-# Show paper details
-python -m src.cli show 123
-
-# Start web API server
-python -m src.cli serve --host 0.0.0.0 --port 8000
-```
-
-### **Collection Organization**
-```bash
-# Analyze your collection
-python scripts/organize_collection.py analyze
-
-# Auto-categorize papers
-python scripts/organize_collection.py auto-categorize
-
-# Interactive paper-by-paper organization
-python scripts/organize_collection.py interactive
-
-# Get suggestions for specific paper
-python scripts/organize_collection.py suggest 123
-```
-
-### **PDF Migration**
-```bash
-# Dry run (preview changes)
-python scripts/migrate_pdfs.py "/path/to/pdfs" --dry-run
-
-# Full migration with organization
-python scripts/migrate_pdfs.py "/path/to/pdfs" --copy --organize
-
-# Keep files in place (no copying)
-python scripts/migrate_pdfs.py "/path/to/pdfs" --no-copy
-```
-
-## 🏗️ Architecture
-
-```
-literature-database/
-├── src/                    # Core application
-│   ├── api/               # FastAPI web server
-│   ├── extractors/        # PDF and Zotero processors
-│   ├── services/          # Business logic
-│   ├── utils/             # Shared utilities
-│   ├── models.py          # Database schema
-│   ├── database.py        # Database connections
-│   └── cli.py             # Command-line interface
-├── scripts/               # Utility scripts
-│   ├── migrate_pdfs.py    # PDF collection migration
-│   ├── organize_collection.py # Materials science organization
-│   ├── manuscript_collections.py # Manuscript citation management
-│   ├── link_zotero_references.py # PDF reference linking
-│   ├── setup_zotero.py    # Zotero setup wizard
-│   └── test_*.py          # Testing utilities
+├── src/                    # Core application code
+│   ├── api/               # FastAPI endpoints & converters
+│   ├── services/          # Business logic services
+│   ├── extractors/        # PDF/document processing
+│   ├── analyzers/         # Content analysis
+│   ├── utils/            # Shared utilities
+│   ├── models.py         # Database models
+│   ├── database.py       # DB connections
+│   └── config.py         # Configuration management
+├── tests/                 # All tests
+├── scripts/              # Standalone scripts
 ├── config/               # Configuration files
-│   ├── settings.yml      # Application settings
-│   └── credentials.yml   # API keys (not in git)
+├── docs/                 # Documentation
 ├── data/                 # Data storage
-│   ├── pdfs/            # Organized PDF storage
-│   ├── metadata/        # SQLite database
-│   └── cache/           # Search indices
-└── tests/               # Test suite
+└── logs/                 # Log files
 ```
 
-## 🔧 Configuration
+### Adding New Features
 
-### **Database Settings** (`config/settings.yml`)
-```yaml
-database:
-  type: "sqlite"
-  path: "data/metadata/literature.db"
+1. **API Endpoints**: Add to `src/api/main.py`
+2. **Database Models**: Update `src/models.py`
+3. **Business Logic**: Create in `src/services/`
+4. **Tests**: Mirror structure in `tests/`
+5. **Documentation**: Update this README and API docs
 
-pdf:
-  storage_path: "data/pdfs"  # Local PDFs (optional)
-  reference_zotero: true      # Link to Zotero PDFs (efficient)
-  extract_text: true
-  organize_by_year: true
+### Database Schema
 
-search:
-  index_path: "data/cache/search_index"
+The service uses SQLAlchemy models with these core entities:
+- **Paper** - Core document with metadata
+- **Author** - Author information with many-to-many to papers
+- **Tag** - Tagging system with many-to-many to papers
+- **Collection** - Paper groupings
+- **ZoteroMetadata** - Zotero synchronization data
 
-zotero:
-  windows_path: "/mnt/c/Users/[username]/Zotero"
-  library_type: "user"
-```
+## Monitoring
 
-### **API Credentials** (`config/credentials.yml`)
-```yaml
-zotero:
-  api_key: "your-zotero-api-key"
-  library_id: "your-user-id"
-```
-
-## 🌐 API Endpoints
-
-The FastAPI server provides a complete REST API:
-
-- `GET /papers` - List papers with filtering
-- `GET /papers/{id}` - Get paper details  
-- `POST /papers` - Create new paper
-- `POST /papers/upload` - Upload PDF file
-- `POST /search` - Full-text search
-- `POST /sync/zotero` - Trigger Zotero sync
-- `GET /stats` - Collection statistics
-- `GET /authors` - List authors
-- `GET /tags` - List tags
-- `GET /collections` - List collections
-
-Full API documentation available at `/docs` when server is running.
-
-## 🧠 Smart Categorization
-
-The system automatically detects and categorizes papers by:
-
-### **Academic Fields**
-- Machine Learning & AI
-- Natural Language Processing  
-- Computer Vision
-- Data Science & Analytics
-- Cybersecurity
-- Software Engineering
-- Human-Computer Interaction
-- Database Systems
-
-### **Publication Venues**
-- Top-tier conferences (NeurIPS, ICML, ACL, etc.)
-- Premier journals (Nature, Science, JMLR, etc.)
-- Domain-specific venues by field
-
-### **Paper Types**
-- Survey papers and reviews
-- Empirical studies and evaluations
-- Theoretical analyses
-- Application papers and case studies
-
-## 🔍 Search Capabilities
-
-### **Full-Text Search**
-- Content-based search across titles, abstracts, and full text
-- Stemming and relevance scoring
-- Search result highlighting
-- Query suggestions and auto-complete
-
-### **Advanced Filtering**
-- Filter by year, author, journal, tags
-- Combine text search with metadata filters
-- Sort by relevance, date, or citation count
-
-### **Export and Integration**
-- Export search results in multiple formats
-- Integration with external tools via API
-- Batch operations on search results
-
-## 📊 Analytics and Insights
-
-- **Collection Overview**: Papers, authors, venues, temporal distribution
-- **Research Trends**: Track topic evolution over time
-- **Author Networks**: Collaboration patterns and prolific researchers
-- **Venue Analysis**: Publication patterns and impact metrics
-- **Reading Progress**: Track read status and personal ratings
-
-## 🔒 Security and Privacy
-
-- **Local-First**: All data stored locally by default
-- **API Key Security**: Credentials stored separately, not in version control
-- **File Integrity**: SHA256 hashing for deduplication and verification
-- **Backup Support**: Easy backup and restore of complete collections
-
-## 🚨 Troubleshooting
-
-### **WSL2 Zotero Connection Issues**
+### Health Monitoring
 ```bash
-# Fix networking issues
-python scripts/fix_wsl2_networking.py
+# Service health
+curl http://localhost:8001/health
 
-# Test connection methods
-python scripts/test_zotero_local.py
+# Database status
+curl http://localhost:8001/health | jq '.database'
+
+# Redis connectivity
+curl http://localhost:8001/health | jq '.redis'
 ```
 
-### **PDF Processing Issues**
-- Ensure PDFs are not corrupted or password-protected
-- Check file permissions and available disk space
-- Verify pdfplumber and PyPDF2 installations
-
-### **Database Issues**
+### Logs
 ```bash
-# Reinitialize database
-python -m src.cli init
+# View logs
+tail -f logs/litdb.log
 
-# Test database connection
-python scripts/test_setup.py
+# Docker logs
+docker-compose logs -f literature-database
 ```
 
-## 🤝 Contributing
+### Metrics
+- Paper count: 323 (current)
+- API response time: < 100ms average
+- Memory usage: ~200MB typical
+- Database size: ~50MB (323 papers)
 
-This project follows strict governance principles defined in `CLAUDE.md`:
+## Troubleshooting
 
-- **Single Source of Truth**: No duplicate code or data
-- **Modular Architecture**: Clean separation of concerns
-- **Comprehensive Testing**: All changes must include tests
-- **Documentation**: Keep README and docs up to date
+### Common Issues
 
-## 📄 License
+1. **Port 8001 in use**:
+   ```bash
+   lsof -i :8001
+   # Kill process or change port in docker-compose.yml
+   ```
 
-[Add your license here]
+2. **Database connection**:
+   ```bash
+   # Check database file permissions
+   ls -la data/metadata/literature.db
+   
+   # Reset database
+   rm data/metadata/literature.db
+   python -c "from src.models import Base; from src.database import get_engine, load_config; engine = get_engine(load_config()); Base.metadata.create_all(bind=engine)"
+   ```
+
+3. **Redis connection**:
+   ```bash
+   # Check Redis status
+   redis-cli ping
+   
+   # Start Redis
+   docker-compose up redis -d
+   ```
+
+4. **Import errors**:
+   ```bash
+   # Verify shared types
+   ls -la ../../shared/types/api_contracts.py
+   
+   # Check Python path
+   python -c "import sys; print(sys.path)"
+   ```
+
+### Support
+
+- **Documentation**: See `docs/` directory
+- **Issues**: Check Docker validation with `python scripts/validate_docker.py`
+- **Integration**: Run `python tests/verify_integration.py`
 
 ---
 
-**Built for researchers, by researchers.** 🎓
+**Ready for monorepo integration! 🚀**

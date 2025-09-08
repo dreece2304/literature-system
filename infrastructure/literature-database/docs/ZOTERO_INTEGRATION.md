@@ -1,6 +1,8 @@
 # Zotero Integration Guide
 
-Comprehensive guide for integrating the Literature Database with Zotero on Windows 11 through WSL2.
+Zotero integration for the literature-database service in the research monorepo.
+
+**Service Context**: literature-database service | Port 8001
 
 ## 🎯 Integration Overview
 

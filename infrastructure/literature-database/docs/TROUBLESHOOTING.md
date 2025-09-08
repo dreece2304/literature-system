@@ -1,12 +1,15 @@
-# Literature Database Troubleshooting Guide
+# Literature Database Service Troubleshooting
 
-Comprehensive troubleshooting guide for common issues and their solutions.
+Troubleshooting guide for the literature-database service in the research monorepo.
+
+**Service Context**: Port 8001 | Path: `infrastructure/literature-database/`
 
 ## 🚨 Quick Diagnostics
 
 ### System Health Check
 ```bash
-# Run comprehensive system test
+# Run comprehensive system test (from service directory)
+cd infrastructure/literature-database
 python scripts/test_setup.py
 
 # Check CLI functionality  
@@ -37,7 +40,7 @@ tail -f logs/litdb.log
 
 ### 1. Environment and Installation Issues
 
-#### Issue: `mamba activate litdb` fails
+#### Issue: `conda activate research-monorepo` fails
 **Symptoms:**
 ```
 EnvironmentNameNotFound: Could not find conda environment: litdb

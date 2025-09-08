@@ -1,0 +1,142 @@
+# Production Docker Compose configuration
+# Optimized for production deployment
+
+version: '3.8'
+
+services:
+  literature-database:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    image: literature-database:latest
+    container_name: literature-database-prod
+    restart: always
+    ports:
+      - "8001:8001"
+    environment:
+      # Production Service Configuration
+      SERVICE_HOST: 0.0.0.0
+      SERVICE_PORT: 8001
+      SERVICE_NAME: literature-database
+      
+      # Production Database (PostgreSQL recommended)
+      DATABASE_URL: postgresql://literature_user:${POSTGRES_PASSWORD}@postgres:5432/literature_db
+      
+      # Redis Configuration
+      REDIS_URL: redis://redis:6379
+      REDIS_ENABLED: "true"
+      
+      # Production Logging
+      LOG_LEVEL: INFO
+      LOG_FILE: logs/litdb.log
+      
+      # Production Settings
+      DEBUG: "false"
+      RELOAD: "false"
+      
+      # CORS Origins (restrict in production)
+      CORS_ORIGINS: '["https://your-frontend-domain.com"]'
+    
+    volumes:
+      # Data persistence (production volumes)
+      - literature-data:/app/data
+      - literature-logs:/app/logs
+      
+      # Mount shared types from monorepo
+      - ../../shared:/app/shared:ro
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    
+    networks:
+      - literature-net
+      - monorepo-net
+    
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  # Production PostgreSQL
+  postgres:
+    image: postgres:15-alpine
+    container_name: literature-postgres-prod
+    restart: always
+    environment:
+      POSTGRES_DB: literature_db
+      POSTGRES_USER: literature_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - literature-net
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U literature_user -d literature_db"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Production Redis
+  redis:
+    image: redis:7-alpine
+    container_name: literature-redis-prod
+    restart: always
+    volumes:
+      - redis-data:/data
+    networks:
+      - literature-net
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD}
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 128M
+    healthcheck:
+      test: ["CMD", "redis-cli", "auth", "${REDIS_PASSWORD}", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  literature-data:
+    driver: local
+  literature-logs:
+    driver: local
+  postgres-data:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  literature-net:
+    driver: bridge
+  monorepo-net:
+    external: true
+    name: research-monorepo-network
