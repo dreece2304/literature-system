@@ -1,0 +1,57 @@
+name: litdb
+channels:
+  - conda-forge
+dependencies:
+  # Python version
+  - python=3.11
+
+  # Core dependencies
+  - pyzotero>=1.5
+  - pdfplumber>=0.9
+  - pypdf>=5.0
+  - bibtexparser>=1.4
+
+  # Database
+  - sqlalchemy>=2.0
+  - alembic>=1.12
+
+  # Data processing
+  - pandas>=2.0
+  - numpy>=1.24
+
+  # NLP and ML
+  - scikit-learn>=1.3
+  - nltk>=3.8
+  - spacy>=3.6
+
+  # API and Web
+  - fastapi>=0.100
+  - uvicorn>=0.23
+  - requests>=2.31
+  - pydantic>=2.0
+
+  # Event Publishing
+  - redis-py>=4.0
+
+  # Search
+  - whoosh>=2.7
+
+  # Utilities
+  - python-dotenv>=1.0
+  - pyyaml>=6.0
+  - click>=8.1
+  - rich>=13.5
+  - loguru>=0.7
+
+  # Development
+  - pytest>=7.4
+  - pytest-cov>=4.0
+  - black>=23.0
+  - flake8>=6.0
+  - autopep8>=2.0
+  - ipykernel>=6.25
+
+# Note: Install with:
+#   mamba env create -f environment.yml
+# Or update existing:
+#   mamba env update -f environment.yml --prune

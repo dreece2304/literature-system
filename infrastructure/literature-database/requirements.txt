@@ -1,7 +1,7 @@
 # Core dependencies
 pyzotero>=1.5.0
 pdfplumber>=0.9.0
-pypdf2>=3.0.0
+pypdf>=5.0.0
 bibtexparser>=1.4.0
 
 # Database
