@@ -1,11 +1,8 @@
 """
 Pytest configuration and shared fixtures for literature-database tests.
 """
-import os
 import sys
-import tempfile
 from pathlib import Path
-from datetime import datetime
 from typing import Generator
 
 import pytest
@@ -15,10 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.models import (
-    Base, Paper, Author, Tag, Collection, Note, Citation,
-    Manuscript, CitationLocation, PaperContent, ProjectRelevance
-)
+from src.models import Base, Paper, Author, Tag, Collection, Manuscript  # noqa: E402
 
 
 # ============================================================================
@@ -27,14 +21,19 @@ from src.models import (
 
 @pytest.fixture(scope="function")
 def test_engine():
-    """Create an in-memory SQLite engine for testing."""
+    """Create an in-memory SQLite engine for testing.
+
+    Uses file=:memory:?cache=shared to allow multiple connections to share
+    the same in-memory database, which is required for FastAPI test client.
+    """
     engine = create_engine(
-        "sqlite:///:memory:",
+        "sqlite:///file::memory:?cache=shared&uri=true",
         echo=False,
         connect_args={"check_same_thread": False}
     )
     Base.metadata.create_all(bind=engine)
     yield engine
+    Base.metadata.drop_all(bind=engine)
     engine.dispose()
 
 
@@ -85,7 +84,9 @@ def sample_paper() -> dict:
     """Sample paper data for testing."""
     return {
         "title": "Machine Learning for Materials Science: A Comprehensive Review",
-        "abstract": "This paper reviews recent advances in applying machine learning techniques to materials science problems, including property prediction, structure optimization, and synthesis planning.",
+        "abstract": ("This paper reviews recent advances in applying machine learning "
+                     "techniques to materials science problems, including property "
+                     "prediction, structure optimization, and synthesis planning."),
         "year": 2023,
         "doi": "10.1234/example.2023.001",
         "arxiv_id": "2301.12345",
@@ -475,15 +476,13 @@ def client(test_engine, tmp_path):
     """Create a FastAPI test client with test database."""
     from fastapi.testclient import TestClient
     from sqlalchemy.orm import sessionmaker
-    from src.api.main import app
-    from src.database import get_session
-    from src.services.search_service import SearchService
+    from src.api.main import app, get_db
 
     # Create session factory for test database
     TestSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_engine)
 
     # Override the database dependency
-    def override_get_session():
+    def override_get_db():
         session = TestSessionLocal()
         try:
             yield session
@@ -494,7 +493,7 @@ def client(test_engine, tmp_path):
     search_index_path = tmp_path / "search_index"
     search_index_path.mkdir(exist_ok=True)
 
-    app.dependency_overrides[get_session] = override_get_session
+    app.dependency_overrides[get_db] = override_get_db
 
     with TestClient(app) as test_client:
         yield test_client
@@ -534,24 +533,107 @@ def sample_paper_update() -> dict:
 
 @pytest.fixture
 def mock_event_publisher():
-    """Mock event publisher for testing."""
-    from unittest.mock import MagicMock, patch
+    """Mock event publisher for testing.
 
+    Returns a tuple of (publisher, mock_redis) where mock_redis has
+    a published_events list to track published events.
+    """
+    from unittest.mock import MagicMock, patch
+    import uuid
+    from datetime import datetime
+
+    # Create mock Redis with event tracking
+    mock_redis = MagicMock()
+    mock_redis.published_events = []
+
+    def mock_publish(channel, data):
+        mock_redis.published_events.append({
+            "channel": channel,
+            "data": data
+        })
+        return True
+
+    mock_redis.publish = mock_publish
+
+    # Create mock publisher
     mock_publisher = MagicMock()
-    mock_publisher.publish.return_value = True
-    mock_publisher.publish_paper_added.return_value = True
-    mock_publisher.publish_paper_updated.return_value = True
-    mock_publisher.publish_paper_deleted.return_value = True
-    mock_publisher.publish_sync_completed.return_value = True
-    mock_publisher.is_connected.return_value = True
     mock_publisher.enabled = True
-    mock_publisher.get_connection_info.return_value = {
+    mock_publisher.service_name = "literature-database"
+    mock_publisher._redis = mock_redis
+
+    def publish_paper_added(paper_id, paper_title, user_id=None, metadata=None):
+        event_data = {
+            "event_type": "paper.added",
+            "event_id": str(uuid.uuid4()),
+            "timestamp": datetime.utcnow().isoformat(),
+            "service": "literature-database",
+            "paper_id": paper_id,
+            "paper_title": paper_title,
+            "user_id": user_id,
+            "metadata": metadata or {}
+        }
+        mock_redis.published_events.append({"channel": "paper.added", "data": event_data})
+        return True
+
+    def publish_paper_updated(paper_id, paper_title, changes=None, user_id=None):
+        event_data = {
+            "event_type": "paper.updated",
+            "event_id": str(uuid.uuid4()),
+            "timestamp": datetime.utcnow().isoformat(),
+            "service": "literature-database",
+            "paper_id": paper_id,
+            "paper_title": paper_title,
+            "changes": changes or [],
+            "user_id": user_id
+        }
+        mock_redis.published_events.append({"channel": "paper.updated", "data": event_data})
+        return True
+
+    def publish_paper_deleted(paper_id, paper_title, metadata=None):
+        event_data = {
+            "event_type": "paper.deleted",
+            "event_id": str(uuid.uuid4()),
+            "timestamp": datetime.utcnow().isoformat(),
+            "service": "literature-database",
+            "paper_id": paper_id,
+            "paper_title": paper_title,
+            "metadata": metadata or {}
+        }
+        mock_redis.published_events.append({"channel": "paper.deleted", "data": event_data})
+        return True
+
+    def publish_sync_completed(sync_id=None, sync_type=None, items_synced=None,
+                               duration_seconds=None, results=None,
+                               papers_processed=None, metadata=None):
+        event_data = {
+            "event_type": "sync.completed",
+            "event_id": str(uuid.uuid4()),
+            "timestamp": datetime.utcnow().isoformat(),
+            "service": "literature-database",
+            "sync_id": sync_id,
+            "sync_type": sync_type,
+            "items_synced": items_synced,
+            "papers_processed": papers_processed,
+            "duration_seconds": duration_seconds,
+            "results": results,
+            "metadata": metadata or {}
+        }
+        mock_redis.published_events.append({"channel": "sync.completed", "data": event_data})
+        return True
+
+    mock_publisher.publish_paper_added = publish_paper_added
+    mock_publisher.publish_paper_updated = publish_paper_updated
+    mock_publisher.publish_paper_deleted = publish_paper_deleted
+    mock_publisher.publish_sync_completed = publish_sync_completed
+    mock_publisher.is_connected = MagicMock(return_value=True)
+    mock_publisher.get_connection_info = MagicMock(return_value={
         "redis_url": "redis://localhost:6379",
         "service_name": "literature-database",
         "enabled": True,
         "connected": True,
         "redis_available": True
-    }
+    })
 
     with patch('src.services.event_service.get_event_publisher', return_value=mock_publisher):
-        yield mock_publisher
+        with patch('src.api.main.event_publisher', mock_publisher):
+            yield (mock_publisher, mock_redis)

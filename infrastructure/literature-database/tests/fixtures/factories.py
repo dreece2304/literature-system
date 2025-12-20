@@ -1,6 +1,5 @@
 """Factory functions for creating test data."""
-from typing import Optional, List, Dict, Any
-from datetime import datetime
+from typing import List
 import random
 import string
 
@@ -8,7 +7,10 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.models import Paper, Author, Tag, Collection, Note, Citation, Manuscript, CitationLocation
+# noqa: E402 - must add to path before importing
+from src.models import (  # noqa: E402
+    Paper, Author, Tag, Collection, Note, Citation, Manuscript, CitationLocation
+)
 
 
 def random_string(length: int = 10) -> str:

@@ -6,7 +6,7 @@ from sqlalchemy.orm import sessionmaker, Session
 import sys
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from src.models import Base
+from src.models import Base  # noqa: E402
 
 
 def create_test_database(db_path: Path = None):

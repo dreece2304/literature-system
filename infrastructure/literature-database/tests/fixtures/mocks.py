@@ -1,6 +1,6 @@
 """Mock objects for testing external services."""
-from typing import List, Dict, Any, Optional
-from unittest.mock import MagicMock, AsyncMock
+from typing import List, Dict, Any
+from unittest.mock import MagicMock
 from pathlib import Path
 import json
 
