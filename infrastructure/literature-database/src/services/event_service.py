@@ -1,4 +1,5 @@
 """Event publishing service for literature-database service."""
+import importlib.util
 import os
 import json
 import uuid
@@ -19,9 +20,8 @@ from pathlib import Path
 shared_path = str(Path(__file__).parent.parent.parent.parent.parent / "shared")
 sys.path.insert(0, shared_path)
 
-import importlib.util
 spec = importlib.util.spec_from_file_location(
-    "api_contracts", 
+    "api_contracts",
     Path(shared_path) / "types" / "api_contracts.py"
 )
 api_contracts = importlib.util.module_from_spec(spec)
@@ -33,11 +33,11 @@ SyncEvent = api_contracts.SyncEvent
 
 class EventPublisher:
     """Service for publishing events to Redis channels."""
-    
+
     def __init__(self, redis_url: Optional[str] = None, service_name: str = "literature-database"):
         """
         Initialize event publisher.
-        
+
         Args:
             redis_url: Redis connection URL. Defaults to environment variable REDIS_URL
             service_name: Name of the service publishing events
@@ -46,11 +46,11 @@ class EventPublisher:
         self.redis_url = redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
         self.redis_client = None
         self.enabled = REDIS_AVAILABLE
-        
+
         if not REDIS_AVAILABLE:
             logger.warning("Redis not available. Events will be logged but not published.")
             return
-        
+
         try:
             self.redis_client = redis.from_url(
                 self.redis_url,
@@ -67,32 +67,32 @@ class EventPublisher:
             logger.warning("Event publishing will be disabled.")
             self.enabled = False
             self.redis_client = None
-    
+
     def publish(
-        self, 
-        event_type: str, 
-        data: Dict[str, Any], 
+        self,
+        event_type: str,
+        data: Dict[str, Any],
         channel: Optional[str] = None
     ) -> bool:
         """
         Publish an event to Redis.
-        
+
         Args:
             event_type: Type of event (e.g., "paper.added", "sync.completed")
             data: Event data dictionary
             channel: Redis channel to publish to. Defaults to event_type
-            
+
         Returns:
             True if event was published successfully, False otherwise
         """
         if not self.enabled or not self.redis_client:
             logger.debug(f"Event publishing disabled. Would publish {event_type}: {data}")
             return False
-        
+
         try:
             # Generate unique event ID
             event_id = str(uuid.uuid4())
-            
+
             # Create base event structure
             event = {
                 "event_type": event_type,
@@ -101,23 +101,23 @@ class EventPublisher:
                 "event_id": event_id,
                 **data
             }
-            
+
             # Use event_type as channel if not specified
             target_channel = channel or event_type
-            
+
             # Publish to Redis
             message = json.dumps(event)
-            result = self.redis_client.publish(target_channel, message)
-            
+            self.redis_client.publish(target_channel, message)
+
             logger.debug(f"Published event {event_type} to channel {target_channel}")
             logger.debug(f"Event data: {event}")
-            
+
             return True
-            
+
         except Exception as e:
             logger.error(f"Failed to publish event {event_type}: {e}")
             return False
-    
+
     def publish_paper_event(
         self,
         event_type: str,
@@ -129,7 +129,7 @@ class EventPublisher:
     ) -> bool:
         """
         Publish a paper-related event.
-        
+
         Args:
             event_type: Type of event ("paper.added", "paper.updated", "paper.deleted")
             paper_id: ID of the paper
@@ -137,7 +137,7 @@ class EventPublisher:
             user_id: ID of user who performed the action
             changes: List of changed fields (for updates)
             metadata: Additional metadata
-            
+
         Returns:
             True if event was published successfully
         """
@@ -148,12 +148,12 @@ class EventPublisher:
             "changes": changes,
             "metadata": metadata
         }
-        
+
         # Remove None values
         data = {k: v for k, v in data.items() if v is not None}
-        
+
         return self.publish(event_type, data)
-    
+
     def publish_sync_event(
         self,
         event_type: str,
@@ -165,7 +165,7 @@ class EventPublisher:
     ) -> bool:
         """
         Publish a sync-related event.
-        
+
         Args:
             event_type: Type of event ("sync.started", "sync.completed", "sync.failed")
             sync_id: ID of the sync operation
@@ -173,7 +173,7 @@ class EventPublisher:
             results: Sync results dictionary
             duration_seconds: Duration of sync operation
             papers_processed: Number of papers processed
-            
+
         Returns:
             True if event was published successfully
         """
@@ -184,12 +184,12 @@ class EventPublisher:
             "duration_seconds": duration_seconds,
             "papers_processed": papers_processed
         }
-        
+
         # Remove None values
         data = {k: v for k, v in data.items() if v is not None}
-        
+
         return self.publish(event_type, data)
-    
+
     def publish_paper_added(
         self,
         paper_id: int,
@@ -205,7 +205,7 @@ class EventPublisher:
             user_id=user_id,
             metadata=metadata
         )
-    
+
     def publish_paper_updated(
         self,
         paper_id: int,
@@ -223,7 +223,7 @@ class EventPublisher:
             changes=changes,
             metadata=metadata
         )
-    
+
     def publish_paper_deleted(
         self,
         paper_id: int,
@@ -239,7 +239,7 @@ class EventPublisher:
             user_id=user_id,
             metadata=metadata
         )
-    
+
     def publish_sync_completed(
         self,
         sync_id: str,
@@ -257,18 +257,18 @@ class EventPublisher:
             duration_seconds=duration_seconds,
             papers_processed=papers_processed
         )
-    
+
     def is_connected(self) -> bool:
         """Check if Redis connection is available."""
         if not self.enabled or not self.redis_client:
             return False
-        
+
         try:
             self.redis_client.ping()
             return True
         except Exception:
             return False
-    
+
     def get_connection_info(self) -> Dict[str, Any]:
         """Get connection information."""
         return {
@@ -298,9 +298,9 @@ def publish_paper_added(paper_id: int, paper_title: str, user_id: Optional[str] 
 
 
 def publish_paper_updated(
-    paper_id: int, 
-    paper_title: str, 
-    changes: List[str], 
+    paper_id: int,
+    paper_title: str,
+    changes: List[str],
     user_id: Optional[str] = None
 ) -> bool:
     """Convenience function to publish paper.updated event."""
@@ -313,9 +313,9 @@ def publish_paper_deleted(paper_id: int, paper_title: str, user_id: Optional[str
 
 
 def publish_sync_completed(
-    sync_id: str, 
-    results: Dict[str, Any], 
-    duration_seconds: int, 
+    sync_id: str,
+    results: Dict[str, Any],
+    duration_seconds: int,
     papers_processed: int = 0
 ) -> bool:
     """Convenience function to publish sync.completed event."""

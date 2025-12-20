@@ -28,7 +28,7 @@ class ServiceConfig:
 class DatabaseConfig:
     """Database configuration settings."""
     url: str = "sqlite:///data/metadata/literature.db"
-    
+
     @property
     def is_sqlite(self) -> bool:
         """Check if database is SQLite."""
@@ -78,7 +78,7 @@ class LoggingConfig:
 class CORSConfig:
     """CORS configuration."""
     origins: List[str] = None
-    
+
     def __post_init__(self):
         if self.origins is None:
             self.origins = ["http://localhost:3000", "http://localhost:8000"]
@@ -160,12 +160,12 @@ def load_yaml_config(config_path: str) -> Optional[Dict[str, Any]]:
     if not YAML_AVAILABLE:
         logger.warning("PyYAML not available. Cannot load YAML config.")
         return None
-        
+
     config_file = Path(config_path)
     if not config_file.exists():
         logger.warning(f"Config file not found: {config_path}")
         return None
-    
+
     try:
         with open(config_file, 'r') as f:
             return yaml.safe_load(f)
@@ -174,13 +174,15 @@ def load_yaml_config(config_path: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def merge_yaml_with_env_config(yaml_config: Dict[str, Any], env_config: LiteratureDatabaseConfig) -> LiteratureDatabaseConfig:
+def merge_yaml_with_env_config(
+    yaml_config: Dict[str, Any], env_config: LiteratureDatabaseConfig
+) -> LiteratureDatabaseConfig:
     """Merge YAML config with environment config, prioritizing environment."""
-    
+
     # Environment config takes precedence, but fill in missing values from YAML
     if not yaml_config:
         return env_config
-    
+
     # Only override if environment variable is default (not explicitly set)
     def get_yaml_value(yaml_path: List[str], default=None):
         """Get nested value from YAML config."""
@@ -191,49 +193,49 @@ def merge_yaml_with_env_config(yaml_config: Dict[str, Any], env_config: Literatu
             else:
                 return default
         return current
-    
+
     # Update database config if using default SQLite path
     if env_config.database.url == "sqlite:///data/metadata/literature.db":
         yaml_db_path = get_yaml_value(["database", "path"])
         if yaml_db_path:
             env_config.database.url = f"sqlite:///{yaml_db_path}"
-    
+
     # Update Zotero path if using default
     if env_config.zotero.windows_path == "/mnt/c/Users/dreec/Zotero":
         yaml_zotero_path = get_yaml_value(["zotero", "windows_path"])
         if yaml_zotero_path:
             env_config.zotero.windows_path = yaml_zotero_path
-    
+
     # Update PDF storage path if using default
     if env_config.pdf.storage_path == "data/pdfs":
         yaml_pdf_path = get_yaml_value(["pdf", "storage_path"])
         if yaml_pdf_path:
             env_config.pdf.storage_path = yaml_pdf_path
-    
+
     # Update search index path if using default
     if env_config.search.index_path == "data/cache/search_index":
         yaml_search_path = get_yaml_value(["search", "index_path"])
         if yaml_search_path:
             env_config.search.index_path = yaml_search_path
-    
+
     return env_config
 
 
 def load_config() -> LiteratureDatabaseConfig:
     """Load configuration with environment precedence over YAML."""
-    
+
     # Load from environment first
     config = load_env_config()
-    
+
     # Try to load legacy YAML config
     yaml_config_path = os.getenv("LITDB_CONFIG_PATH", "config/settings.yml")
     yaml_config = load_yaml_config(yaml_config_path)
-    
+
     # Merge YAML into env config (env takes precedence)
     config = merge_yaml_with_env_config(yaml_config, config)
-    
+
     logger.debug(f"Loaded configuration - Service: {config.service.name}:{config.service.port}")
-    
+
     return config
 
 
