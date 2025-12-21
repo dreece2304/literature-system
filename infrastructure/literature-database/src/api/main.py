@@ -21,6 +21,7 @@ from contextvars import ContextVar
 from fastapi import FastAPI, HTTPException, Depends, Query, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from loguru import logger
 
 # Import shared types from monorepo
@@ -511,6 +512,12 @@ async def create_paper(paper_data: PaperCreate, db: Session = Depends(get_db)):
 
         api_paper = Paper(**db_paper_to_api(db_paper, db))
 
+        # Add to search index
+        try:
+            search_service.add_paper_to_index(db_paper)
+        except Exception as e:
+            logger.warning(f"Failed to add paper to search index: {e}")
+
         # Publish paper.added event
         event_publisher.publish_paper_added(
             paper_id=db_paper.id,
@@ -529,6 +536,19 @@ async def create_paper(paper_data: PaperCreate, db: Session = Depends(get_db)):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
+        )
+    except IntegrityError as e:
+        db.rollback()
+        # Check if it's a unique constraint violation (duplicate DOI, etc.)
+        error_msg = str(e.orig).lower()
+        if "unique" in error_msg or "duplicate" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="A paper with this DOI already exists"
+            )
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Database constraint violation: {str(e.orig)}"
         )
     except Exception as e:
         logger.error(f"Error creating paper: {e}")

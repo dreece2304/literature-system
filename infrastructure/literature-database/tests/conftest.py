@@ -575,7 +575,7 @@ def mock_event_publisher():
         mock_redis.published_events.append({"channel": "paper.added", "data": event_data})
         return True
 
-    def publish_paper_updated(paper_id, paper_title, changes=None, user_id=None):
+    def publish_paper_updated(paper_id, paper_title, changes=None, user_id=None, metadata=None):
         event_data = {
             "event_type": "paper.updated",
             "event_id": str(uuid.uuid4()),
@@ -584,7 +584,8 @@ def mock_event_publisher():
             "paper_id": paper_id,
             "paper_title": paper_title,
             "changes": changes or [],
-            "user_id": user_id
+            "user_id": user_id,
+            "metadata": metadata or {}
         }
         mock_redis.published_events.append({"channel": "paper.updated", "data": event_data})
         return True

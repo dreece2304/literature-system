@@ -4,7 +4,6 @@ Comprehensive integration tests for the Literature Database API.
 Tests all endpoints, error handling, pagination, and business logic
 to ensure API contract compliance and data integrity.
 """
-import pytest
 from datetime import datetime
 from fastapi import status
 
@@ -291,7 +290,6 @@ class TestSearchEndpoint:
         assert data["total_results"] == 0
         assert data["papers"] == []
 
-    @pytest.mark.skip(reason="Requires search index rebuild after paper creation - TODO: integrate index update in API")
     def test_search_with_results(self, client, sample_paper_data):
         """Test search with matching papers."""
         # Create a paper with searchable content
@@ -415,7 +413,6 @@ class TestErrorHandling:
         response = client.post("/api/v1/papers", json=sample_paper_data)
         assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
-    @pytest.mark.skip(reason="API returns 500 on duplicate DOI - needs fix in paper creation endpoint")
     def test_duplicate_doi_handling(self, client, sample_paper_data):
         """Test handling of duplicate DOI values."""
         # Create first paper
@@ -425,11 +422,9 @@ class TestErrorHandling:
         # Try to create second paper with same DOI
         sample_paper_data["title"] = "Different Title, Same DOI"
         response2 = client.post("/api/v1/papers", json=sample_paper_data)
-        # API may reject duplicate DOI or allow it depending on implementation
-        # We just verify the request is handled (not a server error)
-        assert response2.status_code in [
-            status.HTTP_200_OK, status.HTTP_409_CONFLICT, status.HTTP_400_BAD_REQUEST
-        ]
+        # API should reject duplicate DOI with 409 Conflict
+        assert response2.status_code == status.HTTP_409_CONFLICT
+        assert "already exists" in response2.json()["detail"]
 
 
 class TestResponseHeaders:
