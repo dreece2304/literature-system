@@ -1,20 +1,259 @@
 # Literature AI Service
 
-LLM-powered services for paper triage, writing assistance, and Q&A.
+LLM-powered services for paper triage, writing assistance, and Q&A. Part of the research monorepo infrastructure.
 
-## Features
-- Paper triage and scoring
-- Writing assistance
-- Question answering about papers
-- Embedding generation
+## Overview
 
-## Setup
+The literature-ai service provides intelligent AI capabilities for academic research:
+
+1. **Writer Agent**: Context-aware citation suggestions for manuscripts
+2. **Triager Agent**: Intelligent paper scoring and prioritization (0-10 scale)
+3. **Reader Agent**: RAG-powered Q&A over your paper collection
+
+## Architecture
+
+- **LLM Provider**: Ollama with Qwen 7B models
+- **Vector Database**: ChromaDB (SQLite-backed)
+- **Embedding Model**: sentence-transformers/all-MiniLM-L6-v2 (384d, 80MB)
+- **API Framework**: FastAPI with async support
+- **Task Queue**: Celery + Redis for background embedding generation
+- **Event-Driven**: Consumes paper.added/updated events from literature-database
+
+## GPU Requirements
+
+Optimized for **RTX 4070 8GB VRAM**:
+- Writer: qwen:7b-q5_K_M (~5.5GB VRAM, temperature 0.7)
+- Triager: qwen:7b-q4_K_M (~4.5GB VRAM, temperature 0.3)
+- Reader: qwen:7b-q5_K_M (~5.5GB VRAM, temperature 0.1)
+- Models are serialized (one at a time) with 60s keep-alive
+
+## Quick Start
+
+### 1. Prerequisites
 ```bash
-mamba create -n litai python=3.11
-mamba activate litai
-pip install -r requirements.txt
+# Install Ollama (if not already installed)
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Start Ollama server
+ollama serve
+
+# Pull required models
+ollama pull qwen:7b-q5_K_M
+ollama pull qwen:7b-q4_K_M
 ```
 
-## Configuration
-- Uses Qwen models via Ollama
-- Optimized for RTX 4070 8GB VRAM
+### 2. Create Environment
+```bash
+cd infrastructure/literature-ai
+conda env create -f environment.yml
+conda activate litai
+```
+
+### 3. Configure Service
+```bash
+# Create .env file (optional - defaults work for local development)
+cp .env.example .env
+
+# Edit if needed
+nano .env
+```
+
+### 4. Start API Server
+```bash
+# From literature-ai directory
+uvicorn src.api.main:app --host 0.0.0.0 --port 8002 --reload
+
+# Server will be available at http://localhost:8002
+# API documentation at http://localhost:8002/docs
+```
+
+### 5. Test the Service
+```bash
+# Run API tests
+python scripts/test_api.py
+
+# Or use curl
+curl http://localhost:8002/health
+```
+
+## API Endpoints
+
+Full interactive documentation available at: **http://localhost:8002/docs**
+
+### System Endpoints
+- `GET /` - Service information
+- `GET /api/v1/health` - Health check with component status
+- `GET /api/v1/stats` - System statistics
+- `GET /api/v1/gpu` - GPU status and memory usage
+
+### Writer Agent ✅ **IMPLEMENTED**
+- `POST /api/v1/writer/suggest-citations` - Get citation suggestions for text
+- `POST /api/v1/writer/expand-outline` - Expand outline with citations
+- `POST /api/v1/writer/detect-missing-citations` - Find unsupported claims
+- `POST /api/v1/writer/enhance-citation` - Improve existing citation usage
+
+### Context Management ✅ **IMPLEMENTED**
+- `POST /api/v1/context/load-manuscript` - Load LaTeX/Markdown manuscript
+- `POST /api/v1/context/update` - Update writing context
+- `GET /api/v1/context/current` - Get current writing context
+- `GET /api/v1/context/outline` - Get manuscript structure
+- `POST /api/v1/context/refresh` - Reload manuscript from disk
+- `GET /api/v1/context/stats` - Context tracking statistics
+
+### Search & Bibliography ✅ **IMPLEMENTED**
+- `POST /api/v1/search/` - Semantic search across papers
+- `POST /api/v1/search/similar` - Find similar papers
+- `POST /api/v1/search/paper/summary` - Get paper details
+- `GET /api/v1/search/stats` - Collection statistics
+- `POST /api/v1/search/bibliography` - Generate bibliography (APA/MLA/Chicago/BibTeX)
+- `POST /api/v1/search/inline-citation` - Format inline citations
+
+### Triager Agent 🚧 **PLANNED**
+- `POST /api/v1/triager/score-paper` - Score single paper (0-10)
+- `POST /api/v1/triager/score-batch` - Batch score multiple papers
+- `GET /api/v1/triager/top-papers` - Get top-scored papers
+
+### Reader Agent 🚧 **PLANNED**
+- `POST /api/v1/reader/ask` - Ask question about papers (RAG)
+- `POST /api/v1/reader/summarize` - Summarize specific paper
+- `GET /api/v1/reader/related` - Find related papers
+
+## Configuration Files
+
+- `config/settings.py` - Main service configuration (Pydantic settings)
+- `config/models.yaml` - LLM model specifications and parameters
+- `config/prompts/*.yaml` - Agent-specific prompt templates
+- `.env` - Environment variables (API keys, database URLs)
+
+## Project Structure
+
+```
+literature-ai/
+├── config/              # Configuration files
+│   ├── prompts/        # LLM prompt templates
+│   ├── settings.py     # Main settings
+│   └── models.yaml     # Model configurations
+├── src/
+│   ├── api/            # FastAPI application
+│   │   ├── endpoints/  # API route handlers
+│   │   ├── main.py     # Main FastAPI app
+│   │   └── schemas.py  # Pydantic request/response models
+│   ├── agents/         # Agent implementations
+│   │   ├── base.py     # BaseAgent abstract class
+│   │   ├── writer.py   # WriterAgent
+│   │   ├── triager.py  # TriagerAgent
+│   │   └── reader.py   # ReaderAgent
+│   ├── embeddings/     # Embedding pipeline
+│   │   ├── generator.py    # EmbeddingGenerator
+│   │   ├── vectorstore.py  # ChromaDB wrapper
+│   │   └── chunker.py      # Text chunking
+│   ├── context/        # Manuscript context detection
+│   │   ├── detector.py     # ContextDetector
+│   │   ├── parser.py       # LaTeX/Markdown parser
+│   │   └── tracker.py      # Context state tracking
+│   ├── tasks/          # Celery async tasks
+│   │   ├── celery_app.py   # Celery configuration
+│   │   └── embedding_tasks.py  # Background tasks
+│   ├── events/         # Event consumers
+│   │   └── consumer.py     # Redis event listener
+│   ├── services/       # Core services
+│   │   ├── llm_service.py      # Ollama/Qwen wrapper
+│   │   ├── search_service.py   # Semantic search
+│   │   └── citation_service.py # BibTeX generation
+│   └── utils/          # Utilities
+│       ├── gpu_manager.py  # GPU memory management
+│       ├── logging.py      # Structured logging
+│       └── cache.py        # Response caching
+├── tests/              # Test suite
+│   ├── unit/          # Unit tests
+│   └── integration/   # Integration tests
+├── scripts/           # Utility scripts
+├── data/              # Data storage
+│   ├── vectorstore/   # ChromaDB persistence
+│   └── cache/         # Cache storage
+└── logs/              # Log files
+
+```
+
+## Development
+
+### Running Tests
+```bash
+# All tests
+pytest
+
+# Unit tests only
+pytest tests/unit/
+
+# Integration tests
+pytest tests/integration/
+
+# With coverage
+pytest --cov=src tests/
+```
+
+### Code Quality
+```bash
+# Format code
+black src/ tests/
+
+# Type checking
+mypy src/
+
+# Linting
+ruff check src/
+```
+
+## Monitoring
+
+- Health check: `GET /health`
+- Metrics: `GET /metrics` (Prometheus format)
+- Logs: `logs/literature-ai.log`
+
+## Integration with Literature Database
+
+The service automatically:
+1. Listens for `paper.added` and `paper.updated` events via Redis
+2. Generates embeddings for new/updated papers
+3. Stores vectors in ChromaDB
+4. Makes papers searchable within ~30 seconds
+
+## Troubleshooting
+
+### GPU Memory Issues
+```bash
+# Check VRAM usage
+nvidia-smi
+
+# Clear Ollama cache
+ollama ps
+ollama stop <model-name>
+```
+
+### Vector Store Issues
+```bash
+# Reset vector store
+rm -rf data/vectorstore/*
+python scripts/initialize_embeddings.py
+```
+
+### Redis Connection Issues
+```bash
+# Check Redis
+redis-cli ping
+
+# Restart Redis
+sudo systemctl restart redis
+```
+
+## Performance
+
+Target metrics for <1K papers:
+- Embedding generation: ~50 papers/minute
+- Citation suggestion latency: <2s
+- Paper scoring: <500ms per paper
+- Q&A response: <3s
+
+## License
+
+Part of the research monorepo project.
