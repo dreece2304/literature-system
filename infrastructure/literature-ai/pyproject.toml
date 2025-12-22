@@ -24,6 +24,9 @@ classifiers = [
 ]
 
 dependencies = [
+    # MCP Server
+    "mcp>=1.0.0",
+
     # LLM & AI Stack
     "ollama>=0.1.7",
     "langchain>=0.1.0",
@@ -74,6 +77,7 @@ dev = [
 litai-api = "src.api.main:run"
 litai-enrich = "scripts.enrich_papers:main"
 litai-sync = "scripts.sync_papers:main"
+litai-mcp = "src.mcp_server.server:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src", "config", "scripts"]
