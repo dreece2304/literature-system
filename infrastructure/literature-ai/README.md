@@ -9,6 +9,44 @@ The literature-ai service provides intelligent AI capabilities for academic rese
 1. **Writer Agent**: Context-aware citation suggestions for manuscripts
 2. **Triager Agent**: Intelligent paper scoring and prioritization (0-10 scale)
 3. **Reader Agent**: RAG-powered Q&A over your paper collection
+4. **MCP Server**: Claude Code integration for direct AI-powered paper management
+
+## MCP Server for Claude Code (Recommended)
+
+The system now includes an MCP (Model Context Protocol) server that integrates directly with Claude Code. This means **Claude Code itself becomes the AI** - no local LLMs or separate API keys needed.
+
+### Quick Start with Claude Code
+
+```bash
+# 1. Start literature-database
+cd infrastructure/literature-database
+mamba run -n litai uvicorn src.api.main:app --port 8001
+
+# 2. Restart Claude Code in the research project
+# The MCP server is already configured in ~/.claude.json
+
+# 3. Ask Claude to use literature tools:
+#    "Search for papers about machine learning"
+#    "Get the content of paper 42 and summarize it"
+#    "Find papers by author Smith"
+```
+
+### MCP Tools Available (23)
+
+| Category | Tools |
+|----------|-------|
+| Paper Management | list_papers, get_paper, add_paper, update_paper, search_papers, get_paper_content, store_extraction, get_extraction_queue |
+| Search | keyword_search, semantic_search, search_by_author, search_by_tag |
+| External APIs | lookup_paper_metadata, find_open_access_pdf, enrich_paper, search_external_papers, get_citation_count |
+| Citations | scan_manuscript, check_citations, suggest_citation_key, generate_bibtex, format_bibliography, validate_citations |
+
+See [QUICKSTART.md](QUICKSTART.md) for detailed usage.
+
+---
+
+## Standalone Mode (Legacy)
+
+For local LLM processing with GPU acceleration:
 
 ## Architecture
 

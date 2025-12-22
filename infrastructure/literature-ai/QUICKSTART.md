@@ -1,126 +1,157 @@
 # Literature AI - Quick Start Guide
 
-## After Running Enrichment Scripts
+## Using with Claude Code (Recommended)
 
-If you've already run `enrich_papers.py` and `acquire_pdfs.py`, here's what to do next.
+The literature system is now integrated as an MCP server for Claude Code. This means Claude Code itself becomes the AI - no local LLMs or separate API keys needed.
 
-### Check Results
+### Prerequisites
 
-```bash
-# Activate environment
-mamba activate litai
+1. **literature-database running on port 8001**
+   ```bash
+   cd infrastructure/literature-database
+   mamba run -n litai uvicorn src.api.main:app --port 8001
+   ```
 
-# Check how many papers have abstracts now
-curl -s http://localhost:8001/api/v1/papers?limit=500 | python -c "
-import json, sys
-data = json.load(sys.stdin)
-items = data.get('items', data)
-with_abstract = sum(1 for p in items if p.get('abstract') and len(p['abstract']) > 20)
-with_pdf = sum(1 for p in items if p.get('file_path'))
-with_fulltext = sum(1 for p in items if p.get('full_text'))
-print(f'Total papers: {len(items)}')
-print(f'With abstracts: {with_abstract}')
-print(f'With PDFs: {with_pdf}')
-print(f'With full text: {with_fulltext}')
-"
-```
+2. **MCP server configured** (already done in ~/.claude.json)
 
-### Sync to Vectorstore
+### Activate the MCP Server
 
-After enrichment, sync the updated papers to ChromaDB for semantic search:
+**Restart Claude Code** in the research project directory. The `literature` MCP server will automatically connect.
 
-```bash
-cd /home/dreece23/projects/research/misc/research/infrastructure/literature-ai
-mamba run -n litai python scripts/sync_papers.py
-```
+### Available Tools (23)
+
+Once Claude Code restarts, you can ask it to use these tools:
+
+#### Paper Management
+- `list_papers` - List papers with filtering
+- `get_paper {paper_id}` - Get paper details
+- `add_paper` - Add new paper
+- `update_paper` - Update paper metadata
+- `search_papers {query}` - Search papers
+- `get_paper_content {paper_id}` - Get full content for analysis
+- `store_extraction` - Store AI analysis results
+- `get_extraction_queue` - Get papers needing analysis
+
+#### Search
+- `keyword_search {query}` - Full-text search
+- `semantic_search {query}` - Similarity search
+- `search_by_author {name}` - Find papers by author
+- `search_by_tag {tag}` - Find papers by tag
+
+#### External APIs
+- `lookup_paper_metadata` - Fetch from CrossRef/OpenAlex
+- `find_open_access_pdf` - Find free PDF URLs
+- `enrich_paper` - Auto-fill missing metadata
+- `search_external_papers {query}` - Search external databases
+- `get_citation_count` - Get citation count from Semantic Scholar
+
+#### Citations
+- `scan_manuscript {file_path}` - Extract \cite{} keys
+- `check_citations` - Find orphan/unused citations
+- `suggest_citation_key` - Generate BibTeX keys
+- `generate_bibtex` - Create BibTeX entries
+- `format_bibliography` - Format in APA/MLA/Chicago
+- `validate_citations` - Check citation completeness
+
+### Example Queries
+
+Ask Claude Code:
+
+- "Search for papers about machine learning"
+- "Get the content of paper 42 and summarize it"
+- "Find open access PDFs for papers missing files"
+- "Scan my manuscript and check for missing citations"
+- "Generate a BibTeX bibliography for papers tagged 'neural-networks'"
+
+---
+
+## Using Standalone API (Legacy Mode)
+
+If you prefer local LLM processing:
 
 ### Start Services
 
 ```bash
-# Terminal 1: Start literature-database API
+# Terminal 1: Start Ollama
+ollama serve
+
+# Terminal 2: Start literature-database
 cd infrastructure/literature-database
 mamba run -n litai uvicorn src.api.main:app --port 8001
 
-# Terminal 2: Start literature-ai API
+# Terminal 3: Start literature-ai
 cd infrastructure/literature-ai
 mamba run -n litai uvicorn src.api.main:app --port 8002
 ```
 
-### Verify Everything Works
+### Test Services
 
 ```bash
-# Check literature-database health
+# Check health
 curl http://localhost:8001/health
-
-# Check literature-ai health
 curl http://localhost:8002/api/v1/health
 
-# Test semantic search
+# Search papers
 curl -X POST http://localhost:8002/api/v1/search/ \
   -H "Content-Type: application/json" \
   -d '{"query": "machine learning", "top_k": 5}'
 ```
 
-## Common Tasks
+### API Documentation
 
-### Re-run Enrichment (if needed)
+- literature-database: http://localhost:8001/docs
+- literature-ai: http://localhost:8002/docs
+
+---
+
+## Data Enrichment Scripts
+
+These scripts work independently of the API mode:
+
 ```bash
+# Enrich papers missing abstracts
 mamba run -n litai python scripts/enrich_papers.py
-```
 
-### Re-run PDF Acquisition
-```bash
+# Download open access PDFs
 mamba run -n litai python scripts/acquire_pdfs.py
+
+# Sync papers to vectorstore
+mamba run -n litai python scripts/sync_papers.py
 ```
 
-### Run Tests
-```bash
-# Both services
-cd infrastructure/literature-database && mamba run -n litai pytest tests/ -q
-cd infrastructure/literature-ai && mamba run -n litai pytest tests/ -q
-```
-
-## Next Steps
-
-1. **Use the Writer Agent** - Get citation suggestions for your manuscripts
-2. **Use the Reader Agent** - Ask questions about your paper collection
-3. **Add More Papers** - Import from Zotero or manually via API
+---
 
 ## Troubleshooting
 
-### API Not Responding
+### MCP Server Not Connecting
+
+1. Ensure literature-database is running on port 8001
+2. Check the configuration in `~/.claude.json`
+3. Restart Claude Code completely (not just refresh)
+
+### Tools Not Appearing
+
+The MCP tools are called automatically by Claude based on your requests. Just describe what you want:
+- "Search for papers about X"
+- "Get the details of paper Y"
+- "Find citations in my manuscript"
+
+### API Errors
+
 ```bash
-# Check if services are running
-curl http://localhost:8001/health
-curl http://localhost:8002/api/v1/health
+# Check if literature-database is responding
+curl http://localhost:8001/api/v1/papers?limit=1
+
+# Check MCP server can import
+/home/dreece23/miniforge3/envs/litai/bin/python -c \
+  "from src.mcp_server import main; print('OK')"
 ```
 
-### Missing Abstracts After Enrichment
-- Some papers may not have abstracts in any API
-- Check logs for rate limiting issues
-- Re-run with DEBUG logging:
-  ```bash
-  LOG_LEVEL=DEBUG mamba run -n litai python scripts/enrich_papers.py
-  ```
+---
 
-### PDF Downloads Failing
-- Check network connectivity
-- Some PDFs are behind paywalls (only OA papers are downloaded)
-- arXiv PDFs should always work
+## Next Steps
 
-### Vectorstore Issues
-```bash
-# Re-sync all papers
-mamba run -n litai python scripts/sync_papers.py --force
-```
-
-## API Keys Status
-
-All API keys are configured in `.env`:
-- CrossRef: ✅ Working
-- OpenAlex: ✅ Working
-- Semantic Scholar: ✅ Working (approved key, 1 req/sec)
-- Springer: ✅ Working (Meta v2 + Open Access)
-- Unpaywall: ✅ Working
-- arXiv: ✅ No key needed
-- PubMed: ✅ Working
+1. **Restart Claude Code** to activate the MCP server
+2. **Ask Claude to search papers** to verify it's working
+3. **Try paper analysis** - ask Claude to summarize a specific paper
+4. **Run enrichment scripts** to fill in missing metadata
