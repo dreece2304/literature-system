@@ -151,7 +151,10 @@ class ReaderAgent(BaseAgent):
             logger.warning("No relevant papers found for question")
             return QAResponse(
                 question=question,
-                answer="I don't have enough information to answer this question. No relevant papers were found in the collection.",
+                answer=(
+                    "I don't have enough information to answer this question. "
+                    "No relevant papers were found in the collection."
+                ),
                 citations=[],
                 confidence="low",
                 limitations="No relevant papers found",

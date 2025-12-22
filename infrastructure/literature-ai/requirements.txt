@@ -1,0 +1,40 @@
+# LLM & AI Stack
+ollama>=0.1.7
+langchain>=0.1.0
+langchain-community>=0.0.10
+
+# Vector Database
+chromadb>=0.4.22
+
+# Embeddings
+sentence-transformers>=2.3.0
+transformers>=4.36.0
+
+# API Framework
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# Task Queue
+celery>=5.3.4
+redis>=5.0.1
+
+# Utilities
+httpx>=0.26.0
+python-dotenv>=1.0.0
+loguru>=0.7.2
+tiktoken>=0.5.2
+pyyaml>=6.0.1
+tqdm>=4.66.0
+
+# PDF Processing
+pypdf>=3.17.0
+arxiv>=2.1.0
+
+# Development
+pytest>=7.4.4
+pytest-asyncio>=0.23.3
+pytest-cov>=4.1.0
+black>=23.12.1
+ipykernel>=6.28.0

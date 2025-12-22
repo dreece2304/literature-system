@@ -351,7 +351,7 @@ Content: {result.text[:200]}...
                     year=result.year,
                     relevance_score=result.score,
                     contribution=f"Relevant paper with similarity score {result.score:.2f}",
-                    integration_suggestion=f"Consider citing this paper to support your argument",
+                    integration_suggestion="Consider citing this paper to support your argument",
                 )
             )
 

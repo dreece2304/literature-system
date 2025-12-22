@@ -8,33 +8,23 @@ and automatically generates embeddings.
 
 import asyncio
 import signal
-import sys
-from pathlib import Path
-
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
 
 from loguru import logger
+
+from config.settings import settings, LOGS_DIR
 from src.events.consumer import PaperEventConsumer
-from config.settings import settings
 
 
 async def main():
     """Run the event consumer."""
     # Configure logging
-    logger.remove()  # Remove default handler
+    logger.remove()
     logger.add(
-        sys.stderr,
-        format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan> - <level>{message}</level>",
+        LOGS_DIR / "event-consumer.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function} - {message}",
         level="INFO",
-    )
-    logger.add(
-        project_root / "logs" / "event-consumer.log",
         rotation="10 MB",
         retention="7 days",
-        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function} - {message}",
-        level="DEBUG",
     )
 
     logger.info("=" * 60)
@@ -76,5 +66,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    exit_code = asyncio.run(main())
-    sys.exit(exit_code)
+    exit(asyncio.run(main()))

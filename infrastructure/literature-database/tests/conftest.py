@@ -1,7 +1,6 @@
 """
 Pytest configuration and shared fixtures for literature-database tests.
 """
-import sys
 from pathlib import Path
 from typing import Generator
 
@@ -9,10 +8,7 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 
-# Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from src.models import Base, Paper, Author, Tag, Collection, Manuscript  # noqa: E402
+from src.models import Base, Paper, Author, Tag, Collection, Manuscript
 
 
 # ============================================================================

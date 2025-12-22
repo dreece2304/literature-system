@@ -35,7 +35,11 @@ class DatabaseClient:
             base_url: Literature database API URL (default: from settings)
             timeout: Request timeout in seconds
         """
-        self.base_url = base_url or settings.litdb.api_url
+        raw_url = base_url or settings.litdb.api_url
+        # Ensure /api/v1 suffix
+        self.base_url = raw_url.rstrip('/')
+        if not self.base_url.endswith('/api/v1'):
+            self.base_url = f"{self.base_url}/api/v1"
         self.timeout = timeout
 
         # HTTP client

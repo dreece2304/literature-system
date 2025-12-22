@@ -10,12 +10,6 @@ Tests:
 5. End-to-end pipeline
 """
 
-import sys
-from pathlib import Path
-
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 import numpy as np
 from rich.console import Console
 from rich.table import Table
@@ -474,4 +468,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    exit(main())

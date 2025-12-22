@@ -7,20 +7,14 @@ adds them to the ChromaDB vector store for citation suggestions.
 """
 
 import asyncio
-import sys
-from pathlib import Path
-
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
 
 import httpx
 from loguru import logger
 from tqdm import tqdm
 
+from config.settings import settings, LOGS_DIR
 from src.embeddings.generator import get_embedding_generator
 from src.embeddings.vectorstore import get_vector_store
-from config.settings import settings
 
 
 async def fetch_all_papers(api_url: str) -> list:
@@ -100,23 +94,31 @@ def add_paper_to_vectorstore(generator, vectorstore, paper: dict) -> bool:
         if not text or len(text.strip()) < 10:
             return False
 
-        # Build metadata
+        # Build metadata - ChromaDB doesn't accept None values
         metadata = {
             'paper_id': paper_id,
             'title': title,
-            'year': paper.get('year'),
-            'doi': paper.get('doi'),
-            'journal': paper.get('journal'),
         }
+
+        # Only add non-None values
+        if paper.get('year') is not None:
+            metadata['year'] = paper.get('year')
+        if paper.get('doi'):
+            metadata['doi'] = paper.get('doi')
+        if paper.get('journal'):
+            metadata['journal'] = paper.get('journal')
 
         # Extract authors
         authors = paper.get('authors', [])
         if authors:
             if isinstance(authors[0], dict):
-                author_names = [a.get('name', '') for a in authors]
+                author_names = [a.get('name', '') for a in authors if a.get('name')]
             else:
-                author_names = authors
-            metadata['authors'] = ', '.join(author_names)
+                author_names = [a for a in authors if a]
+            if author_names:
+                metadata['authors'] = ', '.join(author_names)
+            else:
+                metadata['authors'] = 'Unknown'
         else:
             metadata['authors'] = 'Unknown'
 
@@ -142,9 +144,11 @@ async def main():
     """Main sync function."""
     logger.remove()
     logger.add(
-        sys.stderr,
-        format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | <level>{message}</level>",
+        LOGS_DIR / "sync_papers.log",
+        format="{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}",
         level="INFO",
+        rotation="10 MB",
+        retention="7 days",
     )
 
     logger.info("=" * 60)
@@ -231,5 +235,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    exit_code = asyncio.run(main())
-    sys.exit(exit_code)
+    exit(asyncio.run(main()))

@@ -254,6 +254,7 @@ async def health_check(db: Session = Depends(get_db)):
 @app.get("/api/v1/papers", response_model=PaginatedResponse[Paper])
 async def list_papers(
     skip: int = Query(0, ge=0, description="Number of items to skip"),
+    offset: Optional[int] = Query(None, ge=0, description="Alias for skip (offset)"),
     limit: int = Query(20, ge=1, le=100, description="Number of items to return"),
     author: Optional[str] = Query(None, description="Filter by author name"),
     tag: Optional[str] = Query(None, description="Filter by tag name"),
@@ -264,6 +265,9 @@ async def list_papers(
 ):
     """List papers with pagination and filtering."""
     try:
+        # Use offset if provided, otherwise use skip
+        actual_offset = offset if offset is not None else skip
+
         # Build filters
         filters = {}
         if author:
@@ -300,7 +304,7 @@ async def list_papers(
                 CollectionModel.name.ilike(f"%{filters['collection']}%")
             )
 
-        db_papers = query.offset(skip).limit(limit).all()
+        db_papers = query.offset(actual_offset).limit(limit).all()
 
         # Get total count for pagination
         total_query = db.query(PaperModel)
@@ -328,9 +332,9 @@ async def list_papers(
         return PaginatedResponse[Paper](
             items=api_papers,
             total=total,
-            skip=skip,
+            skip=actual_offset,
             limit=limit,
-            has_next=(skip + limit) < total
+            has_next=(actual_offset + limit) < total
         )
 
     except Exception as e:

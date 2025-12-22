@@ -311,8 +311,14 @@ class TriagerAgent(BaseAgent):
             return {"error": "One or both papers not found"}
 
         # Format papers for prompt
-        paper_a_text = f"{paper_a['title']} ({paper_a['authors']}, {paper_a.get('year', 'N/A')})\n{paper_a.get('preview', '')[:300]}"
-        paper_b_text = f"{paper_b['title']} ({paper_b['authors']}, {paper_b.get('year', 'N/A')})\n{paper_b.get('preview', '')[:300]}"
+        paper_a_text = (
+            f"{paper_a['title']} ({paper_a['authors']}, {paper_a.get('year', 'N/A')})\n"
+            f"{paper_a.get('preview', '')[:300]}"
+        )
+        paper_b_text = (
+            f"{paper_b['title']} ({paper_b['authors']}, {paper_b.get('year', 'N/A')})\n"
+            f"{paper_b.get('preview', '')[:300]}"
+        )
 
         # Format prompt
         prompt = self._format_prompt(

@@ -218,6 +218,74 @@ The service automatically:
 3. Stores vectors in ChromaDB
 4. Makes papers searchable within ~30 seconds
 
+## External API Integration
+
+The service integrates with multiple academic APIs for metadata enrichment and PDF acquisition:
+
+| API | Purpose | Rate Limit |
+|-----|---------|------------|
+| CrossRef | DOI resolution, citation data | 50 req/sec with email |
+| OpenAlex | Comprehensive academic metadata | 10 req/sec with email |
+| Semantic Scholar | Paper search, citation counts | 1 req/sec with API key |
+| Springer Meta v2 | Nature/Springer publications | Standard |
+| Springer Open Access | Free full-text PDFs | Standard |
+| Unpaywall | Open access PDF URLs | 100K req/day |
+| arXiv | Preprints and e-prints | No limit |
+| PubMed | Biomedical literature | 10 req/sec with email |
+
+All APIs use exponential backoff for rate limiting (configured in `src/services/external_search.py`).
+
+## Data Enrichment Scripts
+
+### Enrich Paper Metadata
+```bash
+# Enrich papers missing abstracts using external APIs
+mamba run -n litai python scripts/enrich_papers.py
+```
+
+This script:
+- Fetches papers with missing/short abstracts
+- Tries CrossRef → OpenAlex → Semantic Scholar → arXiv
+- Captures citation counts from Semantic Scholar
+- Updates papers via the literature-database API
+
+### Acquire Open Access PDFs
+```bash
+# Download PDFs and extract full text
+mamba run -n litai python scripts/acquire_pdfs.py
+```
+
+This script:
+- Finds papers without PDFs but with DOI/arXiv ID
+- Checks Unpaywall → Springer OA → Semantic Scholar → arXiv
+- Downloads PDFs to `data/pdfs/`
+- Extracts full text using pdfplumber
+- Updates database with file_path, full_text, word_count
+
+### Sync Papers to Vectorstore
+```bash
+# Sync all papers from database to ChromaDB
+mamba run -n litai python scripts/sync_papers.py
+```
+
+## Overnight Development
+
+The project is configured for autonomous overnight development with TDD:
+
+```bash
+# Configuration in .overnight-dev.json
+# Git hooks installed at repo root
+
+# Run both service tests (252 total)
+cd infrastructure/literature-database && mamba run -n litai pytest tests/ -q
+cd infrastructure/literature-ai && mamba run -n litai pytest tests/ -q
+```
+
+Git hooks enforce:
+- All tests must pass before commit
+- Linting with flake8
+- Conventional commit format
+
 ## Troubleshooting
 
 ### GPU Memory Issues

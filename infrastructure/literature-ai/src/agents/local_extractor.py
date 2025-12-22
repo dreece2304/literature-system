@@ -111,7 +111,8 @@ Return ONLY valid JSON with this exact structure:
 
 Guidelines:
 - paper_type: research_article, review, conference, book_chapter, thesis, or preprint
-- topics: mld_growth, ald_growth, stability, spectroscopy, ftir, xps, mechanism, euv_lithography, resist_performance, alucone, zincone, etc.
+- topics: mld_growth, ald_growth, stability, spectroscopy, ftir, xps, mechanism,
+  euv_lithography, resist_performance, alucone, zincone, etc.
 - key_findings: 3-7 findings with evidence
 - Be factual and precise"""
             },

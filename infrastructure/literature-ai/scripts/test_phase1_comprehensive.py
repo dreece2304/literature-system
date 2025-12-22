@@ -11,12 +11,6 @@ Tests:
 
 import asyncio
 import json
-import sys
-from pathlib import Path
-
-# Add project root to path
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
 
 from src.agents.triager import get_triager_agent
 from src.services.search_service import get_search_service
@@ -342,4 +336,4 @@ async def main():
 
 if __name__ == "__main__":
     exit_code = asyncio.run(main())
-    sys.exit(exit_code)
+    exit(exit_code)

@@ -21,13 +21,38 @@ import os
 import re
 import time
 import asyncio
+import random
 import httpx
 import xml.etree.ElementTree as ET
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass
+from loguru import logger
 from dotenv import load_dotenv
 
 load_dotenv()
+
+
+# Retry configuration for exponential backoff
+@dataclass
+class RetryConfig:
+    """Configuration for API request retry behavior."""
+    max_retries: int = 3
+    base_delay: float = 1.0  # Initial delay in seconds
+    max_delay: float = 60.0  # Maximum delay cap
+    exponential_base: float = 2.0  # Multiplier for each retry
+    jitter: bool = True  # Add random jitter to prevent thundering herd
+
+
+# Default retry configs per API (some APIs are stricter than others)
+RETRY_CONFIGS = {
+    "crossref": RetryConfig(max_retries=3, base_delay=2.0),
+    "semantic_scholar": RetryConfig(max_retries=5, base_delay=5.0),  # Very strict
+    "openalex": RetryConfig(max_retries=3, base_delay=1.0),
+    "arxiv": RetryConfig(max_retries=3, base_delay=5.0),
+    "pubmed": RetryConfig(max_retries=3, base_delay=2.0),
+    "unpaywall": RetryConfig(max_retries=3, base_delay=2.0),
+    "springer": RetryConfig(max_retries=3, base_delay=2.0),
+}
 
 
 # Rate limit settings (seconds between requests per API)
@@ -59,13 +84,23 @@ class PaperResult:
 
 
 class RateLimiter:
-    """Simple rate limiter that tracks last request time per API."""
+    """Rate limiter with exponential backoff for API requests."""
 
     def __init__(self):
         self._last_request: Dict[str, float] = {}
+        self._backoff_until: Dict[str, float] = {}  # Track backoff periods per API
+        self._retry_count: Dict[str, int] = {}  # Track consecutive retries per API
 
     async def wait(self, api_name: str):
         """Wait if needed to respect rate limit for the given API."""
+        # Check if we're in a backoff period
+        backoff_end = self._backoff_until.get(api_name, 0)
+        if backoff_end > time.time():
+            wait_time = backoff_end - time.time()
+            logger.debug(f"[{api_name}] In backoff period, waiting {wait_time:.1f}s")
+            await asyncio.sleep(wait_time)
+
+        # Standard rate limiting
         if api_name not in RATE_LIMITS:
             return
 
@@ -79,6 +114,56 @@ class RateLimiter:
 
         self._last_request[api_name] = time.time()
 
+    def calculate_backoff_delay(self, api_name: str, retry_attempt: int) -> float:
+        """Calculate exponential backoff delay with jitter."""
+        config = RETRY_CONFIGS.get(api_name, RetryConfig())
+
+        # Exponential backoff: base_delay * (2 ^ retry_attempt)
+        delay = config.base_delay * (config.exponential_base ** retry_attempt)
+
+        # Cap at max delay
+        delay = min(delay, config.max_delay)
+
+        # Add jitter (randomize between 50% and 100% of delay) to prevent thundering herd
+        if config.jitter:
+            delay = delay * (0.5 + random.random() * 0.5)
+
+        return delay
+
+    async def handle_rate_limit(self, api_name: str, retry_attempt: int = 0) -> bool:
+        """
+        Handle a 429 rate limit response with exponential backoff.
+
+        Returns True if should retry, False if max retries exceeded.
+        """
+        config = RETRY_CONFIGS.get(api_name, RetryConfig())
+
+        if retry_attempt >= config.max_retries:
+            logger.warning(f"[{api_name}] Max retries ({config.max_retries}) exceeded")
+            self._retry_count[api_name] = 0  # Reset for next request
+            return False
+
+        delay = self.calculate_backoff_delay(api_name, retry_attempt)
+        self._backoff_until[api_name] = time.time() + delay
+        self._retry_count[api_name] = retry_attempt + 1
+
+        logger.info(
+            f"[{api_name}] Rate limited (429). "
+            f"Retry {retry_attempt + 1}/{config.max_retries}, waiting {delay:.1f}s"
+        )
+
+        await asyncio.sleep(delay)
+        return True
+
+    def reset_retries(self, api_name: str):
+        """Reset retry count after successful request."""
+        if api_name in self._retry_count:
+            self._retry_count[api_name] = 0
+
+    def get_retry_count(self, api_name: str) -> int:
+        """Get current retry count for an API."""
+        return self._retry_count.get(api_name, 0)
+
 
 class ExternalSearchService:
     """Service for searching external academic databases."""
@@ -91,11 +176,100 @@ class ExternalSearchService:
         self.pubmed_email = os.getenv("PUBMED_EMAIL")
         self.pubmed_tool = os.getenv("PUBMED_TOOL", "literature-ai")
         self.springer_key = os.getenv("SPRINGER_API_KEY")
+        self.springer_oa_key = os.getenv("SPRINGER_OPENACCESS_API_KEY")
         self.arxiv_enabled = os.getenv("ENABLE_ARXIV", "true").lower() == "true"
         self._rate_limiter = RateLimiter()
 
-    async def find_doi_by_title(self, title: str, author: Optional[str] = None,
-                                 year: Optional[int] = None) -> Optional[PaperResult]:
+    async def _make_request(
+        self,
+        api_name: str,
+        url: str,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        method: str = "GET",
+        timeout: float = 30.0
+    ) -> Tuple[Optional[httpx.Response], bool]:
+        """
+        Make an HTTP request with rate limiting and exponential backoff.
+
+        Returns:
+            Tuple of (response, success). Response may be None if all retries failed.
+        """
+        retry_attempt = 0
+        config = RETRY_CONFIGS.get(api_name, RetryConfig())
+
+        while retry_attempt <= config.max_retries:
+            # Wait for rate limit
+            await self._rate_limiter.wait(api_name)
+
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    if method.upper() == "GET":
+                        response = await client.get(url, params=params, headers=headers)
+                    elif method.upper() == "POST":
+                        response = await client.post(url, params=params, headers=headers)
+                    else:
+                        raise ValueError(f"Unsupported HTTP method: {method}")
+
+                    # Handle rate limit responses
+                    if response.status_code == 429:
+                        # Check Retry-After header if present
+                        retry_after = response.headers.get("Retry-After")
+                        if retry_after:
+                            try:
+                                wait_time = float(retry_after)
+                                logger.info(f"[{api_name}] Rate limited, Retry-After: {wait_time}s")
+                                await asyncio.sleep(wait_time)
+                            except ValueError:
+                                pass  # Ignore invalid Retry-After header
+
+                        should_retry = await self._rate_limiter.handle_rate_limit(api_name, retry_attempt)
+                        if should_retry:
+                            retry_attempt += 1
+                            continue
+                        else:
+                            return response, False
+
+                    # Handle other transient errors (503 Service Unavailable, 502 Bad Gateway)
+                    if response.status_code in (502, 503, 504):
+                        logger.warning(f"[{api_name}] Server error {response.status_code}, retrying...")
+                        should_retry = await self._rate_limiter.handle_rate_limit(api_name, retry_attempt)
+                        if should_retry:
+                            retry_attempt += 1
+                            continue
+                        else:
+                            return response, False
+
+                    # Success or client error (4xx) - don't retry client errors
+                    self._rate_limiter.reset_retries(api_name)
+                    return response, True
+
+            except httpx.TimeoutException:
+                logger.warning(f"[{api_name}] Request timeout, retry {retry_attempt + 1}/{config.max_retries}")
+                retry_attempt += 1
+                if retry_attempt <= config.max_retries:
+                    delay = self._rate_limiter.calculate_backoff_delay(api_name, retry_attempt)
+                    await asyncio.sleep(delay)
+                continue
+
+            except httpx.ConnectError as e:
+                logger.warning(f"[{api_name}] Connection error: {e}, retry {retry_attempt + 1}/{config.max_retries}")
+                retry_attempt += 1
+                if retry_attempt <= config.max_retries:
+                    delay = self._rate_limiter.calculate_backoff_delay(api_name, retry_attempt)
+                    await asyncio.sleep(delay)
+                continue
+
+            except Exception as e:
+                logger.error(f"[{api_name}] Unexpected error: {e}")
+                return None, False
+
+        logger.warning(f"[{api_name}] All retries exhausted")
+        return None, False
+
+    async def find_doi_by_title(
+            self, title: str, author: Optional[str] = None,
+            year: Optional[int] = None) -> Optional[PaperResult]:
         """Find DOI for a paper by title, optionally filtering by author/year."""
         # Try CrossRef first (most reliable for DOIs)
         result = await self._search_crossref(title, author, year)
@@ -188,27 +362,27 @@ class ExternalSearchService:
         return None
 
     # ==================== CrossRef ====================
-    async def _search_crossref(self, title: str, author: Optional[str] = None,
-                                year: Optional[int] = None) -> Optional[PaperResult]:
+    async def _search_crossref(
+            self, title: str, author: Optional[str] = None,
+            year: Optional[int] = None) -> Optional[PaperResult]:
         """Search CrossRef for a paper by title."""
         results = await self._search_crossref_multi(title, 5, author, year)
         if results:
             return results[0]
         return None
 
-    async def _search_crossref_multi(self, query: str, limit: int = 5,
-                                      author: Optional[str] = None,
-                                      year: Optional[int] = None) -> List[PaperResult]:
+    async def _search_crossref_multi(
+            self, query: str, limit: int = 5,
+            author: Optional[str] = None,
+            year: Optional[int] = None) -> List[PaperResult]:
         """Search CrossRef returning multiple results."""
-        # Rate limit
-        await self._rate_limiter.wait("crossref")
-
         base_url = "https://api.crossref.org/works"
 
         params = {
             "query": query,
             "rows": limit,
-            "select": "DOI,title,author,published-print,published-online,container-title,abstract,is-referenced-by-count"
+            "select": ("DOI,title,author,published-print,published-online,"
+                       "container-title,abstract,is-referenced-by-count")
         }
         if author:
             first_author = author.split(" and ")[0].split(",")[0].strip()
@@ -219,56 +393,56 @@ class ExternalSearchService:
             headers["User-Agent"] = f"LiteratureAI/1.0 (mailto:{self.crossref_email})"
 
         results = []
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.get(base_url, params=params, headers=headers)
-                if response.status_code != 200:
-                    return results
+        try:
+            response, success = await self._make_request("crossref", base_url, params=params, headers=headers)
+            if not success or response is None or response.status_code != 200:
+                return results
 
-                data = response.json()
-                items = data.get("message", {}).get("items", [])
+            data = response.json()
+            items = data.get("message", {}).get("items", [])
 
-                for item in items:
-                    item_title = item.get("title", [""])[0] if item.get("title") else ""
-                    score = self._title_similarity(query, item_title)
+            for item in items:
+                item_title = item.get("title", [""])[0] if item.get("title") else ""
+                score = self._title_similarity(query, item_title)
 
-                    item_year = None
-                    if item.get("published-print"):
-                        item_year = item["published-print"].get("date-parts", [[None]])[0][0]
-                    elif item.get("published-online"):
-                        item_year = item["published-online"].get("date-parts", [[None]])[0][0]
+                item_year = None
+                if item.get("published-print"):
+                    item_year = item["published-print"].get("date-parts", [[None]])[0][0]
+                elif item.get("published-online"):
+                    item_year = item["published-online"].get("date-parts", [[None]])[0][0]
 
-                    if year and item_year and year == item_year:
-                        score += 0.1
+                if year and item_year and year == item_year:
+                    score += 0.1
 
-                    authors = []
-                    for auth in item.get("author", []):
-                        name = f"{auth.get('given', '')} {auth.get('family', '')}".strip()
-                        if name:
-                            authors.append(name)
+                authors = []
+                for auth in item.get("author", []):
+                    name = f"{auth.get('given', '')} {auth.get('family', '')}".strip()
+                    if name:
+                        authors.append(name)
 
-                    results.append(PaperResult(
-                        title=item_title,
-                        authors=authors,
-                        year=item_year,
-                        doi=item.get("DOI"),
-                        journal=item.get("container-title", [""])[0] if item.get("container-title") else None,
-                        abstract=item.get("abstract"),
-                        source="crossref",
-                        confidence=score,
-                        citation_count=item.get("is-referenced-by-count")
-                    ))
+                results.append(PaperResult(
+                    title=item_title,
+                    authors=authors,
+                    year=item_year,
+                    doi=item.get("DOI"),
+                    journal=item.get("container-title", [""])[0] if item.get("container-title") else None,
+                    abstract=item.get("abstract"),
+                    source="crossref",
+                    confidence=score,
+                    citation_count=item.get("is-referenced-by-count")
+                ))
 
-            except Exception as e:
-                print(f"CrossRef error: {e}")
+        except Exception as e:
+            logger.error(f"CrossRef error: {e}")
 
         # Sort by confidence
         results.sort(key=lambda x: x.confidence, reverse=True)
         return results
 
     # ==================== Semantic Scholar ====================
-    async def _search_semantic_scholar(self, title: str, author: Optional[str] = None,
-                                        year: Optional[int] = None) -> Optional[PaperResult]:
+    async def _search_semantic_scholar(
+            self, title: str, author: Optional[str] = None,
+            year: Optional[int] = None) -> Optional[PaperResult]:
         """Search Semantic Scholar for a paper by title."""
         results = await self._search_semantic_scholar_query(title, 5)
         if not results:
@@ -289,9 +463,6 @@ class ExternalSearchService:
 
     async def _search_semantic_scholar_query(self, query: str, limit: int = 10) -> List[PaperResult]:
         """General search on Semantic Scholar."""
-        # Rate limit - strict 1 req/sec
-        await self._rate_limiter.wait("semantic_scholar")
-
         base_url = "https://api.semanticscholar.org/graph/v1/paper/search"
 
         params = {
@@ -306,54 +477,54 @@ class ExternalSearchService:
 
         results = []
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.get(base_url, params=params, headers=headers)
-                if response.status_code != 200:
-                    print(f"Semantic Scholar returned {response.status_code}")
-                    return results
+        try:
+            response, success = await self._make_request("semantic_scholar", base_url, params=params, headers=headers)
+            if not success or response is None:
+                logger.warning("Semantic Scholar request failed after retries")
+                return results
+            if response.status_code != 200:
+                logger.debug(f"Semantic Scholar returned {response.status_code}")
+                return results
 
-                data = response.json()
+            data = response.json()
 
-                for paper in data.get("data", []):
-                    authors = [a.get("name", "") for a in paper.get("authors", [])]
-                    doi = paper.get("externalIds", {}).get("DOI")
-                    arxiv_id = paper.get("externalIds", {}).get("ArXiv")
-                    pdf_url = None
-                    if paper.get("openAccessPdf"):
-                        pdf_url = paper["openAccessPdf"].get("url")
+            for paper in data.get("data", []):
+                authors = [a.get("name", "") for a in paper.get("authors", [])]
+                doi = paper.get("externalIds", {}).get("DOI")
+                arxiv_id = paper.get("externalIds", {}).get("ArXiv")
+                pdf_url = None
+                if paper.get("openAccessPdf"):
+                    pdf_url = paper["openAccessPdf"].get("url")
 
-                    results.append(PaperResult(
-                        title=paper.get("title", ""),
-                        authors=authors,
-                        year=paper.get("year"),
-                        doi=doi,
-                        journal=paper.get("venue"),
-                        abstract=paper.get("abstract"),
-                        pdf_url=pdf_url,
-                        source="semantic_scholar",
-                        confidence=1.0,
-                        citation_count=paper.get("citationCount"),
-                        arxiv_id=arxiv_id
-                    ))
+                results.append(PaperResult(
+                    title=paper.get("title", ""),
+                    authors=authors,
+                    year=paper.get("year"),
+                    doi=doi,
+                    journal=paper.get("venue"),
+                    abstract=paper.get("abstract"),
+                    pdf_url=pdf_url,
+                    source="semantic_scholar",
+                    confidence=1.0,
+                    citation_count=paper.get("citationCount"),
+                    arxiv_id=arxiv_id
+                ))
 
-            except Exception as e:
-                print(f"Semantic Scholar query error: {e}")
+        except Exception as e:
+            logger.error(f"Semantic Scholar query error: {e}")
 
         return results
 
     # ==================== OpenAlex ====================
     async def _search_openalex(self, query: str, limit: int = 10) -> List[PaperResult]:
         """Search OpenAlex for papers."""
-        # Rate limit
-        await self._rate_limiter.wait("openalex")
-
         base_url = "https://api.openalex.org/works"
 
         params = {
             "search": query,
             "per_page": limit,
-            "select": "id,doi,title,authorships,publication_year,primary_location,abstract_inverted_index,cited_by_count,open_access"
+            "select": ("id,doi,title,authorships,publication_year,primary_location,"
+                       "abstract_inverted_index,cited_by_count,open_access")
         }
 
         headers = {}
@@ -362,70 +533,70 @@ class ExternalSearchService:
 
         results = []
 
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.get(base_url, params=params, headers=headers)
-                if response.status_code != 200:
-                    print(f"OpenAlex returned {response.status_code}")
-                    return results
+        try:
+            response, success = await self._make_request("openalex", base_url, params=params, headers=headers)
+            if not success or response is None or response.status_code != 200:
+                if response:
+                    logger.debug(f"OpenAlex returned {response.status_code}")
+                return results
 
-                data = response.json()
+            data = response.json()
 
-                for work in data.get("results", []):
-                    # Extract authors
-                    authors = []
-                    for authorship in work.get("authorships", []):
-                        author_name = authorship.get("author", {}).get("display_name")
-                        if author_name:
-                            authors.append(author_name)
+            for work in data.get("results", []):
+                # Extract authors
+                authors = []
+                for authorship in work.get("authorships", []):
+                    author_name = authorship.get("author", {}).get("display_name")
+                    if author_name:
+                        authors.append(author_name)
 
-                    # Extract journal
-                    journal = None
-                    primary_loc = work.get("primary_location", {})
-                    if primary_loc and primary_loc.get("source"):
-                        journal = primary_loc["source"].get("display_name")
+                # Extract journal
+                journal = None
+                primary_loc = work.get("primary_location", {})
+                if primary_loc and primary_loc.get("source"):
+                    journal = primary_loc["source"].get("display_name")
 
-                    # Extract DOI (remove https://doi.org/ prefix)
-                    doi = work.get("doi")
-                    if doi and doi.startswith("https://doi.org/"):
-                        doi = doi[16:]
+                # Extract DOI (remove https://doi.org/ prefix)
+                doi = work.get("doi")
+                if doi and doi.startswith("https://doi.org/"):
+                    doi = doi[16:]
 
-                    # Reconstruct abstract from inverted index
-                    abstract = None
-                    if work.get("abstract_inverted_index"):
-                        try:
-                            inv_idx = work["abstract_inverted_index"]
-                            # Build word positions
-                            positions = []
-                            for word, pos_list in inv_idx.items():
-                                for pos in pos_list:
-                                    positions.append((pos, word))
-                            positions.sort()
-                            abstract = " ".join(word for _, word in positions)
-                        except (KeyError, TypeError):
-                            pass
+                # Reconstruct abstract from inverted index
+                abstract = None
+                if work.get("abstract_inverted_index"):
+                    try:
+                        inv_idx = work["abstract_inverted_index"]
+                        # Build word positions
+                        positions = []
+                        for word, pos_list in inv_idx.items():
+                            for pos in pos_list:
+                                positions.append((pos, word))
+                        positions.sort()
+                        abstract = " ".join(word for _, word in positions)
+                    except (KeyError, TypeError):
+                        pass
 
-                    # Get PDF URL
-                    pdf_url = None
-                    oa = work.get("open_access", {})
-                    if oa.get("oa_url"):
-                        pdf_url = oa["oa_url"]
+                # Get PDF URL
+                pdf_url = None
+                oa = work.get("open_access", {})
+                if oa.get("oa_url"):
+                    pdf_url = oa["oa_url"]
 
-                    results.append(PaperResult(
-                        title=work.get("title", ""),
-                        authors=authors,
-                        year=work.get("publication_year"),
-                        doi=doi,
-                        journal=journal,
-                        abstract=abstract,
-                        pdf_url=pdf_url,
-                        source="openalex",
-                        confidence=1.0,
-                        citation_count=work.get("cited_by_count")
-                    ))
+                results.append(PaperResult(
+                    title=work.get("title", ""),
+                    authors=authors,
+                    year=work.get("publication_year"),
+                    doi=doi,
+                    journal=journal,
+                    abstract=abstract,
+                    pdf_url=pdf_url,
+                    source="openalex",
+                    confidence=1.0,
+                    citation_count=work.get("cited_by_count")
+                ))
 
-            except Exception as e:
-                print(f"OpenAlex error: {e}")
+        except Exception as e:
+            logger.error(f"OpenAlex error: {e}")
 
         return results
 
@@ -596,6 +767,132 @@ class ExternalSearchService:
                 print(f"Springer error: {e}")
 
         return results
+
+    async def _search_springer_openaccess(
+        self, query: str, limit: int = 10
+    ) -> List[PaperResult]:
+        """Search Springer Open Access for free full-text PDFs.
+
+        Uses the Springer Open Access API which provides access to
+        open access content from SpringerOpen, BMC, and Nature journals.
+        """
+        if not self.springer_oa_key:
+            return []
+
+        await self._rate_limiter.wait("crossref")  # Reuse crossref rate limit
+
+        base_url = "https://api.springernature.com/openaccess/json"
+
+        params = {
+            "q": f'title:"{query}"',
+            "api_key": self.springer_oa_key,
+            "p": limit,
+            "s": 1  # Start from first result
+        }
+
+        results = []
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.get(base_url, params=params)
+                if response.status_code != 200:
+                    logger.debug(f"Springer OA returned {response.status_code}")
+                    return results
+
+                data = response.json()
+
+                for record in data.get("records", []):
+                    # Extract authors
+                    authors = []
+                    for creator in record.get("creators", []):
+                        name = creator.get("creator", "")
+                        if name:
+                            authors.append(name)
+
+                    # Extract DOI
+                    doi = None
+                    for identifier in record.get("identifier", []):
+                        if identifier.get("type") == "doi":
+                            doi = identifier.get("value")
+                            break
+
+                    # Extract year from publicationDate
+                    year = None
+                    pub_date = record.get("publicationDate")
+                    if pub_date and len(pub_date) >= 4:
+                        try:
+                            year = int(pub_date[:4])
+                        except ValueError:
+                            pass
+
+                    # Get PDF URL - Open Access API provides direct PDF links
+                    pdf_url = None
+                    for url_info in record.get("url", []):
+                        if url_info.get("format") == "pdf":
+                            pdf_url = url_info.get("value")
+                            break
+
+                    # Also check openAccess field for PDF
+                    if not pdf_url:
+                        oa_info = record.get("openaccess")
+                        if oa_info and isinstance(oa_info, dict):
+                            pdf_url = oa_info.get("link")
+
+                    results.append(PaperResult(
+                        title=record.get("title", ""),
+                        authors=authors,
+                        year=year,
+                        doi=doi,
+                        journal=record.get("publicationName"),
+                        abstract=record.get("abstract"),
+                        pdf_url=pdf_url,
+                        source="springer_openaccess",
+                        confidence=1.0
+                    ))
+
+            except Exception as e:
+                logger.error(f"Springer Open Access error: {e}")
+
+        return results
+
+    async def search_springer_openaccess_by_doi(self, doi: str) -> Optional[str]:
+        """Search Springer Open Access for a PDF by DOI.
+
+        Returns the PDF URL if found, None otherwise.
+        """
+        if not self.springer_oa_key:
+            return None
+
+        await self._rate_limiter.wait("crossref")
+
+        base_url = "https://api.springernature.com/openaccess/json"
+
+        params = {
+            "q": f'doi:{doi}',
+            "api_key": self.springer_oa_key,
+            "p": 1
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            try:
+                response = await client.get(base_url, params=params)
+                if response.status_code != 200:
+                    return None
+
+                data = response.json()
+                records = data.get("records", [])
+
+                if records:
+                    record = records[0]
+                    # Check for PDF URL
+                    for url_info in record.get("url", []):
+                        if url_info.get("format") == "pdf":
+                            return url_info.get("value")
+
+            except Exception as e:
+                logger.error(f"Springer OA DOI lookup error: {e}")
+
+        return None
 
     # ==================== PubMed ====================
     async def _search_pubmed(self, query: str, limit: int = 10) -> List[PaperResult]:
@@ -838,8 +1135,9 @@ class ExternalSearchService:
         # Method 2: Query coverage - what fraction of query words appear in result?
         # This helps when query is short but all words match
         if content_words1:
-            query_matches = sum(1 for w1 in content_words1
-                              if any(self._fuzzy_word_match(w1, w2) for w2 in content_words2))
+            query_matches = sum(
+                1 for w1 in content_words1
+                if any(self._fuzzy_word_match(w1, w2) for w2 in content_words2))
             query_coverage = query_matches / len(content_words1)
         else:
             query_coverage = 0.0
@@ -905,9 +1203,10 @@ class ExternalSearchService:
 
         return 0.0  # No author match
 
-    def calculate_match_confidence(self, query_title: str, result: PaperResult,
-                                    query_author: Optional[str] = None,
-                                    query_year: Optional[int] = None) -> float:
+    def calculate_match_confidence(
+            self, query_title: str, result: PaperResult,
+            query_author: Optional[str] = None,
+            query_year: Optional[int] = None) -> float:
         """
         Calculate comprehensive match confidence score.
 
@@ -941,10 +1240,10 @@ class ExternalSearchService:
 
         return round(confidence, 3)
 
-
-    async def find_doi_by_citation(self, title: str, author: Optional[str] = None,
-                                     year: Optional[int] = None,
-                                     journal: Optional[str] = None) -> Optional[PaperResult]:
+    async def find_doi_by_citation(
+            self, title: str, author: Optional[str] = None,
+            year: Optional[int] = None,
+            journal: Optional[str] = None) -> Optional[PaperResult]:
         """
         Find DOI using full citation metadata with improved matching.
 

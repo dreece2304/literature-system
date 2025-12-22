@@ -5,13 +5,9 @@ Quick test script for literature-ai API endpoints.
 Tests basic connectivity and response structure for all main endpoints.
 """
 
-import sys
-import requests
 import json
-from pathlib import Path
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+import requests
 
 BASE_URL = "http://localhost:8002"
 
@@ -130,4 +126,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    exit(main())

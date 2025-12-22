@@ -128,7 +128,8 @@ Extract and return JSON with this structure:
 
 Guidelines:
 - paper_type: Choose the most appropriate type
-- topics: Select from common topics in the field (mld_growth, ald_growth, stability, spectroscopy, ftir, xps, mechanism, euv_lithography, resist_performance, etc.)
+- topics: Select from common topics in the field (mld_growth, ald_growth, stability,
+  spectroscopy, ftir, xps, mechanism, euv_lithography, resist_performance, etc.)
 - key_findings: Extract 3-10 key findings with evidence
 - Be precise and factual, only include information from the paper"""
             },
