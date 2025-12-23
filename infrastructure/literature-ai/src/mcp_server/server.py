@@ -70,18 +70,18 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
     ]:
         return await call_paper_tool(name, arguments)
 
-    # Search tools
-    if name.startswith("search_") or name in [
-        "semantic_search", "keyword_search", "search_by_author", "search_by_tag"
-    ]:
-        return await call_search_tool(name, arguments)
-
-    # External API tools
+    # External API tools (check BEFORE search tools since search_external_papers starts with "search_")
     if name.startswith("external_") or name in [
         "lookup_paper_metadata", "find_open_access_pdf", "enrich_paper",
         "search_external_papers", "get_citation_count"
     ]:
         return await call_external_tool(name, arguments)
+
+    # Search tools
+    if name.startswith("search_") or name in [
+        "semantic_search", "keyword_search", "search_by_author", "search_by_tag"
+    ]:
+        return await call_search_tool(name, arguments)
 
     # Citation tools
     if name.startswith("citation_") or name in [

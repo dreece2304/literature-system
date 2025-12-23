@@ -145,29 +145,30 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 response.raise_for_status()
                 data = response.json()
 
-                # Format results
+                # Format results - API returns {"paper": {...}, "score": ...} structure
                 papers = data.get("papers", [])
+                formatted_papers = []
+                for p in papers:
+                    paper_data = p.get("paper", {})
+                    abstract = paper_data.get("abstract", "")
+                    formatted_papers.append({
+                        "id": paper_data.get("id"),
+                        "title": paper_data.get("title"),
+                        "year": paper_data.get("year"),
+                        "authors": [
+                            a.get("name", a) if isinstance(a, dict) else a
+                            for a in paper_data.get("authors", [])
+                        ],
+                        "score": p.get("score", 0),
+                        "abstract_preview": (
+                            abstract[:200] + "..." if abstract and len(abstract) > 200
+                            else abstract
+                        ),
+                    })
                 result = {
                     "query": arguments["query"],
                     "total_results": len(papers),
-                    "papers": [
-                        {
-                            "id": p.get("id"),
-                            "title": p.get("title"),
-                            "year": p.get("year"),
-                            "authors": [
-                                a.get("name", a) if isinstance(a, dict) else a
-                                for a in p.get("authors", [])
-                            ],
-                            "score": p.get("score", 0),
-                            "abstract_preview": (
-                                p.get("abstract", "")[:200] + "..."
-                                if p.get("abstract") and len(p.get("abstract", "")) > 200
-                                else p.get("abstract", "")
-                            ),
-                        }
-                        for p in papers
-                    ],
+                    "papers": formatted_papers,
                 }
                 return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
@@ -179,10 +180,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     from src.services.search_service import SearchService
 
                     search_service = SearchService()
-                    results = await search_service.semantic_search(
+                    results = search_service.search(
                         query=arguments["query"],
-                        limit=arguments.get("limit", 10),
-                        min_score=arguments.get("min_similarity", 0.5),
+                        top_k=arguments.get("limit", 10),
+                        score_threshold=arguments.get("min_similarity", 0.5),
                     )
 
                     formatted = {
@@ -194,7 +195,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                                 "id": r.paper_id,
                                 "title": r.title,
                                 "similarity": round(r.score, 3),
-                                "preview": r.preview[:200] + "..." if len(r.preview) > 200 else r.preview,
+                                "preview": r.text[:200] + "..." if len(r.text) > 200 else r.text,
                             }
                             for r in results
                         ],
