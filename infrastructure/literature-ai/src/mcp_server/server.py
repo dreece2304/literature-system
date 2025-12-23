@@ -56,6 +56,10 @@ from .tools.import_export import (
     list_tools as list_import_export_tools,
     call_tool as call_import_export_tool,
 )
+from .tools.project import (
+    list_tools as list_project_tools,
+    call_tool as call_project_tool,
+)
 from .resources.handlers import (
     list_resources,
     read_resource,
@@ -77,6 +81,7 @@ async def handle_list_tools() -> list[Tool]:
     tools.extend(await list_collection_tools())
     tools.extend(await list_note_tools())
     tools.extend(await list_import_export_tools())
+    tools.extend(await list_project_tools())
     return tools
 
 
@@ -137,6 +142,17 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         "import_bibtex", "export_papers", "import_from_external", "export_collection"
     ]:
         return await call_import_export_tool(name, arguments)
+
+    # Project management tools
+    if name in [
+        "parse_bib_file", "link_bib_to_database",
+        "scan_tex_citations", "get_citation_locations",
+        "citation_health_check", "find_orphan_citations", "find_missing_citations",
+        "find_incomplete_bib_entries", "find_duplicate_bib_entries",
+        "sync_bib_from_database", "import_bib_to_database", "export_database_to_bib",
+        "get_project_config", "set_project_config"
+    ]:
+        return await call_project_tool(name, arguments)
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
