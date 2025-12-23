@@ -2,6 +2,7 @@
 from src.api.routers.integration import router as integration_router
 from src.api.routers.citations import router as citations_router
 from src.api.routers.collections import router as collections_router
+from src.api.routers.notes import router as notes_router
 from src.api.converters import (
     db_paper_to_api,
     api_paper_create_to_db_data,
@@ -152,10 +153,11 @@ app = FastAPI(
     redoc_url="/redoc"
 )
 
-# Include routers for citation, integration, and collection endpoints
+# Include routers for citation, integration, collection, and note endpoints
 app.include_router(citations_router)
 app.include_router(integration_router)
 app.include_router(collections_router)
+app.include_router(notes_router)
 
 # Configure CORS from config
 app.add_middleware(
