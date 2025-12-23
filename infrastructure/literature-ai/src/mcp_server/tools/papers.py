@@ -234,6 +234,61 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="batch_update_papers",
+            description="Bulk update tags, read_status, or rating for multiple papers",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "List of paper IDs to update",
+                    },
+                    "tags_to_add": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tags to add to all papers",
+                    },
+                    "tags_to_remove": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tags to remove from all papers",
+                    },
+                    "read_status": {
+                        "type": "string",
+                        "enum": ["unread", "reading", "read"],
+                        "description": "Set read status for all papers",
+                    },
+                    "rating": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 5,
+                        "description": "Set rating for all papers",
+                    },
+                },
+                "required": ["paper_ids"],
+            },
+        ),
+        Tool(
+            name="batch_delete_papers",
+            description="Bulk delete papers (requires confirmation)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "List of paper IDs to delete",
+                    },
+                    "confirm": {
+                        "type": "boolean",
+                        "description": "Must be true to execute deletion",
+                    },
+                },
+                "required": ["paper_ids", "confirm"],
+            },
+        ),
     ]
 
 
@@ -372,6 +427,111 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 )
                 response.raise_for_status()
                 return [TextContent(type="text", text=json.dumps(response.json(), indent=2))]
+
+            elif name == "batch_update_papers":
+                paper_ids = arguments["paper_ids"]
+                tags_to_add = arguments.get("tags_to_add", [])
+                tags_to_remove = arguments.get("tags_to_remove", [])
+                read_status = arguments.get("read_status")
+                rating = arguments.get("rating")
+
+                results = {"updated": [], "failed": []}
+
+                for paper_id in paper_ids:
+                    try:
+                        # Get current paper
+                        resp = await client.get(f"{api_url}/papers/{paper_id}")
+                        if resp.status_code != 200:
+                            results["failed"].append({"id": paper_id, "error": "not found"})
+                            continue
+
+                        paper_data = resp.json()
+
+                        # Convert authors/tags if objects
+                        if "authors" in paper_data and paper_data["authors"]:
+                            if isinstance(paper_data["authors"][0], dict):
+                                paper_data["authors"] = [
+                                    a.get("name", "") for a in paper_data["authors"]
+                                ]
+                        current_tags = []
+                        if "tags" in paper_data and paper_data["tags"]:
+                            if isinstance(paper_data["tags"][0], dict):
+                                current_tags = [t.get("name", "") for t in paper_data["tags"]]
+                            else:
+                                current_tags = paper_data["tags"]
+                        paper_data.pop("collections", None)
+
+                        # Apply tag changes
+                        new_tags = set(current_tags)
+                        for tag in tags_to_add:
+                            new_tags.add(tag)
+                        for tag in tags_to_remove:
+                            new_tags.discard(tag)
+                        paper_data["tags"] = list(new_tags)
+
+                        # Apply other updates
+                        if read_status:
+                            paper_data["read_status"] = read_status
+                        if rating:
+                            paper_data["rating"] = rating
+
+                        # Update paper
+                        resp = await client.put(f"{api_url}/papers/{paper_id}", json=paper_data)
+                        if resp.status_code in (200, 204):
+                            results["updated"].append(paper_id)
+                        else:
+                            results["failed"].append({"id": paper_id, "error": resp.text[:100]})
+
+                    except Exception as e:
+                        results["failed"].append({"id": paper_id, "error": str(e)})
+
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "status": "completed",
+                        "updated_count": len(results["updated"]),
+                        "failed_count": len(results["failed"]),
+                        "updated": results["updated"],
+                        "failed": results["failed"],
+                    }, indent=2),
+                )]
+
+            elif name == "batch_delete_papers":
+                paper_ids = arguments["paper_ids"]
+                confirm = arguments.get("confirm", False)
+
+                if not confirm:
+                    return [TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "status": "error",
+                            "message": "Deletion requires confirm=true",
+                            "paper_ids": paper_ids,
+                        }, indent=2),
+                    )]
+
+                results = {"deleted": [], "failed": []}
+
+                for paper_id in paper_ids:
+                    try:
+                        resp = await client.delete(f"{api_url}/papers/{paper_id}")
+                        if resp.status_code in (200, 204):
+                            results["deleted"].append(paper_id)
+                        else:
+                            results["failed"].append({"id": paper_id, "error": resp.text[:100]})
+                    except Exception as e:
+                        results["failed"].append({"id": paper_id, "error": str(e)})
+
+                return [TextContent(
+                    type="text",
+                    text=json.dumps({
+                        "status": "completed",
+                        "deleted_count": len(results["deleted"]),
+                        "failed_count": len(results["failed"]),
+                        "deleted": results["deleted"],
+                        "failed": results["failed"],
+                    }, indent=2),
+                )]
 
             else:
                 return [TextContent(type="text", text=f"Unknown paper tool: {name}")]

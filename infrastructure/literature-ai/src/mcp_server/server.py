@@ -69,9 +69,10 @@ async def handle_list_tools() -> list[Tool]:
 async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Route tool calls to appropriate handlers."""
     # Paper tools
-    if name.startswith("paper_") or name in [
+    if name.startswith("paper_") or name.startswith("batch_") or name in [
         "search_papers", "get_paper", "add_paper", "update_paper", "list_papers",
-        "get_paper_content", "store_extraction", "get_extraction_queue"
+        "get_paper_content", "store_extraction", "get_extraction_queue",
+        "batch_update_papers", "batch_delete_papers"
     ]:
         return await call_paper_tool(name, arguments)
 
