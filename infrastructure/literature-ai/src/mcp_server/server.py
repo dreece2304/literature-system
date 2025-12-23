@@ -44,6 +44,10 @@ from .tools.pdf import (
     list_tools as list_pdf_tools,
     call_tool as call_pdf_tool,
 )
+from .tools.collections import (
+    list_tools as list_collection_tools,
+    call_tool as call_collection_tool,
+)
 from .resources.handlers import (
     list_resources,
     read_resource,
@@ -62,6 +66,7 @@ async def handle_list_tools() -> list[Tool]:
     tools.extend(await list_external_tools())
     tools.extend(await list_citation_tools())
     tools.extend(await list_pdf_tools())
+    tools.extend(await list_collection_tools())
     return tools
 
 
@@ -101,6 +106,14 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         "acquire_paper_pdf", "get_pdf_status", "find_duplicates"
     ]:
         return await call_pdf_tool(name, arguments)
+
+    # Collection tools
+    if name.startswith("collection_") or name in [
+        "list_collections", "get_collection", "create_collection",
+        "update_collection", "delete_collection", "add_papers_to_collection",
+        "remove_papers_from_collection", "get_collection_children"
+    ]:
+        return await call_collection_tool(name, arguments)
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
