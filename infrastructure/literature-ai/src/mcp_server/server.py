@@ -52,6 +52,10 @@ from .tools.notes import (
     list_tools as list_note_tools,
     call_tool as call_note_tool,
 )
+from .tools.import_export import (
+    list_tools as list_import_export_tools,
+    call_tool as call_import_export_tool,
+)
 from .resources.handlers import (
     list_resources,
     read_resource,
@@ -72,6 +76,7 @@ async def handle_list_tools() -> list[Tool]:
     tools.extend(await list_pdf_tools())
     tools.extend(await list_collection_tools())
     tools.extend(await list_note_tools())
+    tools.extend(await list_import_export_tools())
     return tools
 
 
@@ -126,6 +131,12 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         "get_paper_notes", "delete_paper_notes"
     ]:
         return await call_note_tool(name, arguments)
+
+    # Import/Export tools
+    if name.startswith("import_") or name.startswith("export_") or name in [
+        "import_bibtex", "export_papers", "import_from_external", "export_collection"
+    ]:
+        return await call_import_export_tool(name, arguments)
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
