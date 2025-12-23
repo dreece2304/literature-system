@@ -7,6 +7,8 @@ from typing import Any
 import httpx
 from mcp.types import Tool, TextContent
 
+from src.services.external_search import ExternalSearchService
+
 API_BASE_URL = os.getenv("LITERATURE_DB_URL", "http://localhost:8001")
 
 
@@ -367,30 +369,93 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 tags = arguments.get("tags", [])
                 collection_id = arguments.get("collection_id")
 
-                # Look up metadata
-                metadata = None
+                # Look up metadata using multiple sources for corroboration
+                external_service = ExternalSearchService()
+                sources_checked = []
+                all_results = {}
+
+                # Query multiple APIs based on what we have
                 if doi:
-                    # Use existing external lookup
-                    resp = await client.get(
-                        f"{api_url}/api/v1/external/lookup",
-                        params={"doi": doi}
-                    )
-                    if resp.status_code == 200:
-                        metadata = resp.json()
+                    # CrossRef - primary for DOI
+                    try:
+                        cr_results = await external_service._search_crossref_multi(f"doi:{doi}", limit=1)
+                        if cr_results:
+                            all_results["crossref"] = cr_results[0]
+                            sources_checked.append("crossref")
+                    except Exception:
+                        pass
+
+                    # OpenAlex - secondary for DOI
+                    try:
+                        oa_results = await external_service._search_openalex(doi, limit=1)
+                        if oa_results:
+                            all_results["openalex"] = oa_results[0]
+                            sources_checked.append("openalex")
+                    except Exception:
+                        pass
+
                 elif arxiv_id:
-                    resp = await client.get(
-                        f"{api_url}/api/v1/external/lookup",
-                        params={"arxiv_id": arxiv_id}
-                    )
-                    if resp.status_code == 200:
-                        metadata = resp.json()
+                    # arXiv - primary for arXiv ID
+                    try:
+                        arxiv_results = await external_service._search_arxiv(arxiv_id, limit=1)
+                        if arxiv_results:
+                            all_results["arxiv"] = arxiv_results[0]
+                            sources_checked.append("arxiv")
+                    except Exception:
+                        pass
+
                 elif title:
-                    resp = await client.get(
-                        f"{api_url}/api/v1/external/lookup",
-                        params={"title": title}
-                    )
-                    if resp.status_code == 200:
-                        metadata = resp.json()
+                    # Search multiple sources by title
+                    try:
+                        oa_results = await external_service._search_openalex(title, limit=3)
+                        if oa_results:
+                            best = max(oa_results, key=lambda r: external_service._title_similarity(title, r.title))
+                            if external_service._title_similarity(title, best.title) > 0.5:
+                                all_results["openalex"] = best
+                                sources_checked.append("openalex")
+                    except Exception:
+                        pass
+
+                    try:
+                        cr_results = await external_service._search_crossref_multi(title, limit=3)
+                        if cr_results:
+                            best = max(cr_results, key=lambda r: r.confidence)
+                            if best.confidence > 0.5:
+                                all_results["crossref"] = best
+                                sources_checked.append("crossref")
+                    except Exception:
+                        pass
+
+                # Merge results from multiple sources - prefer completeness
+                metadata = None
+                if all_results:
+                    # Start with the first result
+                    primary_source = list(all_results.keys())[0]
+                    r = all_results[primary_source]
+                    metadata = {
+                        "title": r.title,
+                        "authors": r.authors or [],
+                        "year": r.year,
+                        "doi": r.doi,
+                        "abstract": r.abstract,
+                        "journal": getattr(r, 'journal', None),
+                        "arxiv_id": getattr(r, 'arxiv_id', None),
+                        "sources_checked": sources_checked,
+                        "primary_source": primary_source,
+                    }
+
+                    # Fill in missing fields from other sources
+                    for source_name, result in all_results.items():
+                        if source_name == primary_source:
+                            continue
+                        if not metadata["abstract"] and result.abstract:
+                            metadata["abstract"] = result.abstract
+                        if not metadata["doi"] and result.doi:
+                            metadata["doi"] = result.doi
+                        if not metadata["authors"] and result.authors:
+                            metadata["authors"] = result.authors
+                        if not metadata.get("journal") and getattr(result, 'journal', None):
+                            metadata["journal"] = result.journal
 
                 if not metadata:
                     return [TextContent(type="text", text=json.dumps({
