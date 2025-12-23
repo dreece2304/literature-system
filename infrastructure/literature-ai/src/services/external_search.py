@@ -362,6 +362,57 @@ class ExternalSearchService:
         return None
 
     # ==================== CrossRef ====================
+    async def lookup_by_doi(self, doi: str) -> Optional[PaperResult]:
+        """Look up a paper by DOI using CrossRef's direct works endpoint."""
+        # Clean DOI
+        doi = doi.strip()
+        if doi.startswith("https://doi.org/"):
+            doi = doi[16:]
+        elif doi.startswith("http://doi.org/"):
+            doi = doi[15:]
+
+        url = f"https://api.crossref.org/works/{doi}"
+        headers = {}
+        if self.crossref_email:
+            headers["User-Agent"] = f"LiteratureAI/1.0 (mailto:{self.crossref_email})"
+
+        try:
+            response, success = await self._make_request("crossref", url, headers=headers)
+            if not success or response is None or response.status_code != 200:
+                return None
+
+            data = response.json()
+            item = data.get("message", {})
+
+            title = item.get("title", [""])[0] if item.get("title") else ""
+
+            year = None
+            if item.get("published-print"):
+                year = item["published-print"].get("date-parts", [[None]])[0][0]
+            elif item.get("published-online"):
+                year = item["published-online"].get("date-parts", [[None]])[0][0]
+
+            authors = []
+            for auth in item.get("author", []):
+                name = f"{auth.get('given', '')} {auth.get('family', '')}".strip()
+                if name:
+                    authors.append(name)
+
+            return PaperResult(
+                title=title,
+                authors=authors,
+                year=year,
+                doi=item.get("DOI"),
+                journal=item.get("container-title", [""])[0] if item.get("container-title") else None,
+                abstract=item.get("abstract"),
+                source="crossref",
+                confidence=1.0,
+                citation_count=item.get("is-referenced-by-count")
+            )
+        except Exception as e:
+            logger.error(f"CrossRef DOI lookup error: {e}")
+            return None
+
     async def _search_crossref(
             self, title: str, author: Optional[str] = None,
             year: Optional[int] = None) -> Optional[PaperResult]:

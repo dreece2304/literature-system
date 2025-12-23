@@ -376,11 +376,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
                 # Query multiple APIs based on what we have
                 if doi:
-                    # CrossRef - primary for DOI
+                    # CrossRef - primary for DOI (direct lookup, not search)
                     try:
-                        cr_results = await external_service._search_crossref_multi(f"doi:{doi}", limit=1)
-                        if cr_results:
-                            all_results["crossref"] = cr_results[0]
+                        cr_result = await external_service.lookup_by_doi(doi)
+                        if cr_result:
+                            all_results["crossref"] = cr_result
                             sources_checked.append("crossref")
                     except Exception:
                         pass
@@ -409,8 +409,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     try:
                         oa_results = await external_service._search_openalex(title, limit=3)
                         if oa_results:
-                            best = max(oa_results, key=lambda r: external_service._title_similarity(title, r.title))
-                            if external_service._title_similarity(title, best.title) > 0.5:
+                            def sim(r): return external_service._title_similarity(title, r.title)
+                            best = max(oa_results, key=sim)
+                            if sim(best) > 0.5:
                                 all_results["openalex"] = best
                                 sources_checked.append("openalex")
                     except Exception:
