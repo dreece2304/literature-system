@@ -48,6 +48,10 @@ from .tools.collections import (
     list_tools as list_collection_tools,
     call_tool as call_collection_tool,
 )
+from .tools.notes import (
+    list_tools as list_note_tools,
+    call_tool as call_note_tool,
+)
 from .resources.handlers import (
     list_resources,
     read_resource,
@@ -67,6 +71,7 @@ async def handle_list_tools() -> list[Tool]:
     tools.extend(await list_citation_tools())
     tools.extend(await list_pdf_tools())
     tools.extend(await list_collection_tools())
+    tools.extend(await list_note_tools())
     return tools
 
 
@@ -114,6 +119,13 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         "remove_papers_from_collection", "get_collection_children"
     ]:
         return await call_collection_tool(name, arguments)
+
+    # Note tools
+    if name.startswith("note_") or name in [
+        "list_notes", "get_note", "create_note", "update_note", "delete_note",
+        "get_paper_notes", "delete_paper_notes"
+    ]:
+        return await call_note_tool(name, arguments)
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
