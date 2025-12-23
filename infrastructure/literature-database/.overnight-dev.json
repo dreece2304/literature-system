@@ -1,6 +1,6 @@
 {
-  "testCommand": "/home/dreece23/miniforge3/bin/mamba run -n litdb python -m pytest tests/unit/ -q",
-  "lintCommand": "/home/dreece23/miniforge3/bin/mamba run -n litdb python -m flake8 src/ --max-line-length=120",
+  "testCommand": "/home/dreece23/miniforge3/bin/mamba run -n litai python -m pytest tests/unit/ -q",
+  "lintCommand": "/home/dreece23/miniforge3/bin/mamba run -n litai python -m flake8 src/ --max-line-length=120",
   "requireCoverage": false,
   "minCoverage": 80,
   "autoFix": false,

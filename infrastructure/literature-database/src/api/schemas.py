@@ -35,11 +35,34 @@ class CollectionBase(BaseModel):
     parent_id: Optional[int] = None
 
 
+class CollectionCreate(CollectionBase):
+    """Schema for creating a new collection."""
+    pass
+
+
+class CollectionUpdate(BaseModel):
+    """Schema for updating a collection."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    parent_id: Optional[int] = None
+
+
 class CollectionResponse(CollectionBase):
     id: int
     zotero_key: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class CollectionWithPapersResponse(CollectionResponse):
+    """Collection response with paper count and paper list."""
+    paper_count: int = 0
+    paper_ids: List[int] = []
+
+
+class CollectionPaperAction(BaseModel):
+    """Schema for adding/removing papers from collection."""
+    paper_ids: List[int]
 
 
 class PaperBase(BaseModel):
