@@ -40,6 +40,10 @@ from .tools.citations import (
     list_tools as list_citation_tools,
     call_tool as call_citation_tool,
 )
+from .tools.pdf import (
+    list_tools as list_pdf_tools,
+    call_tool as call_pdf_tool,
+)
 from .resources.handlers import (
     list_resources,
     read_resource,
@@ -57,6 +61,7 @@ async def handle_list_tools() -> list[Tool]:
     tools.extend(await list_search_tools())
     tools.extend(await list_external_tools())
     tools.extend(await list_citation_tools())
+    tools.extend(await list_pdf_tools())
     return tools
 
 
@@ -89,6 +94,12 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         "generate_bibtex", "format_bibliography", "validate_citations"
     ]:
         return await call_citation_tool(name, arguments)
+
+    # PDF tools
+    if name.startswith("pdf_") or name in [
+        "acquire_paper_pdf", "get_pdf_status", "find_duplicates"
+    ]:
+        return await call_pdf_tool(name, arguments)
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
