@@ -30,7 +30,10 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="acquire_paper_pdf",
-            description="Download PDF for a paper using open access sources or UW proxy",
+            description=(
+                "Download PDF for a paper. Tries: 1) Open access, 2) Direct publisher "
+                "(if on VPN), 3) UW OpenURL resolver, 4) UW EZProxy"
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -38,9 +41,19 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Paper ID to acquire PDF for",
                     },
+                    "use_vpn": {
+                        "type": "boolean",
+                        "description": "Try direct publisher URLs (use when connected to UW VPN)",
+                        "default": False,
+                    },
+                    "use_openurl": {
+                        "type": "boolean",
+                        "description": "Use UW Primo OpenURL resolver to find full-text links",
+                        "default": False,
+                    },
                     "use_proxy": {
                         "type": "boolean",
-                        "description": "Use UW EZProxy for institutional access (requires cookies)",
+                        "description": "Use UW EZProxy URLs (requires browser cookies)",
                         "default": False,
                     },
                 },
@@ -76,7 +89,7 @@ async def list_tools() -> list[Tool]:
                     "method": {
                         "type": "string",
                         "enum": ["hash", "title"],
-                        "description": "Detection method: 'hash' (exact file match) or 'title' (similar titles)",
+                        "description": "Method: 'hash' (exact file match) or 'title' (similar)",
                         "default": "title",
                     },
                     "threshold": {
@@ -109,6 +122,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 async def _acquire_paper_pdf(api_url: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Download PDF for a specific paper."""
     paper_id = arguments["paper_id"]
+    use_vpn = arguments.get("use_vpn", False)
+    use_openurl = arguments.get("use_openurl", False)
     use_proxy = arguments.get("use_proxy", False)
 
     async with httpx.AsyncClient(timeout=60.0) as client:
@@ -145,21 +160,54 @@ async def _acquire_paper_pdf(api_url: str, arguments: dict[str, Any]) -> list[Te
                     }, indent=2),
                 )]
 
-            # Try to find and download PDF
+            # Try to find and download PDF with multiple strategies
             from src.services.external_search import ExternalSearchService
             service = ExternalSearchService()
 
+            pdf_url = None
+            source = None
+            tried_sources = []
+
+            # Strategy 1: Open access sources
             pdf_url = await _find_pdf_url(service, paper)
+            if pdf_url:
+                source = "open_access"
+            tried_sources.append("open_access")
+
+            # Strategy 2: Direct publisher URL (when on VPN)
+            if not pdf_url and use_vpn and doi:
+                pdf_url = _get_direct_publisher_url(doi)
+                if pdf_url:
+                    source = "vpn_direct"
+                tried_sources.append("vpn_direct")
+
+            # Strategy 3: UW OpenURL resolver
+            if not pdf_url and use_openurl and doi:
+                pdf_url = await _resolve_openurl(doi, client)
+                if pdf_url:
+                    source = "openurl_resolver"
+                tried_sources.append("openurl_resolver")
+
+            # Strategy 4: UW EZProxy (requires cookies)
             if not pdf_url and use_proxy and doi:
                 pdf_url = _get_publisher_pdf_url_via_proxy(doi)
+                if pdf_url:
+                    source = "ezproxy"
+                tried_sources.append("ezproxy")
 
             if not pdf_url:
+                msg = "No PDF found."
+                if not use_vpn:
+                    msg += " Try use_vpn=true if connected to UW VPN."
+                if not use_openurl:
+                    msg += " Try use_openurl=true to query UW library."
                 return [TextContent(
                     type="text",
                     text=json.dumps({
                         "status": "not_found",
                         "paper_id": paper_id,
-                        "message": "No open access PDF found. Try use_proxy=true for institutional access.",
+                        "tried_sources": tried_sources,
+                        "message": msg,
                     }, indent=2),
                 )]
 
@@ -207,6 +255,7 @@ async def _acquire_paper_pdf(api_url: str, arguments: dict[str, Any]) -> list[Te
                     "file_path": str(file_path),
                     "word_count": word_count,
                     "pdf_url": pdf_url,
+                    "source": source,
                 }, indent=2),
             )]
 
@@ -261,9 +310,10 @@ async def _get_pdf_status(api_url: str, arguments: dict[str, Any]) -> list[TextC
                 doi = p.get("doi")
                 arxiv_id = p.get("arxiv_id")
 
+                title = p.get("title", "")
                 paper_info = {
                     "id": p["id"],
-                    "title": p["title"][:80] + "..." if len(p.get("title", "")) > 80 else p.get("title"),
+                    "title": title[:80] + "..." if len(title) > 80 else title,
                     "doi": doi,
                     "arxiv_id": arxiv_id,
                 }
@@ -578,3 +628,110 @@ def _prepare_paper_update(current: dict, updates: dict) -> dict:
     paper_data.update(updates)
 
     return paper_data
+
+
+def _get_direct_publisher_url(doi: str) -> str | None:
+    """Get direct publisher PDF URL (for use with VPN)."""
+    # Publisher-specific PDF URL patterns
+    publishers = {
+        # Elsevier/ScienceDirect
+        "10.1016": f"https://www.sciencedirect.com/science/article/pii/S"
+                   f"{doi.split('/')[-1].replace('.', '').replace('-', '')}/pdfft",
+        # ACS Publications
+        "10.1021": f"https://pubs.acs.org/doi/pdf/{doi}",
+        # Wiley
+        "10.1002": f"https://onlinelibrary.wiley.com/doi/pdfdirect/{doi}",
+        # Nature/Springer Nature
+        "10.1038": f"https://www.nature.com/articles/{doi.split('/')[-1]}.pdf",
+        # Springer
+        "10.1007": f"https://link.springer.com/content/pdf/{doi}.pdf",
+        # RSC
+        "10.1039": f"https://pubs.rsc.org/en/content/articlepdf/{doi.split('/')[-1]}",
+        # IOP
+        "10.1088": f"https://iopscience.iop.org/article/{doi}/pdf",
+        # AIP
+        "10.1063": f"https://pubs.aip.org/aip/jap/article-pdf/doi/{doi}",
+        # Taylor & Francis
+        "10.1080": f"https://www.tandfonline.com/doi/pdf/{doi}",
+        # MDPI
+        "10.3390": f"https://www.mdpi.com/{doi.split('/')[-1]}/pdf",
+    }
+
+    for prefix, url in publishers.items():
+        if doi.startswith(prefix):
+            return url
+
+    # Generic DOI.org redirect (sometimes works)
+    return f"https://doi.org/{doi}"
+
+
+async def _resolve_openurl(doi: str, client: httpx.AsyncClient) -> str | None:
+    """Resolve DOI through UW Primo OpenURL resolver to find full-text link."""
+    import re
+
+    # UW Primo OpenURL resolver
+    openurl_base = (
+        "https://orbiscascade-washington.primo.exlibrisgroup.com"
+        "/openurl/01ALLIANCE_UW/01ALLIANCE_UW:UW"
+    )
+    openurl = f"{openurl_base}?rft_id=info:doi/{doi}"
+
+    try:
+        response = await client.get(
+            openurl,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                              "AppleWebKit/537.36"
+            },
+        )
+
+        if response.status_code != 200:
+            logger.debug(f"OpenURL resolver returned {response.status_code}")
+            return None
+
+        html = response.text
+
+        # Look for PDF links in the response
+        # Common patterns in Primo/library resolver pages
+        pdf_patterns = [
+            r'href="([^"]+\.pdf[^"]*)"',
+            r'href="([^"]+/pdf/[^"]*)"',
+            r'href="([^"]+pdfft[^"]*)"',
+            r'href="([^"]+pdfdirect[^"]*)"',
+            r'data-url="([^"]+\.pdf[^"]*)"',
+            # Direct link patterns
+            r'(https://[^"]+sciencedirect[^"]+pdfft[^"]*)',
+            r'(https://[^"]+wiley[^"]+pdfdirect[^"]*)',
+        ]
+
+        for pattern in pdf_patterns:
+            matches = re.findall(pattern, html, re.IGNORECASE)
+            for match in matches:
+                if match.startswith("http"):
+                    logger.info(f"Found PDF via OpenURL: {match[:80]}...")
+                    return match
+
+        # Look for "View PDF" or "Full Text" links
+        fulltext_patterns = [
+            r'href="([^"]+)"[^>]*>.*?(?:PDF|Full Text|View Article)',
+            r'class="[^"]*fulltext[^"]*"[^>]*href="([^"]+)"',
+        ]
+
+        for pattern in fulltext_patterns:
+            matches = re.findall(pattern, html, re.IGNORECASE | re.DOTALL)
+            for match in matches:
+                if "pdf" in match.lower() or "article" in match.lower():
+                    if match.startswith("http"):
+                        return match
+                    elif match.startswith("/"):
+                        # Relative URL
+                        base = "https://orbiscascade-washington.primo.exlibrisgroup.com"
+                        return base + match
+
+        logger.debug("No PDF link found in OpenURL response")
+        return None
+
+    except Exception as e:
+        logger.error(f"OpenURL resolution error: {e}")
+        return None
