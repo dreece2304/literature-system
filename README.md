@@ -1,51 +1,86 @@
-# Research Monorepo
+# Research - Literature Management System
 
-A unified research environment with intelligent literature management and writing assistance.
+A unified research environment with intelligent literature management accessible via MCP (Model Context Protocol) for Claude Code and Claude Desktop.
+
+## Quick Start
+
+### 1. Verify Setup
+
+```bash
+cd src
+mamba run -n litai python -m scripts.health_check
+```
+
+Expected output:
+```
+[PASS] Database: Database OK: 418 papers
+[PASS] Services: PaperService OK
+[PASS] Embeddings: OK
+[PASS] Keyword Search: OK
+[PASS] Semantic Search: OK
+ALL CHECKS PASSED
+```
+
+### 2. Use with Claude Code
+
+The MCP server is configured in `.mcp.json`. Claude Code will automatically connect to the literature server when you open this project.
+
+Available commands:
+- Search papers: "Find papers about ALD precursor chemistry"
+- Generate citations: "Generate BibTeX for papers 42, 55, 78"
+- Check thesis: "Verify citations in my chapter.tex"
+- Enrich metadata: "Get citation count for paper 123"
 
 ## Architecture
 
 ```
 research/
-├── infrastructure/          # Core services
-│   ├── literature-database/ # Paper storage and metadata
-│   ├── literature-ai/      # LLM services
-│   ├── literature-search/  # External APIs
-│   └── api-gateway/        # Service orchestration
-├── active/                 # Current research projects
-├── archive/               # Completed projects
-├── web-dashboard/         # Frontend UI
-├── shared/               # Shared code and types
-└── docs/                # Documentation
+├── src/                    # Consolidated source code
+│   ├── literature_core/    # Database models, ORM, config
+│   ├── services/           # Business logic layer
+│   ├── mcp_server/         # MCP server for Claude
+│   ├── embeddings/         # Vector search (ChromaDB)
+│   ├── extractors/         # Zotero sync
+│   └── scripts/            # Utilities (health_check)
+├── infrastructure/         # Legacy directories (data only)
+│   ├── literature-database/data/  # SQLite database, PDFs
+│   └── literature-ai/data/        # ChromaDB vectors
+├── archive/               # Archived code
+└── docs/                  # Documentation
 ```
 
-## Quick Start
+## Database Statistics
 
-1. **Setup Infrastructure**
-   ```bash
-   ./scripts/setup_infrastructure.sh
-   ```
+| Metric | Count |
+|--------|-------|
+| Total Papers | 418 |
+| Papers with Full Text | 365 |
+| Papers with PDFs | 373 |
+| Collections | 3 |
 
-2. **Start Services**
-   ```bash
-   ./scripts/start_dev.sh
-   ```
+## MCP Integration
 
-3. **Access Dashboard**
-   Open http://localhost:3000
+See [docs/MCP_USAGE.md](docs/MCP_USAGE.md) for detailed integration guide.
 
-## Services
+### Claude Code (.mcp.json)
 
-| Service | Port | Status |
-|---------|------|--------|
-| API Gateway | 8000 | 🔲 Pending |
-| Literature DB | 8001 | ✅ Ready |
-| Literature AI | 8002 | 🔲 Pending |
-| Literature Search | 8003 | 🔲 Pending |
-| Web Dashboard | 3000 | 🔲 Pending |
+```json
+{
+  "mcpServers": {
+    "literature": {
+      "type": "stdio",
+      "command": "/path/to/mamba",
+      "args": ["run", "-n", "litai", "python", "-m", "mcp_server.server"],
+      "cwd": "/path/to/research/src"
+    }
+  }
+}
+```
 
 ## Documentation
 
-- [Setup Guide](docs/SETUP_ORDER.md)
-- [API Documentation](docs/API_CONTRACTS.md)
-- [Development Guide](docs/DEVELOPMENT_COMMANDS.md)
-- [Claude Governance](CLAUDE.md)
+- [MCP Integration Guide](docs/MCP_USAGE.md) - How to use with Claude
+- [Tool Reference](docs/TOOL_REFERENCE.md) - All MCP tool signatures
+- [Source Code Guide](src/README.md) - Code structure
+- [Development Commands](docs/DEVELOPMENT_COMMANDS.md) - Dev workflow
+- [Claude Governance](CLAUDE.md) - AI agent guidelines
