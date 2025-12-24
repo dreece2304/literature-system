@@ -29,7 +29,7 @@ mamba remove -n <env_name> --all
 ### Service-Specific Environments
 ```bash
 # Quick activation commands
-alias litdb='mamba activate litdb'
+alias litai='mamba activate litai'
 alias litai='mamba activate litai'
 alias litsearch='mamba activate litsearch'
 alias litgw='mamba activate gateway'
@@ -525,7 +525,7 @@ ollama serve &
 
 # Start services in tmux
 tmux new-session -d -s research
-tmux send-keys -t research "cd infrastructure/literature-database && mamba activate litdb && uvicorn src.api:app --port 8001" C-m
+tmux send-keys -t research "cd infrastructure/literature-database && mamba activate litai && uvicorn src.api:app --port 8001" C-m
 tmux new-window -t research
 tmux send-keys -t research "cd infrastructure/literature-ai && mamba activate litai && uvicorn src.api:app --port 8002" C-m
 

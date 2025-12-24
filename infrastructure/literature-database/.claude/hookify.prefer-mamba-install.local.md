@@ -14,15 +14,15 @@ This project uses miniforge3 with mamba. Follow these patterns:
 **ALWAYS use mamba, not pip:**
 ```bash
 # Direct mamba command (recommended)
-/home/dreece23/miniforge3/bin/mamba install -n litdb -c conda-forge package_name -y
+/home/dreece23/miniforge3/bin/mamba install -n litai -c conda-forge package_name -y
 
 # Or use mamba run for commands in the environment
-/home/dreece23/miniforge3/bin/mamba run -n litdb python -m pytest
+/home/dreece23/miniforge3/bin/mamba run -n litai python -m pytest
 ```
 
 **Only use pip as last resort** if package not in conda-forge:
 ```bash
-/home/dreece23/miniforge3/bin/mamba run -n litdb pip install package_name
+/home/dreece23/miniforge3/bin/mamba run -n litai pip install package_name
 ```
 
 ## Environment Activation
@@ -31,9 +31,9 @@ This project uses miniforge3 with mamba. Follow these patterns:
 
 Instead use `mamba run`:
 ```bash
-# Instead of: source conda.sh && conda activate litdb && python script.py
+# Instead of: source conda.sh && conda activate litai && python script.py
 # Use:
-/home/dreece23/miniforge3/bin/mamba run -n litdb python script.py
+/home/dreece23/miniforge3/bin/mamba run -n litai python script.py
 ```
 
 ## Why mamba over pip:

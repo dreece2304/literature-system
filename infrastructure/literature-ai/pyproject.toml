@@ -24,6 +24,10 @@ classifiers = [
 ]
 
 dependencies = [
+    # Core Database (local package)
+    # Install with: pip install -e ../../src
+    "sqlalchemy>=2.0",
+
     # MCP Server
     "mcp>=1.0.0",
 

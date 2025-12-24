@@ -27,13 +27,13 @@ session.close()
 ### Log Analysis
 ```bash
 # View recent logs
-tail -50 logs/litdb.log
+tail -50 logs/litai.log
 
 # Search for errors
-grep -i error logs/litdb.log | tail -20
+grep -i error logs/litai.log | tail -20
 
 # Monitor real-time logs
-tail -f logs/litdb.log
+tail -f logs/litai.log
 ```
 
 ## 🔧 Common Issues and Solutions
@@ -43,7 +43,7 @@ tail -f logs/litdb.log
 #### Issue: `conda activate research-monorepo` fails
 **Symptoms:**
 ```
-EnvironmentNameNotFound: Could not find conda environment: litdb
+EnvironmentNameNotFound: Could not find conda environment: litai
 ```
 
 **Solutions:**
@@ -52,12 +52,12 @@ EnvironmentNameNotFound: Could not find conda environment: litdb
 mamba env list
 
 # Create environment if missing
-mamba create -n litdb python=3.11
-mamba activate litdb
+mamba create -n litai python=3.11
+mamba activate litai
 pip install -r requirements.txt
 
 # Alternative: Use conda instead
-conda activate litdb
+conda activate litai
 ```
 
 #### Issue: Import errors for src modules
@@ -599,7 +599,7 @@ inotifywait -m -r data/ --format '%w %f %e'
 ### Before Seeking Help
 
 1. **Run diagnostics**: `python scripts/test_setup.py`
-2. **Check logs**: `tail -50 logs/litdb.log`
+2. **Check logs**: `tail -50 logs/litai.log`
 3. **Test components individually**: Use test scripts
 4. **Document the exact error**: Include full error messages
 5. **Note your environment**: OS, Python version, package versions
@@ -615,7 +615,7 @@ pip list | grep -E "pdf|sql|zotero|fast|rich"
 # Project status
 python -m src.cli stats
 ls -la data/
-head -20 logs/litdb.log
+head -20 logs/litai.log
 ```
 
 ### Self-Help Resources
@@ -642,7 +642,7 @@ rm -rf data/cache/
 mkdir -p data/cache/
 
 # Reset logs
-> logs/litdb.log
+> logs/litai.log
 
 # Test basic functionality
 python scripts/test_setup.py

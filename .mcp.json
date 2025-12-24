@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "literature": {
+      "type": "stdio",
+      "command": "/home/dreece23/miniforge3/bin/mamba",
+      "args": [
+        "run",
+        "-n",
+        "litai",
+        "python",
+        "-m",
+        "mcp_server.server"
+      ],
+      "cwd": "/home/dreece23/projects/research/misc/research/src"
+    }
+  }
+}

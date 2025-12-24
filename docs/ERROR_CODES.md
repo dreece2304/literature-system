@@ -69,8 +69,8 @@ ollama run qwen:7b-q4_K_M "Hello"
 cd research/infrastructure/literature-database
 
 # Create and activate environment
-mamba create -n litdb python=3.11 -y
-mamba activate litdb
+mamba create -n litai python=3.11 -y
+mamba activate litai
 
 # Install dependencies
 mamba install -c conda-forge \
@@ -195,7 +195,7 @@ npm start  # or yarn start
 ```bash
 # Terminal 6: Celery worker for PDF processing
 cd research/infrastructure/literature-database
-mamba activate litdb
+mamba activate litai
 celery -A src.tasks worker --loglevel=info --queue=extraction
 
 # Terminal 7: Celery worker for embeddings
@@ -208,7 +208,7 @@ celery -A src.tasks worker --loglevel=info --queue=embeddings
 ```bash
 # Terminal 8: Scheduled tasks
 cd research/infrastructure/literature-database
-mamba activate litdb
+mamba activate litai
 celery -A src.tasks beat --loglevel=info
 ```
 
@@ -233,7 +233,7 @@ sleep 5
 # Start services
 echo "Starting Literature Database..."
 cd infrastructure/literature-database
-mamba activate litdb
+mamba activate litai
 uvicorn src.api:app --port 8001 --reload &
 DB_PID=$!
 

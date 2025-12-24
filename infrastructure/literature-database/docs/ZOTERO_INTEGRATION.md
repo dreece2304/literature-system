@@ -6,24 +6,31 @@ Zotero integration for the literature-database service in the research monorepo.
 
 ## 🎯 Integration Overview
 
-The Literature Database supports multiple Zotero integration methods with automatic fallback:
+The Literature Database supports multiple Zotero integration methods:
 
-1. **Local API** (Recommended) - Direct communication with running Zotero instance
+1. **WSL Proxy Server** (Recommended for WSL2) - Uses Zotero-WSL-ProxyServer for reliable connectivity
 2. **Web API** - Cloud-based sync through Zotero's servers
 3. **File-based** - Direct import from Zotero's file storage
 
-## 🔌 Method 1: Local API Integration
+**Note**: The Zotero connector API (port 23119) is designed for browser extensions to SAVE items to Zotero. For reading/syncing items, we use the Web API (pyzotero). The local connector is only used for detecting if Zotero is running.
 
-### Advantages
-- ✅ **No API key required** - Direct access to running Zotero
-- ✅ **Real-time sync** - Immediate access to current library state
-- ✅ **Full access** - Read/write without web API limitations  
-- ✅ **Faster & more reliable** - Local network vs internet requests
-- ✅ **No rate limits** - Unrestricted access to your data
+## 🔌 Method 1: WSL Proxy Server (Recommended for WSL2)
+
+### Why Use the Proxy Server?
+
+WSL2 cannot directly access Windows `localhost:23119` because:
+- WSL2 runs in a separate virtual network (NAT or mirrored mode)
+- Zotero's connector API has strict HTTP header validation
+- Direct port forwarding attempts are rejected by Zotero
+
+The [Zotero-WSL-ProxyServer](https://github.com/XFY9326/Zotero-WSL-ProxyServer) solves this by:
+- Running on Windows and binding to the WSL-visible IP
+- Forwarding requests to Zotero's localhost connector
+- Modifying HTTP headers to pass Zotero's validation
 
 ### Setup Steps
 
-#### 1. Enable Zotero HTTP Server
+#### 1. Enable Zotero HTTP Server (in Zotero)
 ```
 Zotero → Edit → Preferences → Advanced → Config Editor
 Search: extensions.zotero.httpServer.enabled
@@ -31,57 +38,95 @@ Set to: true
 Restart Zotero
 ```
 
-#### 2. Test Basic Connectivity
-```bash
-# From Windows Command Prompt
-curl http://localhost:23119/api
+#### 2. Download Zotero-WSL-ProxyServer
 
-# Should return Zotero API information
-```
+Download from: https://github.com/XFY9326/Zotero-WSL-ProxyServer/releases
 
-#### 3. WSL2 Network Configuration
-
-**Option A: Mirrored Networking (Windows 11 22H2+)**
-
-Create/edit `%USERPROFILE%\.wslconfig`:
-```ini
-[wsl2]
-networkingMode=mirrored
-dnsTunneling=true
-autoProxy=true
-```
-
-Restart WSL:
 ```powershell
-wsl --shutdown
-# Wait 10 seconds, restart WSL terminal
+# PowerShell - Download to a convenient location
+Invoke-WebRequest -Uri "https://github.com/XFY9326/Zotero-WSL-ProxyServer/releases/download/0.1.0.3/Zotero-WSL-ProxyServer_0.1.0.3.exe" -OutFile "$env:USERPROFILE\Zotero-WSL-ProxyServer.exe"
 ```
 
-**Option B: Firewall Rules**
-```cmd
-# Run as Administrator in Windows Command Prompt
-netsh advfirewall firewall add rule name="Zotero API WSL" dir=in action=allow protocol=TCP localport=23119
+Or manually download and save to `C:\Users\<username>\Zotero-WSL-ProxyServer.exe`
+
+#### 3. Run the Proxy Server
+
+1. **Start Zotero** (must be running first)
+2. **Run the proxy server** by double-clicking the exe or from PowerShell:
+   ```powershell
+   & "$env:USERPROFILE\Zotero-WSL-ProxyServer.exe"
+   ```
+
+The proxy will display output like:
+```
+Windows host IP in WSL: 172.24.208.1
+Zotero status: Running
+Serving on 172.24.208.1:23119
+Zotero WSL url: http://DESKTOP-ABC123.local:23119
 ```
 
-**Option C: Hyper-V Firewall (Windows 11 22H2+)**
-```powershell
-# Run as Administrator in PowerShell
-Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Allow
+**Note the URL** - you'll need it for the next step!
+
+#### 4. Configure the Proxy URL
+
+Edit `config/settings.yml`:
+```yaml
+zotero:
+  windows_path: "/mnt/c/Users/dreec/Zotero"
+  library_id: "13344138"
+  library_type: "user"
+
+  # Use the URL shown by Zotero-WSL-ProxyServer
+  proxy_url: "http://DESKTOP-ABC123.local:23119"
+  # Or use the IP directly: "http://172.24.208.1:23119"
 ```
 
-#### 4. Test WSL2 Connection
+#### 5. Test the Connection
+
 ```bash
-# Test connection from WSL2
+# From WSL, test connectivity
+curl -I http://DESKTOP-ABC123.local:23119/connector/ping
+
+# Run the test script
+cd infrastructure/literature-database
 python scripts/test_zotero_local.py
 ```
 
 Expected output:
 ```
 ✓ Local API is available!
-✓ Library info retrieved
-✓ Retrieved X items
-✓ Retrieved X collections
+✓ Zotero proxy at: http://DESKTOP-ABC123.local:23119
 ```
+
+### Auto-Start the Proxy (Optional)
+
+To start the proxy automatically when Zotero starts, create a Windows Task Scheduler task or add it to your startup folder.
+
+### Cleaning Up Firewall Rules
+
+If you previously added firewall rules for direct WSL2 access, you can remove them:
+
+```cmd
+# Run as Administrator in Windows Command Prompt
+
+# Remove the WSL2 Zotero rule (if added)
+netsh advfirewall firewall delete rule name="Zotero API WSL"
+
+# Remove any other Zotero-related rules
+netsh advfirewall firewall delete rule name="Zotero API"
+
+# List remaining rules to verify
+netsh advfirewall firewall show rule name=all dir=in | findstr /i "zotero"
+```
+
+**Revert Hyper-V Firewall Changes** (if you made them):
+```powershell
+# Run as Administrator in PowerShell
+# Reset to default (block inbound)
+Set-NetFirewallHyperVVMSetting -Name '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -DefaultInboundAction Block
+```
+
+**Note**: The proxy server handles connectivity, so firewall rules for port 23119 are NOT needed when using the proxy.
 
 ### Usage
 
@@ -97,28 +142,28 @@ print(f'API Info: {sync.get_api_info()}')
 "
 ```
 
-### Troubleshooting Local API
+### Troubleshooting Proxy Server
 
-#### Connection Timeout
+#### Proxy Not Starting
+1. **Ensure Zotero is running first** - The proxy checks for Zotero
+2. **Check if port 23119 is already in use** (another instance?)
+3. **Run from command line** to see error messages
+
+#### WSL Cannot Reach Proxy
 ```bash
-# Run comprehensive network diagnostic
-python scripts/fix_wsl2_networking.py
+# Test the hostname resolution
+ping DESKTOP-ABC123.local
 
-# Test alternative URLs
-curl http://localhost:23119/api
-curl http://$(hostname).local:23119/api
-curl http://$(ip route show default | awk '/default/ {print $3}'):23119/api
+# Try the IP address directly
+curl http://172.24.208.1:23119/connector/ping
+
+# Update config to use IP instead of hostname
 ```
 
-#### Windows Firewall Blocking
-1. **Check Windows Defender Firewall settings**
-2. **Allow IP Helper service through firewall**
-3. **Create specific rule for port 23119**
-
-#### Zotero Not Binding to Network Interface
-- **Check Zotero preferences for API server settings**
-- **Restart Zotero after enabling HTTP server**
-- **Ensure no other applications are using port 23119**
+#### "Zotero status: Not Running"
+1. **Start Zotero on Windows**
+2. **Verify HTTP server is enabled** in Zotero preferences
+3. **Restart Zotero** after enabling
 
 ## 🌐 Method 2: Web API Integration  
 
@@ -237,15 +282,16 @@ Zotero/storage/
 
 ## 🔄 Synchronization Behavior
 
-### Automatic Fallback Chain
+### Connection Priority
 
 The system tries connection methods in this order:
 
-1. **Local API** (`http://localhost:23119/api`)
-2. **mDNS Local** (`http://hostname.local:23119/api`)  
-3. **Windows Host IP** (`http://172.x.x.x:23119/api`)
-4. **Web API** (if configured)
-5. **Error** if none available
+1. **Configured Proxy URL** (from `config/settings.yml` → `zotero.proxy_url`)
+2. **Localhost** (`http://localhost:23119`) - works in mirrored networking mode
+3. **Windows Host IP** (`http://172.x.x.x:23119`) - auto-detected in NAT mode
+4. **Web API** (if configured with API key) - for actual sync operations
+
+**Important**: The local connector (port 23119) is only used to detect if Zotero is running. For syncing items, the Web API (pyzotero) is always used.
 
 ### Sync Operations
 
@@ -381,7 +427,14 @@ client = zotero.Zotero(
 **Solution:**
 1. Increase timeout values
 2. Check internet connection
-3. Try local API instead
+3. Use the WSL Proxy Server (see Method 1)
+
+### Issue: WSL2 Cannot Connect to Zotero
+**Symptoms:** Connection refused, timeout when accessing localhost:23119 from WSL
+**Solution:**
+1. **Use Zotero-WSL-ProxyServer** (recommended) - See Method 1 above
+2. Configure `proxy_url` in `config/settings.yml`
+3. Remove any firewall rules that were added (the proxy handles connectivity)
 
 ### Issue: Duplicate Items
 **Symptoms:** Same paper appears multiple times

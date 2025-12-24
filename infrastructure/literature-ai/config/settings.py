@@ -131,13 +131,25 @@ class CelerySettings(BaseSettings):
 
 
 class LiteratureDatabaseSettings(BaseSettings):
-    """Literature database API configuration."""
+    """Literature database configuration.
 
+    NOTE (Dec 2024): The HTTP API layer has been removed.
+    The MCP server now accesses the database directly via services.
+    """
+
+    # DEPRECATED: api_url no longer used - keeping for backwards compatibility
     api_url: str = Field(
         default="http://localhost:8001",
-        description="Literature database API base URL"
+        description="DEPRECATED: No longer used. MCP uses direct DB access."
     )
-    timeout: int = Field(default=30, description="Request timeout in seconds")
+
+    # Database path (used by service layer)
+    database_path: Path = Field(
+        default=Path(__file__).parent.parent.parent.parent / "literature-database" / "data" / "literature.db",
+        description="Path to SQLite database file"
+    )
+
+    timeout: int = Field(default=30, description="Database query timeout in seconds")
 
     model_config = SettingsConfigDict(env_prefix="LITDB_")
 
@@ -154,28 +166,21 @@ class ClaudeSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ANTHROPIC_")
 
 
-class APISettings(BaseSettings):
-    """FastAPI application settings."""
+class MCPSettings(BaseSettings):
+    """MCP Server settings.
 
-    title: str = Field(default="Literature AI Service")
+    NOTE (Dec 2024): Replaced FastAPI APISettings.
+    The MCP server communicates via stdio, not HTTP.
+    """
+
+    service_name: str = Field(default="literature")
     version: str = Field(default="0.1.0")
-    description: str = Field(default="LLM-powered services for academic research")
+    description: str = Field(default="MCP server for literature management")
 
-    host: str = Field(default="0.0.0.0")
-    port: int = Field(default=8002)
-    reload: bool = Field(default=False, description="Auto-reload on code changes")
+    # Logging level for MCP operations
+    log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = Field(default="INFO")
 
-    # CORS settings
-    cors_origins: list[str] = Field(default=["http://localhost:3000"], description="Allowed origins")
-    cors_credentials: bool = Field(default=True)
-    cors_methods: list[str] = Field(default=["*"])
-    cors_headers: list[str] = Field(default=["*"])
-
-    # Rate limiting
-    rate_limit_enabled: bool = Field(default=True)
-    rate_limit_per_minute: int = Field(default=60)
-
-    model_config = SettingsConfigDict(env_prefix="API_")
+    model_config = SettingsConfigDict(env_prefix="MCP_")
 
 
 class LoggingSettings(BaseSettings):
@@ -237,7 +242,7 @@ class Settings(BaseSettings):
     celery: CelerySettings = Field(default_factory=CelerySettings)
     litdb: LiteratureDatabaseSettings = Field(default_factory=LiteratureDatabaseSettings)
     claude: ClaudeSettings = Field(default_factory=ClaudeSettings)
-    api: APISettings = Field(default_factory=APISettings)
+    mcp: MCPSettings = Field(default_factory=MCPSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     gpu: GPUSettings = Field(default_factory=GPUSettings)
 
@@ -264,7 +269,7 @@ __all__ = [
     "CelerySettings",
     "LiteratureDatabaseSettings",
     "ClaudeSettings",
-    "APISettings",
+    "MCPSettings",
     "LoggingSettings",
     "GPUSettings",
     "PROJECT_ROOT",

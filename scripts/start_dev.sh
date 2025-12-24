@@ -32,7 +32,7 @@ start_service() {
 }
 
 # Start services
-start_service "Literature DB" "infrastructure/literature-database" "litdb" 8001
+start_service "Literature DB" "infrastructure/literature-database" "litai" 8001
 sleep 2
 start_service "Literature AI" "infrastructure/literature-ai" "litai" 8002
 sleep 2

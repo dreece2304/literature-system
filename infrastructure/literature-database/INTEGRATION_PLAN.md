@@ -110,7 +110,7 @@ All tests now pass including:
 
 5. **Pydantic v2**: Updated all schemas to use `ConfigDict` instead of deprecated class-based `Config`.
 
-6. **Package Management**: Use mamba for all package installs, not pip. Commands use `/home/dreece23/miniforge3/bin/mamba run -n litdb`.
+6. **Package Management**: Use mamba for all package installs, not pip. Commands use `/home/dreece23/miniforge3/bin/mamba run -n litai`.
 
 7. **PyPDF2 → pypdf**: Replaced deprecated PyPDF2 with pypdf (same API, active development).
 
@@ -164,16 +164,16 @@ All tests now pass including:
 
 ```bash
 # Run tests
-/home/dreece23/miniforge3/bin/mamba run -n litdb python -m pytest tests/unit/ -q
+/home/dreece23/miniforge3/bin/mamba run -n litai python -m pytest tests/unit/ -q
 
 # Run linting
-/home/dreece23/miniforge3/bin/mamba run -n litdb python -m flake8 src/ --max-line-length=120
+/home/dreece23/miniforge3/bin/mamba run -n litai python -m flake8 src/ --max-line-length=120
 
 # Install packages
-/home/dreece23/miniforge3/bin/mamba install -n litdb -c conda-forge package_name -y
+/home/dreece23/miniforge3/bin/mamba install -n litai -c conda-forge package_name -y
 
 # Start API server
-/home/dreece23/miniforge3/bin/mamba run -n litdb uvicorn src.api.main:app --reload
+/home/dreece23/miniforge3/bin/mamba run -n litai uvicorn src.api.main:app --reload
 ```
 
 ---

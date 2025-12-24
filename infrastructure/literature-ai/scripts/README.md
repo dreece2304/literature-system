@@ -26,7 +26,7 @@ Starts all services needed for full integration:
 **Prerequisites:**
 - Redis running
 - Ollama running
-- conda environments: `litdb` and `litai`
+- conda environments: `litai` and `litai`
 
 ### stop_integrated.sh
 Stops all integrated services gracefully.
@@ -55,7 +55,7 @@ python scripts/run_event_consumer.py
 ## Logs
 
 All services log to `logs/` directory:
-- `litdb-service.log` - literature-database API
+- `litai-service.log` - literature-database API
 - `litai-api.log` - literature-ai API
 - `event-consumer.log` - Event consumer
 
@@ -74,7 +74,7 @@ tail -f logs/event-consumer.log
 # Check prerequisites
 redis-cli ping                     # Should return PONG
 curl http://localhost:11434/api/version  # Should return Ollama version
-conda env list                     # Should show litdb and litai
+conda env list                     # Should show litai and litai
 ```
 
 **Papers not syncing:**

@@ -139,7 +139,7 @@ This release transforms the Literature Database from a standalone CLI tool into 
 
 ```bash
 # Run tests
-/home/dreece23/miniforge3/bin/mamba run -n litdb python -m pytest tests/unit/ -q
+/home/dreece23/miniforge3/bin/mamba run -n litai python -m pytest tests/unit/ -q
 
 # Start service
 python run_service.py

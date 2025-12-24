@@ -1,157 +1,131 @@
-# Literature AI - Quick Start Guide
+# Literature AI MCP Server - Quickstart
 
-## Using with Claude Code (Recommended)
+## Current State (2025-12-23)
 
-The literature system is now integrated as an MCP server for Claude Code. This means Claude Code itself becomes the AI - no local LLMs or separate API keys needed.
+**Branch**: `feature/mcp-plugin`
+**Last commit**: `95fe640` - VPN and OpenURL resolver support for PDF acquisition
 
-### Prerequisites
+### What's Working
+- MCP server with 50+ tools for literature management
+- Paper CRUD, search (keyword + semantic), external API lookups
+- PDF acquisition with multiple strategies (open access, VPN, OpenURL, EZProxy)
+- Project-level citation management (BibTeX parsing, health checks)
+- Collections, notes, import/export
 
-1. **literature-database running on port 8001**
-   ```bash
-   cd infrastructure/literature-database
-   mamba run -n litai uvicorn src.api.main:app --port 8001
-   ```
+### Database Status
+- **416 papers** in database
+- **79 have PDFs**, 21 need PDFs
+- **0 papers** in extraction queue
 
-2. **MCP server configured** (already done in ~/.claude.json)
+## Quick Commands
 
-### Activate the MCP Server
-
-**Restart Claude Code** in the research project directory. The `literature` MCP server will automatically connect.
-
-### Available Tools (23)
-
-Once Claude Code restarts, you can ask it to use these tools:
-
-#### Paper Management
-- `list_papers` - List papers with filtering
-- `get_paper {paper_id}` - Get paper details
-- `add_paper` - Add new paper
-- `update_paper` - Update paper metadata
-- `search_papers {query}` - Search papers
-- `get_paper_content {paper_id}` - Get full content for analysis
-- `store_extraction` - Store AI analysis results
-- `get_extraction_queue` - Get papers needing analysis
-
-#### Search
-- `keyword_search {query}` - Full-text search
-- `semantic_search {query}` - Similarity search
-- `search_by_author {name}` - Find papers by author
-- `search_by_tag {tag}` - Find papers by tag
-
-#### External APIs
-- `lookup_paper_metadata` - Fetch from CrossRef/OpenAlex
-- `find_open_access_pdf` - Find free PDF URLs
-- `enrich_paper` - Auto-fill missing metadata
-- `search_external_papers {query}` - Search external databases
-- `get_citation_count` - Get citation count from Semantic Scholar
-
-#### Citations
-- `scan_manuscript {file_path}` - Extract \cite{} keys
-- `check_citations` - Find orphan/unused citations
-- `suggest_citation_key` - Generate BibTeX keys
-- `generate_bibtex` - Create BibTeX entries
-- `format_bibliography` - Format in APA/MLA/Chicago
-- `validate_citations` - Check citation completeness
-
-### Example Queries
-
-Ask Claude Code:
-
-- "Search for papers about machine learning"
-- "Get the content of paper 42 and summarize it"
-- "Find open access PDFs for papers missing files"
-- "Scan my manuscript and check for missing citations"
-- "Generate a BibTeX bibliography for papers tagged 'neural-networks'"
-
----
-
-## Using Standalone API (Legacy Mode)
-
-If you prefer local LLM processing:
-
-### Start Services
-
+### Run Tests
 ```bash
-# Terminal 1: Start Ollama
-ollama serve
-
-# Terminal 2: Start literature-database
-cd infrastructure/literature-database
-mamba run -n litai uvicorn src.api.main:app --port 8001
-
-# Terminal 3: Start literature-ai
-cd infrastructure/literature-ai
-mamba run -n litai uvicorn src.api.main:app --port 8002
+cd /home/dreece23/projects/research/misc/research/infrastructure/literature-ai
+/home/dreece23/miniforge3/bin/mamba run -n litai python -m pytest tests/ -q
 ```
 
-### Test Services
-
+### Start Database API (required for MCP server)
 ```bash
-# Check health
-curl http://localhost:8001/health
-curl http://localhost:8002/api/v1/health
-
-# Search papers
-curl -X POST http://localhost:8002/api/v1/search/ \
-  -H "Content-Type: application/json" \
-  -d '{"query": "machine learning", "top_k": 5}'
+cd /home/dreece23/projects/research/misc/research/infrastructure/literature-database
+/home/dreece23/miniforge3/bin/mamba run -n litai uvicorn src.api.main:app --port 8001
 ```
 
-### API Documentation
-
-- literature-database: http://localhost:8001/docs
-- literature-ai: http://localhost:8002/docs
-
----
-
-## Data Enrichment Scripts
-
-These scripts work independently of the API mode:
-
+### Test MCP Server Standalone
 ```bash
-# Enrich papers missing abstracts
-mamba run -n litai python scripts/enrich_papers.py
-
-# Download open access PDFs
-mamba run -n litai python scripts/acquire_pdfs.py
-
-# Sync papers to vectorstore
-mamba run -n litai python scripts/sync_papers.py
+cd /home/dreece23/projects/research/misc/research/infrastructure/literature-ai
+/home/dreece23/miniforge3/bin/mamba run -n litai python -m src.mcp_server.server
 ```
 
----
+## PDF Acquisition
 
-## Troubleshooting
+### Method 1: Browser Automation (Recommended for VPN)
 
-### MCP Server Not Connecting
+Since the MCP server runs in WSL and can't use Windows VPN, use browser automation:
 
-1. Ensure literature-database is running on port 8001
-2. Check the configuration in `~/.claude.json`
-3. Restart Claude Code completely (not just refresh)
-
-### Tools Not Appearing
-
-The MCP tools are called automatically by Claude based on your requests. Just describe what you want:
-- "Search for papers about X"
-- "Get the details of paper Y"
-- "Find citations in my manuscript"
-
-### API Errors
-
-```bash
-# Check if literature-database is responding
-curl http://localhost:8001/api/v1/papers?limit=1
-
-# Check MCP server can import
-/home/dreece23/miniforge3/envs/litai/bin/python -c \
-  "from src.mcp_server import main; print('OK')"
+**One-time setup (Windows PowerShell/CMD):**
+```cmd
+cd C:\Users\dreec\literature-ai
+setup.bat
 ```
 
----
+**Workflow:**
+```python
+# 1. Queue papers for download (MCP tool)
+queue_batch_pdf_download(paper_ids=[1, 3, 4, 9, 17, 18, 20, 23, 24, 25, 26])
 
-## Next Steps
+# 2. Start the fetcher on Windows (while on VPN)
+# Double-click: C:\Users\dreec\literature-ai\start_fetcher.bat
+# Or run: python pdf_fetcher.py --watch
 
-1. **Restart Claude Code** to activate the MCP server
-2. **Ask Claude to search papers** to verify it's working
-3. **Try paper analysis** - ask Claude to summarize a specific paper
-4. **Run enrichment scripts** to fill in missing metadata
+# 3. Browser opens, handle any login prompts
+# 4. Process downloaded PDFs (MCP tool)
+process_downloaded_pdfs()
+```
+
+**Check status:**
+```python
+get_download_queue_status()
+```
+
+### Method 2: Direct Download (for Open Access)
+
+```python
+acquire_paper_pdf(paper_id=3)  # Tries open access sources
+```
+
+Supported publishers: Elsevier, ACS, Wiley, Nature, Springer, RSC, Taylor&Francis, MDPI
+
+## Pending Work
+
+1. **Paper 392** needs manual DB cleanup (has linked content, couldn't delete)
+2. **21 papers** still need PDFs - test with user on VPN
+3. **OpenURL resolver** may need HTML parsing adjustments for UW Primo
+
+## Current Session (2025-12-23)
+
+**Key Finding**: MCP server runs server-side and cannot use local VPN connection.
+
+### What was done:
+- ✅ All 70 tests pass
+- ✅ Fixed Elsevier URL construction to handle `linkinghub.elsevier.com` URLs
+- ✅ Verified correct PII lookup: DOI `10.1016/j.memsci.2020.118610` → PII `S037673882031187X`
+- ❌ **VPN limitation**: MCP server cannot download from publishers because it runs on server (WSL), not local machine with VPN
+
+### Workaround Options:
+1. **Manual download**: User downloads PDFs in browser while on VPN
+2. **Proxy the MCP server through VPN** - requires network configuration
+3. **Use OpenURL resolver** - but Primo response parsing may need work
+
+### Papers needing PDFs (21 total):
+IDs: 1, 3, 4, 9, 17, 18, 20, 23, 24, 25, 26, 45, 46, 49, 59, 62, 66, 68, 84, 87, 96
+All have DOIs (mostly Elsevier memsci journals - DOI prefix 10.1016)
+
+## Key Files
+
+| File | Purpose |
+|------|---------|
+| `src/mcp_server/server.py` | Main MCP server, tool routing |
+| `src/mcp_server/tools/pdf.py` | PDF acquisition (VPN/OpenURL added) |
+| `src/mcp_server/tools/project.py` | Project-level citation tools (14 tools) |
+| `src/mcp_server/tools/papers.py` | Core paper CRUD |
+| `src/mcp_server/tools/search.py` | Keyword + semantic search |
+| `src/mcp_server/tools/external.py` | CrossRef, OpenAlex, arXiv APIs |
+
+## Paper2 Integration
+
+MCP config at `/home/dreece23/projects/research/Paper2/.mcp.json`:
+```json
+{
+  "mcpServers": {
+    "literature": {
+      "type": "stdio",
+      "command": "/home/dreece23/miniforge3/bin/mamba",
+      "args": ["run", "-n", "litai", "--cwd",
+               "/home/dreece23/projects/research/misc/research/infrastructure/literature-ai",
+               "python", "-m", "src.mcp_server.server"],
+      "env": {"LITERATURE_DB_URL": "http://localhost:8001"}
+    }
+  }
+}
+```

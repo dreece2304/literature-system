@@ -19,7 +19,7 @@ The Literature Database Service is designed as a microservice within a larger re
 
 1. **Activate Environment**:
    ```bash
-   mamba activate litdb
+   mamba activate litai
    ```
 
 2. **Install Dependencies**:
@@ -133,20 +133,71 @@ GET /collections?limit=100
 
 ### Zotero Integration
 
-#### Trigger Zotero Sync
-```http
-POST /sync/zotero
-Content-Type: application/json
+Bidirectional sync with Zotero reference manager. Requires Zotero web API key.
 
-{
-  "user_id": "12345678",
-  "api_key": "your_api_key",
-  "library_type": "user"
-}
+#### Setup
+
+1. **Get Zotero API Key**: Go to https://www.zotero.org/settings/keys and create a new key with read/write access.
+
+2. **Configure Credentials**:
+   ```yaml
+   # config/credentials.yml
+   zotero:
+     api_key: "your_api_key_here"
+   ```
+
+3. **Configure Settings**:
+   ```yaml
+   # config/settings.yml
+   zotero:
+     library_id: "your_library_id"  # Find at zotero.org/settings/keys
+     library_type: "user"  # or "group"
+   ```
+
+#### WSL2 Users (Windows)
+
+The Zotero local API auto-detects your WSL2 networking mode:
+
+**Mirrored Networking Mode (Windows 11 22H2+):**
+- No special configuration needed - `localhost` works directly
+- Note: `localhostForwarding` has NO effect in mirrored mode
+
+**NAT Mode (older/default):**
+- Add to `C:\Users\<you>\.wslconfig`:
+  ```ini
+  [wsl2]
+  localhostForwarding=true
+  ```
+- Then restart WSL: `wsl --shutdown`
+
+**Firewall:** Ensure Windows Firewall allows port 23119:
+```powershell
+netsh advfirewall firewall add rule name="Zotero API" dir=in action=allow protocol=TCP localport=23119
 ```
 
-#### Get Sync Status
+#### CLI Commands
+
+```bash
+# Pull new papers from Zotero
+litdb zotero pull
+
+# Push enriched metadata to Zotero (non-destructive)
+litdb zotero push
+
+# Push and create new items for database-only papers
+litdb zotero push --create-new
+
+# Check sync status
+litdb zotero status
+
+# Push single paper
+litdb zotero push-paper 123
+```
+
+#### API Endpoints
+
 ```http
+POST /sync/zotero
 GET /sync/zotero/status
 ```
 
