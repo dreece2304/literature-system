@@ -23,7 +23,6 @@ if str(_src_path) not in sys.path:
 
 from literature_core import (
     get_logger,
-    success,
     error,
     PaperNotFoundError,
     PDFError,

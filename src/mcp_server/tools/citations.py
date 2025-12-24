@@ -16,7 +16,6 @@ from services.citation_service import CitationService, Citation
 
 # ManuscriptParser is in the local context module
 import sys
-from pathlib import Path
 _litai_src = Path(__file__).parent.parent.parent
 if str(_litai_src) not in sys.path:
     sys.path.insert(0, str(_litai_src))

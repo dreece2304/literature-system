@@ -18,15 +18,12 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
-
 from literature_core import (
     get_session,
     get_logger,
     Collection,
     Paper,
     CollectionNotFoundError,
-    PaperNotFoundError,
     ValidationError,
 )
 

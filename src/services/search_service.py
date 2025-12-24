@@ -24,10 +24,7 @@ Usage:
 """
 from __future__ import annotations
 
-import sys
-from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any
+from dataclasses import dataclass
 
 from literature_core import (
     get_session,
@@ -35,9 +32,7 @@ from literature_core import (
     Paper,
     Author,
     Tag,
-    SearchError,
     DEFAULT_SEARCH_LIMIT,
-    settings,
 )
 
 logger = get_logger(__name__)
@@ -180,7 +175,6 @@ class SearchService:
         """
         try:
             from embeddings.generator import get_embedding_generator
-            from embeddings.vectorstore import get_vector_store, get_chunk_store
 
             generator = get_embedding_generator()
 

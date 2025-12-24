@@ -9,7 +9,7 @@ Usage:
     if paper.read_status == ReadStatus.UNREAD:
         ...
 """
-from enum import Enum
+# Enum removed - not used, classes used for string constants
 
 
 # =============================================================================

@@ -34,55 +34,54 @@ _src_path = Path(__file__).parent.parent  # src/
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 
-from literature_core import setup_logging, settings as core_settings
-from config.ai_settings import settings
+from literature_core import setup_logging, settings as core_settings  # noqa: E402
 
 # Import tool implementations
-from .tools.papers import (
+from .tools.papers import (  # noqa: E402
     list_tools as list_paper_tools,
     call_tool as call_paper_tool,
 )
-from .tools.search import (
+from .tools.search import (  # noqa: E402
     list_tools as list_search_tools,
     call_tool as call_search_tool,
 )
-from .tools.external import (
+from .tools.external import (  # noqa: E402
     list_tools as list_external_tools,
     call_tool as call_external_tool,
 )
-from .tools.citations import (
+from .tools.citations import (  # noqa: E402
     list_tools as list_citation_tools,
     call_tool as call_citation_tool,
 )
-from .tools.pdf import (
+from .tools.pdf import (  # noqa: E402
     list_tools as list_pdf_tools,
     call_tool as call_pdf_tool,
 )
-from .tools.collections import (
+from .tools.collections import (  # noqa: E402
     list_tools as list_collection_tools,
     call_tool as call_collection_tool,
 )
-from .tools.notes import (
+from .tools.notes import (  # noqa: E402
     list_tools as list_note_tools,
     call_tool as call_note_tool,
 )
-from .tools.import_export import (
+from .tools.import_export import (  # noqa: E402
     list_tools as list_import_export_tools,
     call_tool as call_import_export_tool,
 )
-from .tools.project import (
+from .tools.project import (  # noqa: E402
     list_tools as list_project_tools,
     call_tool as call_project_tool,
 )
-from .tools.zotero import (
+from .tools.zotero import (  # noqa: E402
     list_tools as list_zotero_tools,
     call_tool as call_zotero_tool,
 )
-from .tools.browser_pdf import (
+from .tools.browser_pdf import (  # noqa: E402
     list_tools as list_browser_pdf_tools,
     call_tool as call_browser_pdf_tool,
 )
-from .resources.handlers import (
+from .resources.handlers import (  # noqa: E402
     list_resources,
     read_resource,
 )

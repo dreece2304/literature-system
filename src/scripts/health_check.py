@@ -8,7 +8,6 @@ Usage:
     python -m src.scripts.health_check
 """
 import sys
-import importlib.util
 from pathlib import Path
 
 # Add paths for imports
@@ -18,7 +17,7 @@ SRC_DIR = Path(__file__).parent.parent  # src/
 # Add src/ to path so modules are importable
 sys.path.insert(0, str(SRC_DIR))
 
-from loguru import logger
+from loguru import logger  # noqa: E402
 
 
 def check_database() -> tuple[bool, str]:

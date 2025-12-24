@@ -1,6 +1,6 @@
 """Zotero integration for syncing papers and collections."""
 import os
-import shutil
+# shutil removed - unused
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any
 from pyzotero import zotero
@@ -8,7 +8,7 @@ import yaml
 from loguru import logger
 
 from literature_core.database import get_session
-from literature_core.models import Paper, Author, Tag, paper_authors
+from literature_core.models import Paper, Author, paper_authors
 
 from extractors.zotero_local_api import ZoteroLocalAPI
 

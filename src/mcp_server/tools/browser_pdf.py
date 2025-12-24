@@ -21,7 +21,7 @@ from typing import Any
 from loguru import logger
 from mcp.types import TextContent, Tool
 
-from config.ai_settings import settings, DATA_DIR
+from config.ai_settings import DATA_DIR
 
 # Add src directory to path for literature_core imports
 _src_path = Path(__file__).parent.parent.parent.parent.parent.parent / "src"

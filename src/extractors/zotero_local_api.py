@@ -15,8 +15,9 @@ import requests
 from typing import Dict, List, Optional, Tuple
 from loguru import logger
 
-from literature_core.database import get_session
-from literature_core.models import Paper, Author, Collection, Tag
+# Unused imports removed - not needed for connector API
+# from literature_core.database import get_session
+# from literature_core.models import Paper, Author, Collection, Tag
 
 
 class ZoteroLocalAPI:
@@ -281,4 +282,3 @@ class ZoteroLocalAPI:
             "The Zotero connector API (port 23119) cannot list items. "
             "Use ZoteroSync.sync_from_api() with the web API instead."
         )
-

@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import List, Optional, Dict, Union, TYPE_CHECKING
-from dataclasses import dataclass
+from typing import List, Optional, Dict, Union
+# dataclass import removed - unused
 import numpy as np
 import torch
 from sentence_transformers import SentenceTransformer
@@ -20,14 +20,13 @@ from loguru import logger
 
 from config.ai_settings import settings
 
-if TYPE_CHECKING:
-    from literature_core import TextChunk, ChunkEmbedding
+# TextChunk and ChunkEmbedding are imported at runtime in methods where needed
 
 
 # Common section headers in academic papers
 SECTION_PATTERNS = [
     (r"^\s*(?:1\.?\s*)?(?:INTRODUCTION|Introduction)\s*$", "introduction"),
-    (r"^\s*(?:2\.?\s*)?(?:BACKGROUND|Background|RELATED\s+WORK|Related\s+Work|LITERATURE\s+REVIEW|Literature\s+Review)\s*$", "background"),
+    (r"^\s*(?:2\.?\s*)?(?:BACKGROUND|Background|RELATED\s+WORK|Related\s+Work|LITERATURE\s+REVIEW|Literature\s+Review)\s*$", "background"),  # noqa: E501
     (r"^\s*(?:3\.?\s*)?(?:METHODS?|Methods?|METHODOLOGY|Methodology|EXPERIMENTAL|Experimental)\s*$", "methods"),
     (r"^\s*(?:4\.?\s*)?(?:RESULTS?|Results?|FINDINGS|Findings)\s*$", "results"),
     (r"^\s*(?:5\.?\s*)?(?:DISCUSSION|Discussion)\s*$", "discussion"),

@@ -1,0 +1,6 @@
+[flake8]
+max-line-length = 120
+per-file-ignores =
+    mcp_server/*.py:E402
+    mcp_server/**/*.py:E402
+    scripts/*.py:E402

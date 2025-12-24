@@ -472,7 +472,6 @@ class PDFService:
                 "authors": [a.name for a in paper.authors],
             }
             doi = paper.doi
-            arxiv_id = paper.arxiv_id
 
             # Try to find PDF URL
             pdf_url = None

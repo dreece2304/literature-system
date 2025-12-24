@@ -43,7 +43,6 @@ from literature_core import (
     get_session,
     get_logger,
     Paper,
-    Author,
     Tag,
     ValidationError,
     MAX_SEARCH_LIMIT,

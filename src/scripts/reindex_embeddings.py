@@ -112,7 +112,7 @@ def show_stats():
     try:
         paper_store = get_vector_store()
         paper_stats = paper_store.get_stats()
-        print(f"\nPaper-level embeddings:")
+        print("\nPaper-level embeddings:")
         print(f"  Collection: {paper_stats['collection_name']}")
         print(f"  Count: {paper_stats['count']}")
         print(f"  Path: {paper_stats['persist_directory']}")
@@ -123,7 +123,7 @@ def show_stats():
     try:
         chunk_store = get_chunk_store()
         chunk_stats = chunk_store.get_stats()
-        print(f"\nChunk-level embeddings:")
+        print("\nChunk-level embeddings:")
         print(f"  Collection: {chunk_stats['collection_name']}")
         print(f"  Total chunks: {chunk_stats['total_chunks']}")
         print(f"  Papers indexed: {chunk_stats['papers_indexed']}")
@@ -133,16 +133,16 @@ def show_stats():
 
     # Database papers with full text
     papers = get_papers_with_fulltext()
-    print(f"\nDatabase:")
+    print("\nDatabase:")
     print(f"  Papers with full text: {len(papers)}")
 
     # Check for missing chunks
-    indexed_paper_ids = set()
+    # indexed_paper_ids removed - unused
     try:
         chunk_store = get_chunk_store()
         stats = chunk_store.get_stats()
         # This is a rough estimate
-        print(f"\nCoverage:")
+        print("\nCoverage:")
         print(f"  Papers in DB with full_text: {len(papers)}")
         print(f"  Papers with chunk embeddings: {stats['papers_indexed']}")
         if len(papers) > stats['papers_indexed']:
@@ -288,7 +288,7 @@ def main():
 
     # Final stats
     print("\n" + "-" * 60)
-    print(f"COMPLETE")
+    print("COMPLETE")
     print("-" * 60)
     print(f"Papers processed: {len(papers)}")
     print(f"Chunks created: {total_chunks}")

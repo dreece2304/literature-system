@@ -40,7 +40,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from sqlalchemy.orm import joinedload, selectinload
+from sqlalchemy.orm import selectinload
 
 from literature_core import (
     get_session,
@@ -49,7 +49,6 @@ from literature_core import (
     Author,
     Tag,
     Collection,
-    Note,
     CollectionNotFoundError,
     ValidationError,
     MAX_SEARCH_LIMIT,
