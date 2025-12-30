@@ -17,6 +17,9 @@ SRC_DIR = Path(__file__).parent.parent              # src/
 DATA_DIR = PROJECT_ROOT / "data"
 LOGS_DIR = PROJECT_ROOT / "logs"
 
+# Legacy data directories (where embeddings were generated)
+LEGACY_AI_DATA_DIR = PROJECT_ROOT / "infrastructure/literature-ai/data"
+
 
 class OllamaSettings(BaseSettings):
     """Ollama service configuration."""
@@ -63,7 +66,7 @@ class ChromaDBSettings(BaseSettings):
     """ChromaDB vector store configuration."""
 
     persist_directory: Path = Field(
-        default=DATA_DIR / "vectorstore",
+        default=LEGACY_AI_DATA_DIR / "vectorstore",
         description="ChromaDB persistence directory"
     )
     collection_name: str = Field(default="papers", description="Collection name")

@@ -11,7 +11,10 @@
         "-m",
         "mcp_server.server"
       ],
-      "cwd": "/home/dreece23/projects/research/misc/research/src"
+      "cwd": "/home/dreece23/projects/research/misc/research/src",
+      "env": {
+        "PYTHONPATH": "/home/dreece23/projects/research/misc/research/src"
+      }
     }
   }
 }

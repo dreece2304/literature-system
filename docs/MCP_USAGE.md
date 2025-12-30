@@ -45,7 +45,10 @@ Add to your project root `.mcp.json`:
       "type": "stdio",
       "command": "/path/to/miniforge3/bin/mamba",
       "args": ["run", "-n", "litai", "python", "-m", "mcp_server.server"],
-      "cwd": "/absolute/path/to/research/src"
+      "cwd": "/absolute/path/to/research/src",
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/research/src"
+      }
     }
   }
 }
@@ -59,16 +62,21 @@ Add to `~/.claude/settings.json`:
 {
   "mcpServers": {
     "literature": {
-      "type": "stdio", 
+      "type": "stdio",
       "command": "/home/user/miniforge3/bin/mamba",
       "args": ["run", "-n", "litai", "python", "-m", "mcp_server.server"],
-      "cwd": "/home/user/projects/research/src"
+      "cwd": "/home/user/projects/research/src",
+      "env": {
+        "PYTHONPATH": "/home/user/projects/research/src"
+      }
     }
   }
 }
 ```
 
-**Important:** Use absolute paths. Claude Code doesn't expand `~` or relative paths reliably.
+**Important:**
+- Use absolute paths. Claude Code doesn't expand `~` or relative paths reliably.
+- The `env.PYTHONPATH` is required so Python can find the `mcp_server` module when Claude Code launches the server from a different project directory.
 
 ## Integration with Claude Desktop
 
@@ -84,7 +92,10 @@ Add to Claude Desktop config:
     "literature": {
       "command": "/path/to/miniforge3/bin/mamba",
       "args": ["run", "-n", "litai", "python", "-m", "mcp_server.server"],
-      "cwd": "/absolute/path/to/research/src"
+      "cwd": "/absolute/path/to/research/src",
+      "env": {
+        "PYTHONPATH": "/absolute/path/to/research/src"
+      }
     }
   }
 }

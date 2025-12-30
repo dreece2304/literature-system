@@ -25,8 +25,11 @@ class ZoteroSync:
 
     def _load_config(self, config_path: Optional[str] = None) -> Dict:
         """Load configuration files."""
-        # Get base path relative to this module's location
-        base_path = Path(__file__).parent.parent.parent  # literature-database/
+        # Get base path - config is in infrastructure/literature-database/config/
+        # This file is at src/extractors/zotero_sync.py
+        src_dir = Path(__file__).parent.parent  # src/
+        project_root = src_dir.parent  # research/
+        config_dir = project_root / 'infrastructure' / 'literature-database' / 'config'
 
         # Load main settings
         if config_path:
@@ -36,13 +39,13 @@ class ZoteroSync:
             if env_path:
                 settings_path = Path(env_path)
             else:
-                settings_path = base_path / 'config' / 'settings.yml'
+                settings_path = config_dir / 'settings.yml'
 
         with open(settings_path, 'r') as f:
             config = yaml.safe_load(f)
 
         # Load credentials
-        credentials_path = base_path / 'config' / 'credentials.yml'
+        credentials_path = config_dir / 'credentials.yml'
         try:
             with open(credentials_path, 'r') as f:
                 credentials = yaml.safe_load(f)
@@ -126,22 +129,20 @@ class ZoteroSync:
             logger.info("Fetching items from Zotero web API...")
             items = self.client.everything(self.client.items())
 
-            session = next(get_session())
+            with get_session() as session:
+                for item in items:
+                    try:
+                        if self._is_paper_item(item):
+                            added, updated = self._sync_paper_item(session, item)
+                            if added:
+                                papers_added += 1
+                            if updated:
+                                papers_updated += 1
 
-            for item in items:
-                try:
-                    if self._is_paper_item(item):
-                        added, updated = self._sync_paper_item(session, item)
-                        if added:
-                            papers_added += 1
-                        if updated:
-                            papers_updated += 1
+                    except Exception as e:
+                        logger.error(f"Failed to sync item {item.get('key', 'unknown')}: {e}")
 
-                except Exception as e:
-                    logger.error(f"Failed to sync item {item.get('key', 'unknown')}: {e}")
-
-            session.commit()
-            session.close()
+                session.commit()
 
         except Exception as e:
             logger.error(f"Zotero web API sync failed: {e}")
@@ -358,45 +359,43 @@ class ZoteroSync:
 
         logger.info(f"Starting sync to Zotero (enrich_only={enrich_only})")
 
-        session = next(get_session())
         results = {'created': 0, 'updated': 0, 'skipped': 0, 'errors': 0}
 
-        try:
-            # Get all papers from database
-            papers = session.query(Paper).all()
-            logger.info(f"Found {len(papers)} papers in database")
+        with get_session() as session:
+            try:
+                # Get all papers from database
+                papers = session.query(Paper).all()
+                logger.info(f"Found {len(papers)} papers in database")
 
-            for paper in papers:
-                try:
-                    if paper.zotero_key:
-                        # Paper exists in Zotero - try to enrich
-                        updated = self._enrich_zotero_item(paper)
-                        if updated:
-                            results['updated'] += 1
+                for paper in papers:
+                    try:
+                        if paper.zotero_key:
+                            # Paper exists in Zotero - try to enrich
+                            updated = self._enrich_zotero_item(paper)
+                            if updated:
+                                results['updated'] += 1
+                            else:
+                                results['skipped'] += 1
+                        elif not enrich_only:
+                            # Paper doesn't exist in Zotero - create it
+                            created = self._create_zotero_item(session, paper)
+                            if created:
+                                results['created'] += 1
+                            else:
+                                results['skipped'] += 1
                         else:
                             results['skipped'] += 1
-                    elif not enrich_only:
-                        # Paper doesn't exist in Zotero - create it
-                        created = self._create_zotero_item(session, paper)
-                        if created:
-                            results['created'] += 1
-                        else:
-                            results['skipped'] += 1
-                    else:
-                        results['skipped'] += 1
 
-                except Exception as e:
-                    logger.error(f"Failed to sync paper {paper.id} '{paper.title[:50]}...': {e}")
-                    results['errors'] += 1
+                    except Exception as e:
+                        logger.error(f"Failed to sync paper {paper.id} '{paper.title[:50]}...': {e}")
+                        results['errors'] += 1
 
-            session.commit()
+                session.commit()
 
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Sync to Zotero failed: {e}")
-            raise
-        finally:
-            session.close()
+            except Exception as e:
+                session.rollback()
+                logger.error(f"Sync to Zotero failed: {e}")
+                raise
 
         logger.info(f"Sync to Zotero complete: {results}")
         return results
@@ -415,56 +414,53 @@ class ZoteroSync:
         if not self.client:
             raise ValueError("Web API client required for push operations. Configure API key.")
 
-        session = next(get_session())
+        with get_session() as session:
+            try:
+                paper = session.query(Paper).filter_by(id=paper_id).first()
+                if not paper:
+                    return {'action': 'error', 'details': f'Paper {paper_id} not found'}
 
-        try:
-            paper = session.query(Paper).filter_by(id=paper_id).first()
-            if not paper:
-                return {'action': 'error', 'details': f'Paper {paper_id} not found'}
-
-            if paper.zotero_key:
-                # Try to enrich existing Zotero item
-                updated = self._enrich_zotero_item(paper)
-                session.commit()
-                if updated:
-                    return {
-                        'action': 'updated',
-                        'zotero_key': paper.zotero_key,
-                        'details': 'Enriched with database metadata'
-                    }
+                if paper.zotero_key:
+                    # Try to enrich existing Zotero item
+                    updated = self._enrich_zotero_item(paper)
+                    session.commit()
+                    if updated:
+                        return {
+                            'action': 'updated',
+                            'zotero_key': paper.zotero_key,
+                            'details': 'Enriched with database metadata'
+                        }
+                    else:
+                        return {
+                            'action': 'skipped',
+                            'zotero_key': paper.zotero_key,
+                            'details': 'Zotero item already complete'
+                        }
+                elif create_if_missing:
+                    # Create new Zotero item
+                    created = self._create_zotero_item(session, paper)
+                    session.commit()
+                    if created:
+                        return {
+                            'action': 'created',
+                            'zotero_key': paper.zotero_key,
+                            'details': 'New item created in Zotero'
+                        }
+                    else:
+                        return {
+                            'action': 'error',
+                            'details': 'Failed to create Zotero item'
+                        }
                 else:
                     return {
                         'action': 'skipped',
-                        'zotero_key': paper.zotero_key,
-                        'details': 'Zotero item already complete'
+                        'details': 'Paper not in Zotero and create_if_missing=False'
                     }
-            elif create_if_missing:
-                # Create new Zotero item
-                created = self._create_zotero_item(session, paper)
-                session.commit()
-                if created:
-                    return {
-                        'action': 'created',
-                        'zotero_key': paper.zotero_key,
-                        'details': 'New item created in Zotero'
-                    }
-                else:
-                    return {
-                        'action': 'error',
-                        'details': 'Failed to create Zotero item'
-                    }
-            else:
-                return {
-                    'action': 'skipped',
-                    'details': 'Paper not in Zotero and create_if_missing=False'
-                }
 
-        except Exception as e:
-            session.rollback()
-            logger.error(f"Failed to push paper {paper_id}: {e}")
-            return {'action': 'error', 'details': str(e)}
-        finally:
-            session.close()
+            except Exception as e:
+                session.rollback()
+                logger.error(f"Failed to push paper {paper_id}: {e}")
+                return {'action': 'error', 'details': str(e)}
 
     def _create_zotero_item(self, session, paper: Paper) -> bool:
         """
@@ -629,9 +625,7 @@ class ZoteroSync:
         if not self.client:
             raise ValueError("Web API client required for push operations. Configure API key.")
 
-        session = next(get_session())
-
-        try:
+        with get_session() as session:
             paper = session.query(Paper).filter_by(id=paper_id).first()
             if not paper:
                 return {'success': False, 'error': f'Paper {paper_id} not found'}
@@ -654,9 +648,6 @@ class ZoteroSync:
             except Exception as e:
                 return {'success': False, 'error': f'Upload failed: {e}'}
 
-        finally:
-            session.close()
-
     def get_sync_status(self) -> Dict[str, Any]:
         """
         Get sync status comparing database and Zotero.
@@ -664,9 +655,7 @@ class ZoteroSync:
         Returns:
             Dict with counts and lists of papers in various states
         """
-        session = next(get_session())
-
-        try:
+        with get_session() as session:
             # Papers linked to Zotero
             linked = session.query(Paper).filter(Paper.zotero_key.isnot(None)).count()
 
@@ -689,6 +678,3 @@ class ZoteroSync:
                     'web': self.client is not None
                 }
             }
-
-        finally:
-            session.close()
