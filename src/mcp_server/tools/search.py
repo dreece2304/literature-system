@@ -16,7 +16,8 @@ from typing import Any
 from mcp.types import Tool, TextContent
 
 # Add src directory to path for imports
-_src_path = Path(__file__).parent.parent.parent.parent.parent.parent / "src"
+# search.py is at src/mcp_server/tools/search.py, so parent.parent.parent = src/
+_src_path = Path(__file__).parent.parent.parent
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 
@@ -28,6 +29,7 @@ from literature_core import (
     LiteratureError,
 )
 from services import SearchService
+from services.hybrid_search_service import HybridSearchService
 
 logger = get_logger(__name__)
 
@@ -36,10 +38,54 @@ async def list_tools() -> list[Tool]:
     """List search tools."""
     return [
         Tool(
+            name="hybrid_search",
+            description=(
+                "Advanced search combining keyword (BM25) and semantic search with "
+                "Reciprocal Rank Fusion. Best for comprehensive literature discovery. "
+                "Falls back gracefully if semantic search unavailable."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (natural language or keywords)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum results to return",
+                        "default": 20,
+                    },
+                    "alpha": {
+                        "type": "number",
+                        "description": (
+                            "Semantic weight (0-1). 0.65=balanced (default), "
+                            "0=keyword only, 1=semantic only"
+                        ),
+                        "default": 0.65,
+                    },
+                    "min_similarity": {
+                        "type": "number",
+                        "description": "Minimum similarity for semantic results (0.35 recommended)",
+                        "default": 0.35,
+                    },
+                    "year_min": {
+                        "type": "integer",
+                        "description": "Minimum publication year",
+                    },
+                    "year_max": {
+                        "type": "integer",
+                        "description": "Maximum publication year",
+                    },
+                },
+                "required": ["query"],
+            },
+        ),
+        Tool(
             name="keyword_search",
             description=(
                 "Full-text keyword search across papers. Searches title, abstract, "
-                "and full text using Whoosh index."
+                "and full text using SQLite FTS5 with BM25 ranking."
             ),
             inputSchema={
                 "type": "object",
@@ -228,9 +274,50 @@ def _search_by_tag(arguments: dict[str, Any]) -> list[TextContent]:
     )
 
 
+async def _hybrid_search(arguments: dict[str, Any]) -> list[TextContent]:
+    """Hybrid search combining keyword and semantic search."""
+    result = await HybridSearchService.search(
+        query=arguments["query"],
+        limit=arguments.get("limit", 20),
+        alpha=arguments.get("alpha", 0.65),
+        min_similarity=arguments.get("min_similarity", 0.35),
+        year_min=arguments.get("year_min"),
+        year_max=arguments.get("year_max"),
+    )
+
+    # Build response with diagnostics
+    response_data = search_result(
+        results=result.results,
+        query=result.query,
+        search_type="hybrid",
+    )
+
+    # Add hybrid-specific metadata
+    response_data["alpha"] = result.alpha
+    response_data["search_modes"] = result.search_modes
+    response_data["diagnostics"] = {
+        "fts_available": result.diagnostics.fts_available,
+        "semantic_available": result.diagnostics.semantic_available,
+        "keyword_results_count": result.diagnostics.keyword_results_count,
+        "semantic_results_count": result.diagnostics.semantic_results_count,
+        "merged_count": result.diagnostics.merged_count,
+        "fallback_used": result.diagnostics.fallback_used,
+        "warnings": result.diagnostics.warnings,
+    }
+
+    if result.diagnostics.fallback_reason:
+        response_data["diagnostics"]["fallback_reason"] = result.diagnostics.fallback_reason
+
+    return _to_response(response_data)
+
+
 # ============================================================================
 # Main entry point
 # ============================================================================
+
+# Async tool names that require await
+ASYNC_TOOLS = {"semantic_search", "hybrid_search"}
+
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Execute a search tool.
@@ -242,19 +329,26 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     Returns:
         List of TextContent with the result
     """
-    tool_map = {
+    sync_tool_map = {
         "keyword_search": _keyword_search,
         "search_by_author": _search_by_author,
         "search_by_tag": _search_by_tag,
     }
 
-    if name not in tool_map and name != "semantic_search":
+    async_tool_map = {
+        "semantic_search": _semantic_search,
+        "hybrid_search": _hybrid_search,
+    }
+
+    all_tools = set(sync_tool_map.keys()) | set(async_tool_map.keys())
+
+    if name not in all_tools:
         return _to_response(error(f"Unknown search tool: {name}", code="UNKNOWN_TOOL"))
 
     try:
-        if name == "semantic_search":
-            return await _semantic_search(arguments)
-        return tool_map[name](arguments)
+        if name in async_tool_map:
+            return await async_tool_map[name](arguments)
+        return sync_tool_map[name](arguments)
 
     except SearchError as e:
         logger.error(f"Search error: {e.message}")
