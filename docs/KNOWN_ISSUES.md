@@ -13,14 +13,15 @@ eliminating routing conflicts.
 
 ## Database Maintenance
 
-### 3. Paper validation not automated
-**Status**: Infrastructure exists, no automation
-**Location**: External API tools exist but no batch validation
+### Paper validation (IMPLEMENTED - Dec 2024)
+**Status**: Implemented
+**Location**: `src/services/validation_service.py`, `src/mcp_server/tools/validation.py`
 
-**Need**:
-- ValidationService to verify papers exist in external databases
-- `verified` status field on papers
-- Batch validation tool
+Features:
+- ValidationService with batch and single-paper validation
+- Paper model now has validation fields (status, source, date, confidence)
+- 5 MCP tools: get_validation_status, get_validation_queue, validate_paper,
+  validate_papers_batch, reset_validation
 
 ---
 

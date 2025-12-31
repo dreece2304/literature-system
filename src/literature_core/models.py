@@ -1,6 +1,6 @@
 """SQLAlchemy models for literature database."""
 from sqlalchemy import (
-    Column, Integer, String, Text,
+    Column, Integer, String, Text, Float,
     DateTime, ForeignKey, Table, JSON, Index
 )
 from sqlalchemy.orm import declarative_base, relationship, backref
@@ -73,6 +73,12 @@ class Paper(Base):
     date_read = Column(DateTime)
     rating = Column(Integer, index=True)  # 1-5 stars
     read_status = Column(String(20), default='unread', index=True)  # unread, reading, read
+
+    # Validation status (external database verification)
+    validation_status = Column(String(20), default='unvalidated', index=True)  # unvalidated, verified, not_found, error
+    validation_source = Column(String(50))  # crossref, semantic_scholar, openalex, etc.
+    validation_date = Column(DateTime)
+    validation_confidence = Column(Float)  # 0.0-1.0 confidence score
 
     # Extracted content
     full_text = Column(Text)

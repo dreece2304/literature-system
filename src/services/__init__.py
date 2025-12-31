@@ -25,6 +25,7 @@ from .citation_service import CitationService
 from .hybrid_search_service import HybridSearchService
 from .search_diagnostics_service import SearchDiagnosticsService
 from .embedding_service import EmbeddingService
+from .validation_service import ValidationService
 
 __all__ = [
     "PaperService",
@@ -37,4 +38,5 @@ __all__ = [
     "HybridSearchService",
     "SearchDiagnosticsService",
     "EmbeddingService",
+    "ValidationService",
 ]
