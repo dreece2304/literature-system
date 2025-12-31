@@ -3,16 +3,19 @@ Citation Tools for MCP Server.
 
 These tools provide citation management capabilities including
 manuscript scanning, citation checking, and BibTeX generation.
+
+Tools in this module work with paper data passed directly as arguments,
+not with database queries. For database-backed citation operations,
+see the project.py module.
 """
 
 import json
+import re
 from typing import Any
 from pathlib import Path
 
 from mcp.types import Tool, TextContent
 from loguru import logger
-
-from services.citation_service import CitationService, Citation
 
 # ManuscriptParser is in the local context module
 import sys
@@ -186,9 +189,196 @@ async def list_tools() -> list[Tool]:
     ]
 
 
+# ============================================================================
+# Helper Functions
+# ============================================================================
+
+
+def _generate_citation_key(title: str, authors: str, year: int | None = None) -> str:
+    """Generate a BibTeX citation key from paper metadata.
+
+    Format: firstauthorYEARfirstword
+    Example: smith2023machine
+
+    Args:
+        title: Paper title
+        authors: Author names (comma or 'and' separated)
+        year: Publication year
+
+    Returns:
+        Citation key string
+    """
+    # Extract first author's last name
+    first_author = "unknown"
+    if authors:
+        # Handle "Smith, John" or "John Smith" or "Smith, J. and Doe, J."
+        authors_clean = authors.replace(" and ", ", ").replace(";", ",")
+        first_author_part = authors_clean.split(",")[0].strip()
+        # If "Smith, John" format, use Smith
+        # If "John Smith" format, use last word
+        words = first_author_part.split()
+        if len(words) > 0:
+            first_author = words[-1] if len(words) > 1 else words[0]
+        first_author = re.sub(r'[^a-zA-Z]', '', first_author).lower()
+
+    # Extract first meaningful word from title
+    title_word = ""
+    if title:
+        # Skip common articles
+        skip_words = {"a", "an", "the", "on", "of", "for", "in", "to"}
+        for word in title.split():
+            clean = re.sub(r'[^a-zA-Z]', '', word).lower()
+            if clean and clean not in skip_words:
+                title_word = clean
+                break
+
+    year_str = str(year) if year else ""
+
+    return f"{first_author}{year_str}{title_word}"
+
+
+def _to_bibtex(
+    paper: dict[str, Any],
+    entry_type: str = "article",
+    key: str | None = None
+) -> str:
+    """Generate BibTeX entry for a paper.
+
+    Args:
+        paper: Paper dict with title, authors, year, etc.
+        entry_type: BibTeX entry type (article, inproceedings, etc.)
+        key: Citation key (generated if not provided)
+
+    Returns:
+        BibTeX entry string
+    """
+    # Normalize authors format
+    authors = paper.get("authors", "Unknown")
+    if isinstance(authors, list):
+        authors = " and ".join(authors)
+
+    # Generate key if not provided
+    if not key:
+        key = _generate_citation_key(
+            paper.get("title", ""),
+            authors,
+            paper.get("year"),
+        )
+
+    fields = []
+    if paper.get("title"):
+        fields.append(f'  title = {{{paper["title"]}}}')
+    if authors:
+        fields.append(f'  author = {{{authors}}}')
+    if paper.get("year"):
+        fields.append(f'  year = {{{paper["year"]}}}')
+    if paper.get("journal"):
+        fields.append(f'  journal = {{{paper["journal"]}}}')
+    if paper.get("venue"):
+        fields.append(f'  booktitle = {{{paper["venue"]}}}')
+    if paper.get("volume"):
+        fields.append(f'  volume = {{{paper["volume"]}}}')
+    if paper.get("number"):
+        fields.append(f'  number = {{{paper["number"]}}}')
+    if paper.get("pages"):
+        fields.append(f'  pages = {{{paper["pages"]}}}')
+    if paper.get("doi"):
+        fields.append(f'  doi = {{{paper["doi"]}}}')
+    if paper.get("url"):
+        fields.append(f'  url = {{{paper["url"]}}}')
+
+    return f"@{entry_type}{{{key},\n" + ",\n".join(fields) + "\n}"
+
+
+def _format_apa(paper: dict[str, Any]) -> str:
+    """Format paper in APA style."""
+    authors = paper.get("authors", "Unknown")
+    if isinstance(authors, list):
+        authors = ", ".join(authors)
+    year = paper.get("year", "n.d.")
+    title = paper.get("title", "Untitled")
+    journal = paper.get("journal", "")
+
+    citation = f"{authors} ({year}). {title}."
+    if journal:
+        citation += f" {journal}."
+    if paper.get("doi"):
+        citation += f" https://doi.org/{paper['doi']}"
+
+    return citation
+
+
+def _format_mla(paper: dict[str, Any]) -> str:
+    """Format paper in MLA style."""
+    authors = paper.get("authors", "Unknown")
+    if isinstance(authors, list):
+        authors = ", ".join(authors)
+    title = paper.get("title", "Untitled")
+    journal = paper.get("journal", "")
+    year = paper.get("year", "")
+
+    citation = f'{authors}. "{title}."'
+    if journal:
+        citation += f" {journal},"
+    if year:
+        citation += f" {year}."
+
+    return citation
+
+
+def _format_chicago(paper: dict[str, Any]) -> str:
+    """Format paper in Chicago style."""
+    authors = paper.get("authors", "Unknown")
+    if isinstance(authors, list):
+        authors = ", ".join(authors)
+    title = paper.get("title", "Untitled")
+    journal = paper.get("journal", "")
+    year = paper.get("year", "")
+
+    citation = f'{authors}. "{title}."'
+    if journal:
+        citation += f" {journal}"
+    if year:
+        citation += f" ({year})."
+
+    return citation
+
+
+def _validate_paper(paper: dict[str, Any]) -> dict[str, Any]:
+    """Validate a paper's citation data.
+
+    Returns:
+        Dict with valid (bool), errors (list), warnings (list)
+    """
+    errors = []
+    warnings = []
+
+    # Required fields
+    if not paper.get("title"):
+        errors.append("Missing title")
+    if not paper.get("authors"):
+        errors.append("Missing authors")
+
+    # Recommended fields
+    if not paper.get("year"):
+        warnings.append("Missing year")
+    if not paper.get("doi") and not paper.get("url"):
+        warnings.append("No DOI or URL")
+
+    return {
+        "valid": len(errors) == 0,
+        "errors": errors,
+        "warnings": warnings,
+    }
+
+
+# ============================================================================
+# Tool Implementation
+# ============================================================================
+
+
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Execute a citation tool."""
-    citation_service = CitationService()
     parser = ManuscriptParser()
 
     try:
@@ -257,13 +447,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 if isinstance(authors, list):
                     authors = ", ".join(authors)
 
-                citation = citation_service.create_citation({
-                    "id": paper.get("id"),
-                    "title": paper.get("title", ""),
-                    "authors": authors,
-                    "year": paper.get("year"),
-                })
-                library_keys[citation.cite_key] = paper
+                key = _generate_citation_key(
+                    paper.get("title", ""),
+                    authors,
+                    paper.get("year"),
+                )
+                library_keys[key] = paper
 
             library_key_set = set(library_keys.keys())
 
@@ -300,22 +489,16 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
         elif name == "suggest_citation_key":
-            # Handle authors format
             authors = arguments.get("authors", "Unknown")
-            if isinstance(authors, list):
-                authors = ", ".join(authors)
+            title = arguments.get("title", "")
+            year = arguments.get("year")
 
-            citation = Citation(
-                paper_id="temp",
-                title=arguments.get("title", ""),
-                authors=authors,
-                year=arguments.get("year"),
-            )
+            key = _generate_citation_key(title, authors, year)
 
             result = {
-                "suggested_key": citation.cite_key,
+                "suggested_key": key,
                 "format": "firstauthorYEARfirstword",
-                "example_usage": f"\\cite{{{citation.cite_key}}}",
+                "example_usage": f"\\cite{{{key}}}",
             }
             return [TextContent(type="text", text=json.dumps(result, indent=2))]
 
@@ -325,24 +508,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             bibtex_entries = []
             for paper in papers:
-                # Handle authors format
-                authors = paper.get("authors", "Unknown")
-                if isinstance(authors, list):
-                    authors = " and ".join(authors)
-
-                citation = Citation(
-                    paper_id=str(paper.get("id", "temp")),
-                    title=paper.get("title", ""),
-                    authors=authors,
-                    year=paper.get("year"),
-                    venue=paper.get("journal") or paper.get("venue"),
-                    doi=paper.get("doi"),
-                    url=paper.get("url"),
-                    volume=paper.get("volume"),
-                    number=paper.get("number"),
-                    pages=paper.get("pages"),
-                )
-                bibtex_entries.append(citation.to_bibtex(entry_type))
+                bibtex_entries.append(_to_bibtex(paper, entry_type))
 
             return [TextContent(
                 type="text",
@@ -354,33 +520,37 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             style = arguments.get("style", "apa")
             sort = arguments.get("sort", True)
 
-            # Normalize paper data
-            normalized_papers = []
+            # Sort by author if requested
+            if sort:
+                papers = sorted(
+                    papers,
+                    key=lambda p: str(p.get("authors", "")).lower()
+                )
+
+            # Format each paper
+            formatted = []
             for paper in papers:
-                authors = paper.get("authors", "Unknown")
-                if isinstance(authors, list):
-                    authors = ", ".join(authors)
-                normalized_papers.append({
-                    **paper,
-                    "authors": authors,
-                })
+                if style == "apa":
+                    formatted.append(_format_apa(paper))
+                elif style == "mla":
+                    formatted.append(_format_mla(paper))
+                elif style == "chicago":
+                    formatted.append(_format_chicago(paper))
+                elif style == "bibtex":
+                    formatted.append(_to_bibtex(paper))
+                else:
+                    formatted.append(_format_apa(paper))  # Default to APA
 
-            bibliography = citation_service.generate_bibliography(
-                normalized_papers,
-                style=style,
-                sort=sort,
-            )
-
-            return [TextContent(type="text", text=bibliography)]
+            return [TextContent(type="text", text="\n\n".join(formatted))]
 
         elif name == "validate_citations":
             papers = arguments["papers"]
 
             results = []
             for paper in papers:
-                validation = citation_service.validate_citation(paper)
+                validation = _validate_paper(paper)
                 results.append({
-                    "title": paper.get("title", "Unknown")[:50],
+                    "title": str(paper.get("title", "Unknown"))[:50],
                     "valid": validation["valid"],
                     "errors": validation["errors"],
                     "warnings": validation["warnings"],
