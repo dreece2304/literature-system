@@ -18,7 +18,25 @@ This MCP server provides tools for managing academic literature directly from Cl
 
 - Python 3.11+
 - Conda/Mamba environment: `litai`
-- Database at `infrastructure/literature-database/data/metadata/literature.db`
+- NVIDIA GPU with CUDA support (recommended for embeddings)
+- Database at `data/sqlite/literature.db`
+
+### Environment Setup
+
+```bash
+# Create environment from environment.yml
+mamba env create -f environment.yml
+
+# Or quick manual setup:
+mamba create -n litai python=3.11 pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia -c conda-forge
+mamba activate litai
+pip install sentence-transformers chromadb httpx mcp pydantic pydantic-settings \
+    loguru pyyaml pypdf pdfplumber pyzotero bibtexparser pytest pytest-asyncio
+
+# Copy and configure API keys
+cp archive/infrastructure/literature-ai/.env .env
+# Edit .env with your API keys (Semantic Scholar, CrossRef, etc.)
+```
 
 ### Manual Start
 
@@ -335,3 +353,119 @@ SQLite Database
 ```
 
 No HTTP API layer - direct database access via services for minimal latency.
+
+## Testing
+
+The project includes a comprehensive test suite:
+
+| Test Type | Count | Description |
+|-----------|-------|-------------|
+| Integration | 225 | MCP tool tests with in-memory database |
+| Real API | 18 | Live external API tests |
+| Unit | ~50 | Service layer tests |
+| **Total** | **~293** | All tests passing |
+
+### Running Tests
+
+```bash
+# Activate environment
+mamba activate litai
+cd /path/to/research
+
+# Run integration tests (recommended)
+pytest tests/integration/ -v
+
+# Run all tests (excludes real API by default)
+pytest tests/ -v --ignore=tests/integration/tools/test_external_tools_real.py
+
+# Run real external API tests (requires API keys in .env)
+pytest tests/integration/tools/test_external_tools_real.py -v
+
+# Run with coverage
+pytest tests/ --cov=src --cov-report=html
+
+# Skip slow benchmarks
+pytest tests/ -v -m "not slow"
+```
+
+### Test Structure
+
+```
+tests/
+├── conftest.py              # Shared fixtures (in-memory DB, mocks)
+├── fixtures/                # Test data and mock factories
+├── unit/
+│   ├── services/           # Service layer tests
+│   ├── models/             # ORM model tests
+│   └── embeddings/         # Embedding/chunker tests
+├── integration/
+│   ├── tools/              # MCP tool handler tests
+│   └── test_database_integrity.py
+└── benchmarks/             # Performance tests
+```
+
+### Key Test Fixtures
+
+- `db` - Isolated in-memory SQLite database per test
+- `mock_external_apis` - Mocked CrossRef, Semantic Scholar, etc.
+- `mock_embedding_generator` - Deterministic embeddings
+- `mock_vector_store` - In-memory ChromaDB replacement
+
+## Maintenance Scripts
+
+Located in `src/scripts/`:
+
+### Health Check
+
+```bash
+python -m scripts.health_check
+python -m scripts.health_check --json  # For automation
+```
+
+Checks: database connectivity, ChromaDB status, PDF storage, disk/memory usage.
+
+### Integrity Check
+
+```bash
+python -m scripts.integrity_check
+python -m scripts.integrity_check --fix  # Auto-fix issues
+```
+
+Finds: orphan notes, missing PDFs, duplicate papers, broken Zotero links.
+
+### Reindex
+
+```bash
+python -m scripts.reindex --incremental  # Only missing
+python -m scripts.reindex --full         # Complete rebuild
+python -m scripts.reindex --papers 1 2 3 # Specific papers
+```
+
+Rebuilds embeddings and search indexes.
+
+### Backup
+
+```bash
+python -m scripts.backup --output-dir ~/backups
+python -m scripts.backup -o ~/backups --include-pdfs --compress
+python -m scripts.backup --list         # List existing backups
+python -m scripts.backup --cleanup 5    # Keep last 5 backups
+```
+
+### Combined Maintenance
+
+```bash
+python -m scripts.maintenance              # Health + integrity
+python -m scripts.maintenance --all        # All tasks
+python -m scripts.maintenance --fix        # Auto-fix issues
+```
+
+### Scheduling (cron)
+
+```bash
+# Daily health check
+0 6 * * * cd /path/to/src && python -m scripts.health_check --json >> /var/log/literature.log
+
+# Weekly maintenance
+0 2 * * 0 cd /path/to/src && python -m scripts.maintenance --all --backup-dir ~/backups
+```

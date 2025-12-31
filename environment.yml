@@ -1,0 +1,79 @@
+# Literature MCP Server Environment
+# Install: mamba env create -f environment.yml
+# Update: mamba env update -f environment.yml --prune
+name: litai
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+
+dependencies:
+  # Core Python
+  - python=3.11
+
+  # PyTorch with CUDA (GPU support)
+  - pytorch>=2.5
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+
+  # Scientific computing
+  - numpy
+  - pandas
+  - sqlalchemy>=2.0
+
+  # Development tools
+  - pip
+
+  - pip:
+      # MCP Server
+      - mcp>=1.0.0
+
+      # AI/ML - Embeddings
+      - sentence-transformers>=2.3.0
+      - chromadb>=1.0.0
+
+      # Database
+      - pydantic>=2.5.0
+      - pydantic-settings>=2.1.0
+
+      # External APIs
+      - httpx>=0.26.0
+
+      # PDF Processing
+      - pypdf>=4.0.0
+      - pdfplumber>=0.10.0
+
+      # Bibliography
+      - bibtexparser>=1.4.0
+
+      # Zotero Integration
+      - pyzotero>=1.5.0
+
+      # Search
+      - whoosh>=2.7.0
+      - feedparser>=6.0.0
+
+      # Utilities
+      - python-dotenv>=1.0.0
+      - loguru>=0.7.0
+      - pyyaml>=6.0.0
+
+      # Testing
+      - pytest>=8.0.0
+      - pytest-asyncio>=0.23.0
+      - pytest-cov>=4.0.0
+
+      # Code Quality
+      - flake8>=7.0.0
+      - black>=24.0.0
+
+# GPU Requirements:
+# - NVIDIA GPU with CUDA support
+# - Driver version 525+ (for CUDA 12.1)
+# - 8GB+ VRAM recommended for embedding models
+
+# Quick Install Commands:
+# mamba create -n litai python=3.11 pytorch torchvision torchaudio pytorch-cuda=12.1 -c pytorch -c nvidia -c conda-forge
+# mamba activate litai
+# pip install -r <(grep -A 100 "pip:" environment.yml | tail -n +2 | sed 's/^.*- //')

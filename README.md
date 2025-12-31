@@ -41,12 +41,18 @@ research/
 │   ├── mcp_server/         # MCP server for Claude
 │   ├── embeddings/         # Vector search (ChromaDB)
 │   ├── extractors/         # Zotero sync
-│   └── scripts/            # Utilities (health_check)
-├── infrastructure/         # Legacy directories (data only)
-│   ├── literature-database/data/  # SQLite database, PDFs
-│   └── literature-ai/data/        # ChromaDB vectors
-├── archive/               # Archived code
-└── docs/                  # Documentation
+│   └── scripts/            # Utilities (health_check, backup)
+├── tests/                  # Comprehensive test suite
+│   ├── integration/        # MCP tool integration tests
+│   ├── unit/               # Service layer unit tests
+│   └── fixtures/           # Shared test fixtures
+├── data/                   # Runtime data
+│   ├── sqlite/             # SQLite database
+│   ├── pdfs/               # PDF storage
+│   └── embeddings/         # ChromaDB vectors
+├── docs/                   # Documentation
+├── archive/                # Archived legacy code
+└── environment.yml         # Conda environment spec
 ```
 
 ## Database Statistics
