@@ -83,10 +83,31 @@ See [docs/MCP_USAGE.md](docs/MCP_USAGE.md) for detailed integration guide.
 }
 ```
 
+## Search Capabilities
+
+The system features **hybrid search** combining keyword (BM25) and semantic (vector) search:
+
+```
+# Recommended: Hybrid search for comprehensive discovery
+hybrid_search("ALD precursor chemistry")
+
+# Keyword-only: When you need exact term matches
+keyword_search("hafnium oxide")
+
+# Semantic: Find conceptually similar papers
+semantic_search("thin film growth mechanisms")
+
+# Check search health
+get_search_status(detailed=true)
+```
+
+See [Search Architecture](docs/SEARCH.md) for details on FTS5, ChromaDB, and Reciprocal Rank Fusion.
+
 ## Documentation
 
 - [MCP Integration Guide](docs/MCP_USAGE.md) - How to use with Claude
 - [Tool Reference](docs/TOOL_REFERENCE.md) - All MCP tool signatures
+- [Search Architecture](docs/SEARCH.md) - FTS5, ChromaDB, hybrid search
 - [Source Code Guide](src/README.md) - Code structure
 - [Development Commands](docs/DEVELOPMENT_COMMANDS.md) - Dev workflow
 - [Claude Governance](CLAUDE.md) - AI agent guidelines

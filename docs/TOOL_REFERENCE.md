@@ -86,12 +86,44 @@ Returns: {success, data: {deleted_count}}
 
 ## Search
 
-### keyword_search
-Full-text keyword search using Whoosh index.
+### hybrid_search ⭐ (Recommended)
+Advanced search combining keyword (BM25) and semantic search with Reciprocal Rank Fusion (RRF). Best for comprehensive literature discovery.
 
 ```
 Parameters:
-  query: str           # Required - Search query
+  query: str                     # Required - Search query (natural language or keywords)
+  limit: int = 20                # Max results
+  alpha: float = 0.65            # Semantic weight (0-1). 0.65=balanced, 0=keyword only, 1=semantic only
+  min_similarity: float = 0.35   # Minimum similarity for semantic results
+  year_min: int | None           # Minimum publication year
+  year_max: int | None           # Maximum publication year
+
+Returns: {
+  success,
+  data: [{id, title, year, authors, score}],
+  count,
+  alpha,
+  search_modes: ["keyword", "semantic"],
+  diagnostics: {
+    fts_available, semantic_available,
+    keyword_results_count, semantic_results_count,
+    merged_count, fallback_used, warnings
+  }
+}
+```
+
+**How it works:**
+1. Runs SQLite FTS5 keyword search (BM25 ranking)
+2. Runs ChromaDB semantic search (embeddings)
+3. Merges results using Reciprocal Rank Fusion: `score(d) = Σ(weight_i * 1/(k + rank_i(d)))` with k=60
+4. Falls back gracefully if semantic search unavailable
+
+### keyword_search
+Full-text keyword search using SQLite FTS5 with BM25 ranking. Uses porter stemmer tokenization.
+
+```
+Parameters:
+  query: str           # Required - Search query (keywords, phrases)
   limit: int = 10      # Max results
   year_min: int | None # Minimum publication year
   year_max: int | None # Maximum publication year
@@ -100,38 +132,83 @@ Returns: {success, data: [{id, title, year, score}], count}
 ```
 
 ### semantic_search
-Semantic similarity search using embeddings.
+Semantic similarity search using ChromaDB embeddings. Finds papers with similar meaning/concepts even if exact keywords don't match.
 
 ```
 Parameters:
-  query: str                   # Required - Natural language query
-  limit: int = 10              # Max results
-  min_similarity: float = 0.5  # 0-1 similarity threshold
-  search_level: str = "chunk"  # "chunk" or "paper"
+  query: str                    # Required - Natural language query
+  limit: int = 10               # Max results
+  min_similarity: float = 0.35  # Minimum similarity score (0-1). 0.35 recommended for discovery
+  search_level: str = "chunk"   # "chunk" (full-text) or "paper" (title+abstract only)
 
-Returns: {success, data: [{id, title, score, chunk_text?}], count}
+Returns: {
+  success,
+  data: [{id, title, score, chunk_text?}],
+  count,
+  chunk_matches?,              # Number of matching chunks (if chunk search)
+  fallback_used?,              # true if semantic search failed
+  fallback_reason?             # Reason for fallback (e.g., "Semantic search unavailable: ...")
+}
 ```
+
+**Search levels:**
+- `"chunk"` - Searches full-text content chunks. More precise, finds content in paper body.
+- `"paper"` - Searches title + abstract embeddings only. Faster.
 
 ### search_by_author
 Find all papers by a specific author.
 
 ```
 Parameters:
-  author_name: str   # Required - Author name (partial match)
+  author_name: str   # Required - Author name (partial match supported)
   limit: int = 20
 
 Returns: {success, data: papers[]}
 ```
 
 ### search_by_tag
-Find all papers with a specific tag.
+Find all papers with a specific tag. Supports partial matching by default.
 
 ```
 Parameters:
-  tag: str         # Required - Tag name
+  tag: str              # Required - Tag name (partial match by default)
   limit: int = 20
+  exact_match: bool = false  # If true, require exact tag match
 
 Returns: {success, data: papers[]}
+```
+
+**Examples:**
+- `search_by_tag("ML")` → matches "machine-learning", "ML-theory", "deep-ML"
+- `search_by_tag("ML", exact_match=true)` → only matches "ML" exactly
+
+### get_search_status
+Get search system health status and diagnostics. Use to troubleshoot search issues or check if indices need rebuilding.
+
+```
+Parameters:
+  detailed: bool = false  # If true, return full diagnostics including recommendations
+
+Returns (simple): {
+  success,
+  healthy: bool,
+  keyword_search: "available" | "unavailable",
+  semantic_search: "available" | "unavailable",
+  papers_indexed: int,
+  embedding_coverage: "85%"
+}
+
+Returns (detailed): {
+  success,
+  status: "healthy" | "unhealthy",
+  fts5: {available, indexed_count, needs_rebuild},
+  vector_store: {available, paper_count, chunk_count},
+  database: {total_papers, papers_with_full_text, papers_with_abstract},
+  embeddings: {papers_with_embeddings, papers_needing_embeddings, coverage_percent, model_loaded, model_name},
+  warnings: [],
+  errors: [],
+  recommendations: []
+}
 ```
 
 ### find_duplicates

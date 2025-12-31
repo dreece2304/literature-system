@@ -136,16 +136,27 @@ Add to Claude Desktop config:
 
 | Tool | Description |
 |------|-------------|
-| `keyword_search` | Full-text search with Whoosh index |
-| `semantic_search` | AI-powered similarity search (chunk or paper level) |
-| `search_by_author` | Find papers by author name |
-| `search_by_tag` | Find papers by tag |
-| `search_papers` | Basic search on title/abstract |
+| `hybrid_search` ⭐ | **Recommended.** Combines keyword (BM25) + semantic search with RRF fusion |
+| `keyword_search` | Full-text search using SQLite FTS5 with BM25 ranking |
+| `semantic_search` | AI-powered similarity search using ChromaDB embeddings |
+| `search_by_author` | Find papers by author name (partial match) |
+| `search_by_tag` | Find papers by tag (partial match by default) |
 | `find_duplicates` | Find duplicate papers by hash or title similarity |
+| `get_search_status` | Health check for search indices and embedding coverage |
+
+**Hybrid Search (Best for most use cases):**
+```python
+hybrid_search(query="ALD precursor chemistry", alpha=0.65)
+# alpha: 0=keyword only, 1=semantic only, 0.65=balanced (default)
+```
 
 **Semantic Search Levels:**
 - `search_level="paper"` - Search title + abstract only (faster)
 - `search_level="chunk"` - Search full paper text chunks (more precise)
+
+**Tag Search:**
+- `search_by_tag("ML")` → partial match (matches "machine-learning", "ML-theory")
+- `search_by_tag("ML", exact_match=true)` → exact match only
 
 ### Content & Extraction
 
@@ -259,14 +270,44 @@ Add to Claude Desktop config:
 
 ## Example Usage
 
-### Finding Papers for a Topic
+### Finding Papers for a Topic (Recommended: Hybrid Search)
 
 ```
 User: Find papers about ALD precursor chemistry
 
-Claude uses: semantic_search("ALD precursor chemistry mechanisms", search_level="chunk")
+Claude uses: hybrid_search("ALD precursor chemistry mechanisms")
 
-Returns: Top papers with relevance scores and matching text snippets
+Returns: Top papers ranked by combined keyword + semantic relevance, with diagnostics
+```
+
+### Keyword-Only Search (When You Know Exact Terms)
+
+```
+User: Find papers mentioning "hafnium oxide" exactly
+
+Claude uses: keyword_search("hafnium oxide")
+
+Returns: Papers containing exact keywords, ranked by BM25
+```
+
+### Semantic Search (Conceptual Similarity)
+
+```
+User: Find papers about thin film growth even if they don't mention "ALD"
+
+Claude uses: semantic_search("atomic layer deposition thin film growth", search_level="chunk")
+
+Returns: Papers with similar concepts, even without exact keyword matches
+```
+
+### Checking Search Health
+
+```
+User: Why am I getting no search results?
+
+Claude uses: get_search_status(detailed=true)
+
+Returns: FTS5 index status, ChromaDB status, embedding coverage, recommendations
 ```
 
 ### Generating Citations
@@ -309,7 +350,35 @@ Returns: Updated paper with metadata from external sources
 3. Check database file exists at configured path
 4. Run health check: `python -m scripts.health_check`
 
-### Tools return empty results
+### Search returns empty results
+
+1. **Check search system health first:**
+   ```
+   get_search_status(detailed=true)
+   ```
+
+2. **FTS5 index issues:**
+   - If `fts5.needs_rebuild` is true, rebuild the index:
+     ```bash
+     python src/scripts/migrate_fts5.py --rebuild
+     ```
+   - Verify papers are indexed: `fts5.indexed_count` should match total papers
+
+3. **Semantic search issues:**
+   - Check `embeddings.coverage_percent` - low coverage means many papers lack embeddings
+   - If `vector_store.available` is false, ChromaDB may not be configured
+   - Use `hybrid_search` which falls back gracefully if semantic unavailable
+
+4. **Similarity threshold too high:**
+   - Default is 0.35 (discovery-focused). Try lowering `min_similarity` parameter
+   - For keyword search, there's no threshold - results ranked by BM25
+
+5. **Use hybrid search for best results:**
+   ```
+   hybrid_search("your query")  # Combines both methods automatically
+   ```
+
+### Tools return empty results (non-search)
 
 1. Verify database has papers: `list_papers(limit=1)`
 2. For semantic search, ensure embeddings are indexed
