@@ -30,6 +30,7 @@ from literature_core import (
 )
 from services import SearchService
 from services.hybrid_search_service import HybridSearchService
+from services.search_diagnostics_service import SearchDiagnosticsService
 
 logger = get_logger(__name__)
 
@@ -191,6 +192,24 @@ async def list_tools() -> list[Tool]:
                 "required": ["tag"],
             },
         ),
+        Tool(
+            name="get_search_status",
+            description=(
+                "Get search system health status and diagnostics. Shows FTS5 index status, "
+                "ChromaDB vector store status, embedding coverage, and actionable recommendations. "
+                "Use this to troubleshoot search issues or check if indices need rebuilding."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "detailed": {
+                        "type": "boolean",
+                        "description": "If true, return full diagnostics including recommendations",
+                        "default": False,
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -274,6 +293,48 @@ def _search_by_tag(arguments: dict[str, Any]) -> list[TextContent]:
     )
 
 
+def _get_search_status(arguments: dict[str, Any]) -> list[TextContent]:
+    """Get search system health status and diagnostics."""
+    detailed = arguments.get("detailed", False)
+
+    if detailed:
+        # Full diagnostics
+        diagnostics = SearchDiagnosticsService.get_diagnostics()
+        return _to_response({
+            "success": True,
+            "status": "healthy" if not diagnostics.errors else "unhealthy",
+            "fts5": {
+                "available": diagnostics.fts_available,
+                "indexed_count": diagnostics.fts_indexed_count,
+                "needs_rebuild": diagnostics.fts_needs_rebuild,
+            },
+            "vector_store": {
+                "available": diagnostics.chromadb_available,
+                "paper_count": diagnostics.chromadb_paper_count,
+                "chunk_count": diagnostics.chromadb_chunk_count,
+            },
+            "database": {
+                "total_papers": diagnostics.total_papers,
+                "papers_with_full_text": diagnostics.papers_with_full_text,
+                "papers_with_abstract": diagnostics.papers_with_abstract,
+            },
+            "embeddings": {
+                "papers_with_embeddings": diagnostics.papers_with_embeddings,
+                "papers_needing_embeddings": diagnostics.papers_needing_embeddings,
+                "coverage_percent": diagnostics.embedding_coverage_percent,
+                "model_loaded": diagnostics.embedding_model_loaded,
+                "model_name": diagnostics.embedding_model_name,
+            },
+            "warnings": diagnostics.warnings,
+            "errors": diagnostics.errors,
+            "recommendations": diagnostics.recommendations,
+            "check_time": diagnostics.check_time.isoformat(),
+        })
+    else:
+        # Simplified health check
+        return _to_response(SearchDiagnosticsService.get_search_health())
+
+
 async def _hybrid_search(arguments: dict[str, Any]) -> list[TextContent]:
     """Hybrid search combining keyword and semantic search."""
     result = await HybridSearchService.search(
@@ -333,6 +394,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "keyword_search": _keyword_search,
         "search_by_author": _search_by_author,
         "search_by_tag": _search_by_tag,
+        "get_search_status": _get_search_status,
     }
 
     async_tool_map = {
