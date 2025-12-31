@@ -452,3 +452,197 @@ class SearchService:
             if paper:
                 return cls.paper_to_result(paper)
             return None
+
+    # =========================================================================
+    # Discovery & Similarity
+    # =========================================================================
+
+    @classmethod
+    async def find_similar_papers(
+        cls,
+        paper_id: int,
+        limit: int = 10,
+        min_similarity: float = 0.5,
+    ) -> SearchResults:
+        """Find papers similar to a given paper based on semantic similarity.
+
+        Uses the paper's embedding to find semantically similar papers in the
+        library. Excludes the source paper from results.
+
+        Args:
+            paper_id: ID of the paper to find similar papers for
+            limit: Maximum number of similar papers to return
+            min_similarity: Minimum similarity score (0-1)
+
+        Returns:
+            SearchResults with similar papers, ordered by similarity
+        """
+        from embeddings.vectorstore import get_vector_store
+        from sqlalchemy.orm import joinedload
+
+        vector_store = get_vector_store()
+
+        # Get the source paper's embedding
+        paper_data = vector_store.get(ids=[str(paper_id)], include=["embeddings"])
+
+        # Check if we got valid data with an embedding
+        has_embedding = (
+            paper_data
+            and len(paper_data) > 0
+            and paper_data[0].get("embedding") is not None
+        )
+        if not has_embedding:
+            # Paper not in vector store - try to get title/abstract and search
+            with get_session() as session:
+                paper = session.query(Paper).filter(Paper.id == paper_id).first()
+                if not paper:
+                    return SearchResults(
+                        query=f"similar to paper {paper_id}",
+                        search_type="similar",
+                        results=[],
+                        count=0,
+                    )
+
+                # Create query from title + abstract
+                query = f"{paper.title or ''} {paper.abstract or ''}".strip()
+                if not query:
+                    return SearchResults(
+                        query=f"similar to paper {paper_id}",
+                        search_type="similar",
+                        results=[],
+                        count=0,
+                    )
+
+            # Use semantic search as fallback
+            result = await cls.semantic_search(
+                query=query,
+                limit=limit + 1,  # +1 to exclude self
+                min_similarity=min_similarity,
+                search_level="paper",
+            )
+
+            # Filter out the source paper
+            result.results = [r for r in result.results if r["id"] != paper_id][:limit]
+            result.search_type = "similar"
+            result.query = f"similar to paper {paper_id}"
+            result.count = len(result.results)
+            return result
+
+        # Use the paper's embedding to find similar papers
+        source_embedding = paper_data[0]["embedding"]
+
+        results = vector_store.search(
+            query_embedding=source_embedding,
+            top_k=limit + 1,  # +1 to exclude self
+            score_threshold=min_similarity,
+        )
+
+        # Filter out the source paper
+        paper_ids = []
+        scores = {}
+        for r in results:
+            try:
+                pid = int(r["id"])
+                if pid != paper_id:  # Exclude source paper
+                    paper_ids.append(pid)
+                    scores[pid] = r.get("score", 0)
+            except (ValueError, TypeError):
+                continue
+
+        paper_ids = paper_ids[:limit]
+
+        if not paper_ids:
+            return SearchResults(
+                query=f"similar to paper {paper_id}",
+                search_type="similar",
+                results=[],
+                count=0,
+            )
+
+        # Fetch full paper objects
+        with get_session() as session:
+            papers = (
+                session.query(Paper)
+                .options(joinedload(Paper.authors), joinedload(Paper.tags))
+                .filter(Paper.id.in_(paper_ids))
+                .all()
+            )
+            paper_map = {p.id: p for p in papers}
+
+            # Build results preserving score order
+            formatted = []
+            for pid in paper_ids:
+                paper = paper_map.get(pid)
+                if paper:
+                    formatted.append(cls.paper_to_result(paper, score=scores.get(pid)))
+
+        logger.info(f"Similar papers search for {paper_id} returned {len(formatted)} results")
+
+        return SearchResults(
+            query=f"similar to paper {paper_id}",
+            search_type="similar",
+            results=formatted,
+            count=len(formatted),
+        )
+
+    @classmethod
+    async def find_papers_like_text(
+        cls,
+        text: str,
+        limit: int = 10,
+        min_similarity: float = 0.5,
+    ) -> SearchResults:
+        """Find papers matching free-form text description.
+
+        Useful for finding papers relevant to a paragraph, research question,
+        or concept description.
+
+        Args:
+            text: Free-form text to match against papers
+            limit: Maximum number of papers to return
+            min_similarity: Minimum similarity score (0-1)
+
+        Returns:
+            SearchResults with matching papers
+        """
+        # Delegate to semantic_search which handles embedding generation
+        result = await cls.semantic_search(
+            query=text,
+            limit=limit,
+            min_similarity=min_similarity,
+            search_level="paper",
+        )
+
+        result.search_type = "text_similarity"
+        return result
+
+    @classmethod
+    async def suggest_citations_for_text(
+        cls,
+        text: str,
+        limit: int = 5,
+        min_similarity: float = 0.4,
+    ) -> SearchResults:
+        """Suggest papers to cite for a given text snippet.
+
+        Finds papers that are semantically relevant to the text and could
+        serve as citations.
+
+        Args:
+            text: Text snippet that needs citations
+            limit: Maximum number of suggestions
+            min_similarity: Minimum relevance score (0-1)
+
+        Returns:
+            SearchResults with citation suggestions
+        """
+        # Use chunk-level search for more precise matching
+        result = await cls.semantic_search(
+            query=text,
+            limit=limit,
+            min_similarity=min_similarity,
+            search_level="chunk",
+        )
+
+        result.search_type = "citation_suggestion"
+        return result

@@ -81,6 +81,10 @@ from .tools.browser_pdf import (  # noqa: E402
     list_tools as list_browser_pdf_tools,
     call_tool as call_browser_pdf_tool,
 )
+from .tools.discovery import (  # noqa: E402
+    list_tools as list_discovery_tools,
+    call_tool as call_discovery_tool,
+)
 from .resources.handlers import (  # noqa: E402
     list_resources,
     read_resource,
@@ -105,6 +109,7 @@ async def handle_list_tools() -> list[Tool]:
     tools.extend(await list_project_tools())
     tools.extend(await list_zotero_tools())
     tools.extend(await list_browser_pdf_tools())
+    tools.extend(await list_discovery_tools())
     return tools
 
 
@@ -191,6 +196,13 @@ async def handle_call_tool(name: str, arguments: dict[str, Any]) -> list[TextCon
         "clear_download_queue"
     ]:
         return await call_browser_pdf_tool(name, arguments)
+
+    # Discovery tools (similar papers, citation suggestions, reading queue)
+    if name in [
+        "find_similar_papers", "find_papers_like_text", "suggest_citations_for_text",
+        "get_reading_queue", "suggest_paper_tags"
+    ]:
+        return await call_discovery_tool(name, arguments)
 
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
