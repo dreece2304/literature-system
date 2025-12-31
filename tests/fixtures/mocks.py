@@ -62,6 +62,40 @@ class MockEmbeddingGenerator:
         """Compute similarity between query and multiple embeddings."""
         return np.dot(embeddings, query)
 
+    def embed_paper_chunks(
+        self,
+        paper_id: int,
+        full_text: str,
+        chunk_size: int = 500,
+        chunk_overlap: int = 50,
+    ) -> list:
+        """Generate chunk embeddings for a paper's full text."""
+        # Simple chunking for mock
+        chunks = []
+        text_len = len(full_text)
+        start = 0
+        chunk_idx = 0
+
+        while start < text_len:
+            end = min(start + chunk_size, text_len)
+            chunk_text = full_text[start:end]
+
+            # Create a mock chunk embedding object
+            chunk = MagicMock()
+            chunk.chunk_id = f"{paper_id}_{chunk_idx}"
+            chunk.embedding = self._deterministic_embedding(chunk_text)
+            chunk.text = chunk_text
+            chunk.to_metadata = MagicMock(return_value={
+                "paper_id": paper_id,
+                "chunk_index": chunk_idx,
+            })
+            chunks.append(chunk)
+
+            start = end - chunk_overlap if end < text_len else end
+            chunk_idx += 1
+
+        return chunks
+
 
 class MockVectorStore:
     """Mock for VectorStore (ChromaDB wrapper)."""
@@ -69,10 +103,22 @@ class MockVectorStore:
     def __init__(self):
         self.collection_name = "mock_papers"
         self._data = {}  # id -> (embedding, metadata, document)
+        # Mock collection for EmbeddingService compatibility
+        self.collection = MagicMock()
+        self.collection.get = MagicMock(return_value={"ids": [], "metadatas": []})
+
+    def get_stats(self) -> dict:
+        """Return stats about the vector store."""
+        return {"count": len(self._data)}
 
     def add(self, id: str, embedding: np.ndarray, metadata: dict = None, document: str = None):
         """Add a single embedding."""
         self._data[id] = (embedding, metadata or {}, document or "")
+        # Update mock collection.get to return current IDs
+        self.collection.get = MagicMock(return_value={
+            "ids": list(self._data.keys()),
+            "metadatas": [d[1] for d in self._data.values()]
+        })
 
     def add_batch(self, ids: list, embeddings: np.ndarray, metadatas: list = None, documents: list = None):
         """Add multiple embeddings."""
@@ -124,6 +170,31 @@ class MockVectorStore:
 
 class MockChunkVectorStore(MockVectorStore):
     """Mock for ChunkVectorStore."""
+
+    def __init__(self):
+        super().__init__()
+        self.collection_name = "mock_chunks"
+
+    def get_stats(self) -> dict:
+        """Return stats about the chunk store."""
+        paper_ids = set()
+        for id, (emb, meta, doc) in self._data.items():
+            if meta.get("paper_id"):
+                paper_ids.add(meta["paper_id"])
+        return {
+            "total_chunks": len(self._data),
+            "papers_indexed": len(paper_ids),
+        }
+
+    def add_chunks(self, chunk_ids: list, embeddings: list, texts: list, metadatas: list):
+        """Add chunks to the store."""
+        for i, chunk_id in enumerate(chunk_ids):
+            self._data[chunk_id] = (embeddings[i], metadatas[i], texts[i])
+        # Update mock collection.get
+        self.collection.get = MagicMock(return_value={
+            "ids": list(self._data.keys()),
+            "metadatas": [d[1] for d in self._data.values()]
+        })
 
     def search_chunks(self, query_embedding: np.ndarray, limit: int = 10, paper_ids: list = None, min_score: float = 0.0) -> list:
         """Search chunks with optional paper filter."""

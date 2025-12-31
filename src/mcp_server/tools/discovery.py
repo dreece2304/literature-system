@@ -16,7 +16,8 @@ from typing import Any
 from mcp.types import Tool, TextContent
 
 # Add src directory to path for imports
-_src_path = Path(__file__).parent.parent.parent.parent.parent.parent / "src"
+# discovery.py is at src/mcp_server/tools/discovery.py, so parent.parent.parent = src/
+_src_path = Path(__file__).parent.parent.parent
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 
@@ -29,7 +30,7 @@ from literature_core import (  # noqa: E402
     PaperNotFoundError,
     LiteratureError,
 )
-from services import SearchService, PaperService  # noqa: E402
+from services import SearchService, PaperService, EmbeddingService  # noqa: E402
 
 logger = get_logger(__name__)
 
@@ -167,6 +168,79 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Maximum number of tag suggestions",
                         "default": 5,
+                    },
+                },
+                "required": ["paper_id"],
+            },
+        ),
+        Tool(
+            name="get_embedding_status",
+            description=(
+                "Get embedding coverage status. Shows how many papers have embeddings "
+                "generated and how many need processing. Use this to check if "
+                "semantic search will work well."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "include_ids": {
+                        "type": "boolean",
+                        "description": "Include lists of paper IDs needing embeddings",
+                        "default": False,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="process_embedding_queue",
+            description=(
+                "Generate embeddings for papers that don't have them. "
+                "Processes papers in batch to build semantic search index. "
+                "Run this after adding new papers to enable semantic search."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum papers to process (default: 50)",
+                        "default": 50,
+                    },
+                    "include_paper_embeddings": {
+                        "type": "boolean",
+                        "description": "Generate paper-level embeddings (title+abstract)",
+                        "default": True,
+                    },
+                    "include_chunk_embeddings": {
+                        "type": "boolean",
+                        "description": "Generate chunk-level embeddings (full text)",
+                        "default": True,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="embed_paper",
+            description=(
+                "Generate embeddings for a single paper. "
+                "Use this after adding a paper to make it searchable immediately."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "Paper ID to generate embeddings for",
+                    },
+                    "include_paper_embedding": {
+                        "type": "boolean",
+                        "description": "Generate paper-level embedding",
+                        "default": True,
+                    },
+                    "include_chunk_embedding": {
+                        "type": "boolean",
+                        "description": "Generate chunk embeddings (requires full text)",
+                        "default": True,
                     },
                 },
                 "required": ["paper_id"],
@@ -368,6 +442,88 @@ async def _suggest_paper_tags(arguments: dict[str, Any]) -> list[TextContent]:
     )
 
 
+def _get_embedding_status(arguments: dict[str, Any]) -> list[TextContent]:
+    """Get embedding coverage status."""
+    include_ids = arguments.get("include_ids", False)
+
+    status = EmbeddingService.get_embedding_status(include_ids=include_ids)
+
+    response = {
+        "success": True,
+        "total_papers": status.total_papers,
+        "paper_embeddings": {
+            "count": status.paper_embeddings_count,
+            "papers_with_abstract": status.papers_with_abstract,
+            "needing_embedding": status.papers_needing_paper_embedding,
+            "coverage_percent": round(status.paper_coverage_percent, 1),
+        },
+        "chunk_embeddings": {
+            "count": status.chunk_embeddings_count,
+            "papers_with_chunks": status.papers_with_chunks,
+            "papers_with_full_text": status.papers_with_full_text,
+            "needing_embedding": status.papers_needing_chunk_embedding,
+            "coverage_percent": round(status.chunk_coverage_percent, 1),
+        },
+    }
+
+    if include_ids:
+        response["paper_ids_needing_paper_embedding"] = (
+            status.paper_ids_needing_paper_embedding[:100]  # Limit for response size
+        )
+        response["paper_ids_needing_chunk_embedding"] = (
+            status.paper_ids_needing_chunk_embedding[:100]
+        )
+
+    return _to_response(response)
+
+
+async def _process_embedding_queue(arguments: dict[str, Any]) -> list[TextContent]:
+    """Process papers needing embeddings."""
+    limit = arguments.get("limit", 50)
+    include_paper = arguments.get("include_paper_embeddings", True)
+    include_chunks = arguments.get("include_chunk_embeddings", True)
+
+    result = await EmbeddingService.process_queue(
+        limit=limit,
+        include_paper_embeddings=include_paper,
+        include_chunk_embeddings=include_chunks,
+    )
+
+    return _to_response(
+        success({
+            "papers_processed": result.papers_processed,
+            "paper_embeddings_created": result.paper_embeddings_created,
+            "chunks_created": result.chunks_created,
+            "errors": result.errors if result.errors else None,
+            "success": result.success,
+        })
+    )
+
+
+async def _embed_paper(arguments: dict[str, Any]) -> list[TextContent]:
+    """Generate embeddings for a single paper."""
+    paper_id = arguments["paper_id"]
+    include_paper = arguments.get("include_paper_embedding", True)
+    include_chunks = arguments.get("include_chunk_embedding", True)
+
+    result = await EmbeddingService.embed_paper(
+        paper_id=paper_id,
+        include_paper_embedding=include_paper,
+        include_chunk_embedding=include_chunks,
+    )
+
+    return _to_response(
+        success({
+            "paper_id": paper_id,
+            "papers_processed": result.papers_processed,
+            "paper_embeddings_created": result.paper_embeddings_created,
+            "chunks_created": result.chunks_created,
+            "errors": result.errors if result.errors else None,
+            "success": result.success,
+        })
+    )
+
+
 # ============================================================================
 # Main entry point
 # ============================================================================
@@ -385,6 +541,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     # Sync tools
     sync_tools = {
         "get_reading_queue": _get_reading_queue,
+        "get_embedding_status": _get_embedding_status,
     }
 
     # Async tools
@@ -393,6 +550,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "find_papers_like_text": _find_papers_like_text,
         "suggest_citations_for_text": _suggest_citations_for_text,
         "suggest_paper_tags": _suggest_paper_tags,
+        "process_embedding_queue": _process_embedding_queue,
+        "embed_paper": _embed_paper,
     }
 
     if name not in sync_tools and name not in async_tools:
