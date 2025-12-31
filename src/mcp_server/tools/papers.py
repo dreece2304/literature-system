@@ -17,7 +17,8 @@ from typing import Any
 from mcp.types import Tool, TextContent
 
 # Add src directory to path for imports
-_src_path = Path(__file__).parent.parent.parent.parent.parent.parent / "src"
+# papers.py is at src/mcp_server/tools/papers.py, so parent.parent.parent = src/
+_src_path = Path(__file__).parent.parent.parent
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 
@@ -187,13 +188,35 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_paper_content",
-            description="Get full paper content for AI analysis (title, abstract, full text)",
+            description=(
+                "Get paper content for AI analysis (title, abstract, full text). "
+                "Use max_chars to limit full text length for long papers. "
+                "Use include_full_text=false to get only title and abstract."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "paper_id": {
                         "type": "integer",
                         "description": "Paper ID to get content for",
+                    },
+                    "include_full_text": {
+                        "type": "boolean",
+                        "description": "Include full text content (default: true)",
+                        "default": True,
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": (
+                            "Maximum characters for full text. "
+                            "Use 0 for unlimited. Default: 50000 (~12K tokens)"
+                        ),
+                        "default": 50000,
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "description": "Start position in full text for pagination",
+                        "default": 0,
                     },
                 },
                 "required": ["paper_id"],
@@ -391,8 +414,51 @@ def _update_paper(arguments: dict[str, Any]) -> list[TextContent]:
 
 
 def _get_paper_content(arguments: dict[str, Any]) -> list[TextContent]:
-    """Get full paper content for AI analysis."""
-    content = PaperService.get_content(arguments["paper_id"])
+    """Get paper content for AI analysis with optional truncation."""
+    paper_id = arguments["paper_id"]
+    include_full_text = arguments.get("include_full_text", True)
+    max_chars = arguments.get("max_chars", 50000)
+    offset = arguments.get("offset", 0)
+
+    content = PaperService.get_content(paper_id)
+
+    # Handle full text truncation/pagination
+    full_text = content.get("full_text")
+    truncation_info = None
+
+    if not include_full_text:
+        content["full_text"] = None
+        truncation_info = {"included": False, "reason": "include_full_text=false"}
+    elif full_text:
+        total_len = len(full_text)
+
+        # Apply offset
+        if offset > 0:
+            full_text = full_text[offset:]
+
+        # Apply max_chars limit (0 = unlimited)
+        if max_chars > 0 and len(full_text) > max_chars:
+            content["full_text"] = full_text[:max_chars]
+            truncation_info = {
+                "truncated": True,
+                "total_chars": total_len,
+                "returned_chars": max_chars,
+                "offset": offset,
+                "next_offset": offset + max_chars,
+                "remaining_chars": total_len - offset - max_chars,
+            }
+        elif offset > 0:
+            content["full_text"] = full_text
+            truncation_info = {
+                "truncated": False,
+                "total_chars": total_len,
+                "returned_chars": len(full_text),
+                "offset": offset,
+            }
+
+    if truncation_info:
+        content["_truncation"] = truncation_info
+
     return _to_response(success(content))
 
 
