@@ -260,6 +260,11 @@ async def _semantic_search(arguments: dict[str, Any]) -> list[TextContent]:
     if result.matching_chunks:
         response_data["chunk_matches"] = len(result.matching_chunks)
 
+    # Add fallback information if semantic search failed
+    if result.fallback_used:
+        response_data["fallback_used"] = True
+        response_data["fallback_reason"] = result.fallback_reason
+
     return _to_response(response_data)
 
 

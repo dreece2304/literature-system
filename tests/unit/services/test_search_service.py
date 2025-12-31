@@ -205,16 +205,22 @@ class TestSemanticSearch:
         self, db, mock_embedding_generator, mock_vector_store
     ):
         """Test semantic search at paper level."""
+        import numpy as np
+
         # Create test paper
         paper = PaperService.create(
             title="Atomic Layer Deposition Review",
             abstract="A comprehensive review of ALD processes"
         )
 
-        # Mock vector store to return results
-        mock_vector_store.search.return_value = [
-            {"id": str(paper["id"]), "score": 0.9, "metadata": {}, "document": ""}
-        ]
+        # Add paper embedding to mock vector store
+        # Use embedding that will match well with query embedding
+        mock_vector_store.add(
+            id=str(paper["id"]),
+            embedding=np.ones(384),  # Same as mock generator returns
+            metadata={"paper_id": paper["id"]},
+            document="ALD thin film deposition"
+        )
 
         result = await SearchService.semantic_search(
             query="ALD thin film deposition",
@@ -229,20 +235,20 @@ class TestSemanticSearch:
         self, db, mock_embedding_generator, mock_chunk_store
     ):
         """Test semantic search at chunk level."""
+        import numpy as np
+
         paper = PaperService.create(
             title="Test Paper",
             abstract="Test abstract about materials"
         )
 
-        # Mock chunk store to return results
-        mock_chunk_store.search_chunks.return_value = [
-            {
-                "id": f"{paper['id']}_0",
-                "score": 0.85,
-                "metadata": {"paper_id": paper["id"], "chunk_index": 0},
-                "text": "Matching chunk text"
-            }
-        ]
+        # Add chunk to mock chunk store using parent's add() API
+        mock_chunk_store.add(
+            id=f"{paper['id']}_0",
+            embedding=np.ones(384),  # Same as mock generator returns
+            metadata={"paper_id": paper["id"], "chunk_index": 0},
+            document="Matching chunk text about materials science"
+        )
 
         result = await SearchService.semantic_search(
             query="materials science",
@@ -250,19 +256,26 @@ class TestSemanticSearch:
             limit=10
         )
 
-        assert result.search_type in ["semantic_chunk", "keyword"]  # May fall back
+        # Should return chunk-level results or fall back gracefully
+        assert result.search_type in ["semantic_chunk", "semantic_fallback", "keyword"]
 
     @pytest.mark.asyncio
     async def test_semantic_search_with_min_similarity(
         self, db, mock_embedding_generator, mock_vector_store
     ):
         """Test semantic search with minimum similarity threshold."""
+        import numpy as np
+
         paper = PaperService.create(title="Test Paper")
 
-        # Mock low-score results
-        mock_vector_store.search.return_value = [
-            {"id": str(paper["id"]), "score": 0.3, "metadata": {}, "document": ""}
-        ]
+        # Add paper with low-scoring embedding (orthogonal to query)
+        # Mock generator returns ones, so zeros will have low similarity
+        mock_vector_store.add(
+            id=str(paper["id"]),
+            embedding=np.zeros(384),  # Will have 0 similarity with ones
+            metadata={"paper_id": paper["id"]},
+            document="Unrelated content"
+        )
 
         result = await SearchService.semantic_search(
             query="unrelated query",
@@ -270,8 +283,9 @@ class TestSemanticSearch:
             search_level="paper"
         )
 
-        # Low score results should be filtered
-        # Note: actual filtering depends on implementation
+        # Low score results should be filtered out
+        # Either no results or fallback to keyword
+        assert result.count == 0 or result.search_type in ["semantic_paper", "semantic_fallback"]
 
     @pytest.mark.asyncio
     async def test_semantic_search_fallback_to_keyword(
@@ -287,6 +301,8 @@ class TestSemanticSearch:
 
         result = await SearchService.semantic_search("Fallback Test")
 
-        # Should fall back to keyword search
-        assert result.search_type == "keyword"
+        # Should fall back to keyword search with explicit tracking
+        assert result.search_type == "semantic_fallback"
+        assert result.fallback_used is True
+        assert "Embedding error" in result.fallback_reason
         assert result.count >= 1

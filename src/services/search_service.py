@@ -61,6 +61,8 @@ class SearchResults:
     results: list[dict]
     count: int
     matching_chunks: dict[int, list[dict]] | None = None  # paper_id -> chunks
+    fallback_used: bool = False
+    fallback_reason: str | None = None
 
 
 class SearchService:
@@ -198,7 +200,16 @@ class SearchService:
 
         except Exception as e:
             logger.warning(f"Semantic search failed, falling back to keyword: {e}")
-            return cls.keyword_search(query, limit=limit)
+            # Get keyword results and mark that fallback was used
+            fallback_result = cls.keyword_search(query, limit=limit)
+            return SearchResults(
+                query=fallback_result.query,
+                search_type="semantic_fallback",
+                results=fallback_result.results,
+                count=fallback_result.count,
+                fallback_used=True,
+                fallback_reason=f"Semantic search unavailable: {str(e)}",
+            )
 
     @classmethod
     async def _search_chunks(
