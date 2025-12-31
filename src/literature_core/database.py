@@ -1,4 +1,5 @@
 """Database connection and session management."""
+import logging
 from contextlib import contextmanager
 from typing import Generator
 
@@ -9,6 +10,8 @@ from sqlalchemy.orm import sessionmaker, Session
 from .config import settings
 from .models import Base
 
+
+logger = logging.getLogger(__name__)
 
 _engine: Engine | None = None
 
@@ -27,9 +30,17 @@ def get_engine() -> Engine:
 
 
 def init_db() -> None:
-    """Initialize database with tables."""
+    """Initialize database with tables and FTS5 index."""
     engine = get_engine()
     Base.metadata.create_all(bind=engine)
+
+    # Initialize FTS5 full-text search tables
+    try:
+        from .fts import create_fts_tables
+        create_fts_tables(engine)
+        logger.info("FTS5 tables initialized")
+    except Exception as e:
+        logger.warning(f"Failed to initialize FTS5 tables: {e}")
 
 
 @contextmanager
