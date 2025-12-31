@@ -175,18 +175,27 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="search_by_tag",
-            description="Find all papers with a specific tag",
+            description=(
+                "Find all papers with a specific tag. By default uses partial matching "
+                "(e.g., 'ML' matches 'machine-learning', 'ML-theory'). "
+                "Set exact_match=true for exact tag name matching."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "tag": {
                         "type": "string",
-                        "description": "Tag name to search for",
+                        "description": "Tag name to search for (partial match by default)",
                     },
                     "limit": {
                         "type": "integer",
                         "description": "Maximum results to return",
                         "default": 20,
+                    },
+                    "exact_match": {
+                        "type": "boolean",
+                        "description": "If true, require exact tag match. Default: false (partial matching)",
+                        "default": False,
                     },
                 },
                 "required": ["tag"],
@@ -245,7 +254,7 @@ async def _semantic_search(arguments: dict[str, Any]) -> list[TextContent]:
     result = await SearchService.semantic_search(
         query=arguments["query"],
         limit=arguments.get("limit", 10),
-        min_similarity=arguments.get("min_similarity", 0.5),
+        min_similarity=arguments.get("min_similarity", 0.35),
         search_level=arguments.get("search_level", "chunk"),
     )
 
@@ -288,6 +297,7 @@ def _search_by_tag(arguments: dict[str, Any]) -> list[TextContent]:
     result = SearchService.search_by_tag(
         tag_name=arguments["tag"],
         limit=arguments.get("limit", 20),
+        exact_match=arguments.get("exact_match", False),
     )
     return _to_response(
         search_result(

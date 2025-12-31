@@ -157,7 +157,7 @@ class SearchService:
         cls,
         query: str,
         limit: int = DEFAULT_SEARCH_LIMIT,
-        min_similarity: float = 0.5,
+        min_similarity: float = 0.35,
         search_level: str = "chunk",
     ) -> SearchResults:
         """Semantic similarity search using embeddings.
@@ -420,21 +420,30 @@ class SearchService:
         cls,
         tag_name: str,
         limit: int = DEFAULT_SEARCH_LIMIT,
+        exact_match: bool = False,
     ) -> SearchResults:
         """Find all papers with a specific tag.
 
         Args:
-            tag_name: Tag name (exact match)
+            tag_name: Tag name to search for
             limit: Maximum results to return
+            exact_match: If True, require exact tag name match.
+                        If False (default), use case-insensitive partial matching.
 
         Returns:
             SearchResults with matching papers
         """
         with get_session() as session:
+            query = session.query(Paper).join(Paper.tags)
+
+            if exact_match:
+                query = query.filter(Tag.name == tag_name)
+            else:
+                # Case-insensitive partial matching
+                query = query.filter(Tag.name.ilike(f"%{tag_name}%"))
+
             papers = (
-                session.query(Paper)
-                .join(Paper.tags)
-                .filter(Tag.name == tag_name)
+                query
                 .order_by(Paper.year.desc())
                 .limit(limit)
                 .all()

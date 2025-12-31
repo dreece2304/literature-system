@@ -77,7 +77,7 @@ class ChromaDBSettings(BaseSettings):
 
     # Search parameters
     top_k: int = Field(default=10, description="Default number of results")
-    score_threshold: float = Field(default=0.7, description="Minimum similarity score")
+    score_threshold: float = Field(default=0.35, description="Minimum similarity score (discovery-focused)")
 
     model_config = SettingsConfigDict(env_prefix="CHROMA_")
 
@@ -148,8 +148,9 @@ class LiteratureDatabaseSettings(BaseSettings):
     )
 
     # Database path (used by service layer)
+    # ai_settings.py is at src/config/ai_settings.py, so parent.parent.parent = research/
     database_path: Path = Field(
-        default=Path(__file__).parent.parent.parent.parent / "literature-database" / "data" / "literature.db",
+        default=PROJECT_ROOT / "infrastructure" / "literature-database" / "data" / "metadata" / "literature.db",
         description="Path to SQLite database file"
     )
 

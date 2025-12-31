@@ -139,7 +139,7 @@ class DOIPrefix:
 # Search defaults
 DEFAULT_SEARCH_LIMIT = 20
 MAX_SEARCH_LIMIT = 500
-DEFAULT_MIN_SIMILARITY = 0.5
+DEFAULT_MIN_SIMILARITY = 0.35  # Discovery-focused threshold
 
 # Pagination defaults
 DEFAULT_PAGE_SIZE = 20

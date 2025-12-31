@@ -83,7 +83,7 @@ class Settings(BaseSettings):
     chroma_collection_name: str = "papers"
     chroma_distance_metric: str = "cosine"
     chroma_top_k: int = 10
-    chroma_score_threshold: float = 0.7
+    chroma_score_threshold: float = 0.35  # Discovery-focused threshold
 
     @property
     def database_url(self) -> str:
