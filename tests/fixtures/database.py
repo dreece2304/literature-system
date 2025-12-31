@@ -59,7 +59,7 @@ def create_test_session_context(session_factory) -> Generator[Session, None, Non
 
 
 class DatabaseOverride:
-    """Context manager that patches get_session across all modules."""
+    """Context manager that patches get_session and get_engine across all modules."""
 
     def __init__(self, engine):
         self.engine = engine
@@ -79,9 +79,13 @@ class DatabaseOverride:
         finally:
             session.close()
 
+    def get_engine(self):
+        """Return the test engine."""
+        return self.engine
+
     def __enter__(self):
-        """Start patching get_session in all relevant modules."""
-        modules_to_patch = [
+        """Start patching get_session and get_engine in all relevant modules."""
+        modules_to_patch_session = [
             'literature_core.database.get_session',
             'literature_core.get_session',
             'services.paper_service.get_session',
@@ -93,13 +97,27 @@ class DatabaseOverride:
             'services.import_export_service.get_session',
         ]
 
-        for module_path in modules_to_patch:
+        modules_to_patch_engine = [
+            'literature_core.database.get_engine',
+            'literature_core.fts.get_engine',
+        ]
+
+        for module_path in modules_to_patch_session:
             try:
                 p = patch(module_path, self.get_session)
                 p.start()
                 self._patches.append(p)
             except (ModuleNotFoundError, AttributeError):
                 # Module may not exist or not have get_session
+                pass
+
+        for module_path in modules_to_patch_engine:
+            try:
+                p = patch(module_path, self.get_engine)
+                p.start()
+                self._patches.append(p)
+            except (ModuleNotFoundError, AttributeError):
+                # Module may not exist or not have get_engine
                 pass
 
         return self
