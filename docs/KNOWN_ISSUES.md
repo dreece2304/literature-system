@@ -25,14 +25,16 @@ Features:
 
 ---
 
-### 4. LLM extraction not automated
-**Status**: Storage exists, no extraction service
-**Location**: PaperContent model exists, store_extraction tool exists
+### LLM extraction (IMPLEMENTED - Dec 2024)
+**Status**: Implemented
+**Location**: `src/services/extraction_service.py`, `src/mcp_server/tools/extraction.py`
 
-**Need**:
-- ExtractionService to run LLM extraction in background
-- Integration with Ollama (Qwen 7B) or Claude API
-- Queue-based processing
+Features:
+- ExtractionService with Ollama (local) and Claude API backends
+- Queue-based processing with rate limiting
+- 5 MCP tools: get_extraction_status, get_llm_status, extract_paper,
+  extract_papers_batch, delete_extraction
+- Automatic JSON parsing with code block handling
 
 ---
 

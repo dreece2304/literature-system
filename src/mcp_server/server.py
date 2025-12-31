@@ -55,6 +55,7 @@ from .tools import browser_pdf  # noqa: E402
 from .tools import discovery  # noqa: E402
 from .tools import citation_network  # noqa: E402
 from .tools import validation  # noqa: E402
+from .tools import extraction  # noqa: E402
 from .resources.handlers import (  # noqa: E402
     list_resources,
     read_resource,
@@ -92,6 +93,7 @@ TOOL_MODULES = [
     (discovery, "discovery"),
     (citation_network, "citation_network"),
     (validation, "validation"),
+    (extraction, "extraction"),
 ]
 
 
