@@ -618,6 +618,7 @@ class ImportExportService:
         include_abstract: bool = True,
         include_notes: bool = False,
         limit: int = MAX_SEARCH_LIMIT,
+        offset: int = 0,
     ) -> str:
         """Export papers in various formats.
 
@@ -629,6 +630,7 @@ class ImportExportService:
             include_abstract: Include abstracts (BibTeX/JSON)
             include_notes: Include notes (JSON only)
             limit: Maximum papers to export if paper_ids not specified
+            offset: Number of papers to skip for pagination
 
         Returns:
             Formatted export string
@@ -645,7 +647,8 @@ class ImportExportService:
             if paper_ids:
                 papers = query.filter(Paper.id.in_(paper_ids)).all()
             else:
-                papers = query.limit(limit).all()
+                # Order by ID for consistent pagination
+                papers = query.order_by(Paper.id).offset(offset).limit(limit).all()
 
             paper_dicts = [
                 cls.paper_to_export_dict(p, include_notes=include_notes)

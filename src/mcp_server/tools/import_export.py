@@ -17,7 +17,8 @@ from typing import Any
 from mcp.types import Tool, TextContent
 
 # Add src directory to path for imports
-_src_path = Path(__file__).parent.parent.parent.parent.parent.parent / "src"
+# import_export.py is at src/mcp_server/tools/import_export.py, so parent.parent.parent = src/
+_src_path = Path(__file__).parent.parent.parent
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 
@@ -85,6 +86,16 @@ async def list_tools() -> list[Tool]:
                         "type": "boolean",
                         "default": False,
                         "description": "Include notes in export (JSON only)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 50,
+                        "description": "Maximum papers to return (default: 50, max: 500)",
+                    },
+                    "offset": {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Number of papers to skip for pagination",
                     },
                 },
             },
@@ -181,11 +192,17 @@ def _import_bibtex(arguments: dict[str, Any]) -> list[TextContent]:
 
 def _export_papers(arguments: dict[str, Any]) -> list[TextContent]:
     """Export papers in various formats."""
+    # Cap limit at 500 to prevent token overflow
+    limit = min(arguments.get("limit", 50), 500)
+    offset = arguments.get("offset", 0)
+
     output = ImportExportService.export_papers(
         paper_ids=arguments.get("paper_ids"),
         format=arguments.get("format", "bibtex"),
         include_abstract=arguments.get("include_abstract", True),
         include_notes=arguments.get("include_notes", False),
+        limit=limit,
+        offset=offset,
     )
 
     # For bibtex/csv, return raw text; for json it's already formatted

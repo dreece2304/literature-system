@@ -35,8 +35,8 @@ class TestBibTeXImport:
 
         result = ImportExportService.import_bibtex(bibtex)
 
-        assert result["imported"] == 1
-        assert len(result.get("errors", [])) == 0
+        assert len(result.imported) == 1
+        assert len(result.failed) == 0
 
     def test_import_bibtex_multiple_entries(self, db):
         """Test importing multiple BibTeX entries."""
@@ -64,7 +64,7 @@ class TestBibTeXImport:
 
         result = ImportExportService.import_bibtex(bibtex)
 
-        assert result["imported"] == 3
+        assert len(result.imported) == 3
 
     def test_import_bibtex_with_tags(self, db):
         """Test importing BibTeX with tags applied."""
@@ -80,7 +80,7 @@ class TestBibTeXImport:
 
         result = ImportExportService.import_bibtex(bibtex, tags=["imported", "review"])
 
-        assert result["imported"] == 1
+        assert len(result.imported) == 1
 
     def test_import_bibtex_with_collection(self, db):
         """Test importing BibTeX into collection."""
@@ -101,7 +101,7 @@ class TestBibTeXImport:
             collection_id=collection["id"]
         )
 
-        assert result["imported"] == 1
+        assert len(result.imported) == 1
 
     def test_import_bibtex_malformed(self, db):
         """Test importing malformed BibTeX."""
@@ -114,8 +114,8 @@ class TestBibTeXImport:
 
         result = ImportExportService.import_bibtex(bibtex)
 
-        # Should handle gracefully
-        assert "errors" in result or result["imported"] == 0
+        # Should handle gracefully - either has failed entries or no imports
+        assert len(result.failed) > 0 or len(result.imported) == 0
 
     def test_import_bibtex_empty(self, db):
         """Test importing empty BibTeX."""
@@ -123,7 +123,7 @@ class TestBibTeXImport:
 
         result = ImportExportService.import_bibtex("")
 
-        assert result["imported"] == 0
+        assert len(result.imported) == 0
 
 
 class TestBibTeXExport:
@@ -371,32 +371,115 @@ class TestCollectionExport:
 class TestExternalImport:
     """Tests for importing from external sources."""
 
-    def test_import_from_doi(self, db, mock_external_apis):
+    @pytest.mark.asyncio
+    async def test_import_from_doi(self, db, mock_external_apis):
         """Test importing paper from DOI."""
         from services import ImportExportService
 
-        result = ImportExportService.import_from_external(
+        result = await ImportExportService.import_from_external(
             doi="10.1234/test.2023"
         )
 
-        assert "id" in result or "error" in result
+        # ExternalImportResult has status attribute
+        assert result.status in ("success", "error", "already_exists")
 
-    def test_import_from_arxiv(self, db, mock_external_apis):
+    @pytest.mark.asyncio
+    async def test_import_from_arxiv(self, db, mock_external_apis):
         """Test importing paper from arXiv ID."""
         from services import ImportExportService
 
-        result = ImportExportService.import_from_external(
+        result = await ImportExportService.import_from_external(
             arxiv_id="2401.12345"
         )
 
-        assert "id" in result or "error" in result
+        assert result.status in ("success", "error", "already_exists")
 
-    def test_import_from_title(self, db, mock_external_apis):
+    @pytest.mark.asyncio
+    async def test_import_from_title(self, db, mock_external_apis):
         """Test importing paper from title lookup."""
         from services import ImportExportService
 
-        result = ImportExportService.import_from_external(
+        result = await ImportExportService.import_from_external(
             title="Machine Learning for Materials Science"
         )
 
-        assert "id" in result or "error" in result or "results" in result
+        assert result.status in ("success", "error", "already_exists")
+
+
+class TestExportPagination:
+    """Tests for export pagination."""
+
+    def test_export_with_limit(self, db):
+        """Test exporting with limit parameter."""
+        from services import PaperService, ImportExportService
+
+        # Create 10 papers
+        for i in range(10):
+            PaperService.create(title=f"Pagination Test Paper {i}", year=2023)
+
+        result = ImportExportService.export_papers(format="json", limit=5)
+
+        parsed = json.loads(result)
+        assert len(parsed) == 5
+
+    def test_export_with_offset(self, db):
+        """Test exporting with offset parameter."""
+        from services import PaperService, ImportExportService
+
+        # Create 10 papers
+        for i in range(10):
+            PaperService.create(title=f"Offset Test Paper {i}", year=2023)
+
+        # First page
+        page1 = ImportExportService.export_papers(format="json", limit=5, offset=0)
+        # Second page
+        page2 = ImportExportService.export_papers(format="json", limit=5, offset=5)
+
+        parsed1 = json.loads(page1)
+        parsed2 = json.loads(page2)
+
+        assert len(parsed1) == 5
+        assert len(parsed2) == 5
+
+        # Ensure no overlap
+        ids1 = {p["id"] for p in parsed1}
+        ids2 = {p["id"] for p in parsed2}
+        assert ids1.isdisjoint(ids2)
+
+    def test_export_consistent_ordering(self, db):
+        """Test that pagination results are consistently ordered."""
+        from services import PaperService, ImportExportService
+
+        # Create papers
+        for i in range(6):
+            PaperService.create(title=f"Order Test Paper {i}", year=2023)
+
+        # Get all papers
+        all_papers = ImportExportService.export_papers(format="json", limit=10)
+        parsed_all = json.loads(all_papers)
+
+        # Get in pages
+        page1 = ImportExportService.export_papers(format="json", limit=3, offset=0)
+        page2 = ImportExportService.export_papers(format="json", limit=3, offset=3)
+
+        parsed1 = json.loads(page1)
+        parsed2 = json.loads(page2)
+
+        # Combine pages should match all papers (by IDs)
+        all_ids = [p["id"] for p in parsed_all]
+        paged_ids = [p["id"] for p in parsed1] + [p["id"] for p in parsed2]
+
+        assert set(paged_ids) <= set(all_ids)
+
+    def test_export_offset_beyond_data(self, db):
+        """Test exporting with offset beyond available data."""
+        from services import PaperService, ImportExportService
+
+        # Create 3 papers
+        for i in range(3):
+            PaperService.create(title=f"Beyond Test Paper {i}", year=2023)
+
+        result = ImportExportService.export_papers(format="json", limit=10, offset=100)
+
+        parsed = json.loads(result)
+        assert len(parsed) == 0

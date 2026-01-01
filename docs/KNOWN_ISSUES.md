@@ -38,19 +38,14 @@ Features:
 
 ---
 
-## Potential Overflow Issues
+### `export_papers` pagination (FIXED - Dec 2024)
+**Status**: Fixed
+**Location**: `src/mcp_server/tools/import_export.py`, `src/services/import_export_service.py`
 
-### 5. `export_papers` no pagination
-**Status**: Not fixed
-**Location**: `src/mcp_server/tools/import_export.py`
-
-**Problem**: Exporting all 427 papers could exceed token limits.
-
-**Need**: Add `limit` parameter or automatic pagination.
+Added `limit` (default: 50, max: 500) and `offset` parameters to prevent token overflow
+when exporting large paper sets. Results are ordered by paper ID for consistent pagination.
 
 ---
-
-## Fixed Issues
 
 ### `get_paper_content` overflow (FIXED - Dec 2024)
 Added `max_chars`, `offset`, and `include_full_text` parameters to prevent token overflow.
