@@ -1,368 +1,284 @@
-# Claude Development Governance - Research Monorepo
+# Claude Code Guidelines - Literature Management System
 
-## Master Project Overview
+## Project Overview
 
-**Monorepo Name**: research
-**Purpose**: Unified research environment with intelligent literature management and writing assistance
-**LLM Infrastructure**: Local Qwen models via Ollama (RTX 4070 8GB VRAM compatible)
-**Development Method**: Claude Code agents with strict governance
+**Project**: Literature Management System with MCP Integration
+**Purpose**: Intelligent paper management, search, and citation tools for research
+**Interface**: MCP (Model Context Protocol) server for Claude Code/Desktop
+**Environment**: Python 3.11 via mamba (`litai` environment)
 
-## Repository Structure
-research/                          [ROOT - PROTECTED]
-├── infrastructure/               [CORE SERVICES]
-│   ├── literature-database/     [Agent: DB-Manager]
-│   ├── literature-ai/           [Agent: AI-Builder]
-│   ├── literature-search/       [Agent: Search-Builder]
-│   └── api-gateway/            [Agent: Gateway-Builder]
-├── active/                      [RESEARCH WORK]
-│   └── */                      [User-managed]
-├── archive/                    [COMPLETED WORK]
-├── web-dashboard/              [Agent: UI-Builder]
-├── shared/                     [SHARED UTILITIES]
-│   ├── configs/
-│   ├── scripts/
-│   └── types/
-└── docs/                       [DOCUMENTATION]
+## Project Structure
 
-## Multi-Agent Coordination
+```
+research/
+├── src/                    # Main source code
+│   ├── mcp_server/         # MCP server and tools
+│   │   ├── server.py       # Server entry point
+│   │   └── tools/          # Tool implementations
+│   ├── services/           # Business logic layer
+│   │   ├── paper_service.py
+│   │   ├── search_service.py
+│   │   ├── pdf_service.py
+│   │   └── ...
+│   ├── literature_core/    # Database models and config
+│   │   ├── models.py       # SQLAlchemy models
+│   │   ├── database.py     # DB connection
+│   │   └── fts.py          # Full-text search
+│   ├── embeddings/         # Vector search (ChromaDB)
+│   ├── extractors/         # Zotero sync
+│   └── config/             # Settings
+├── tests/                  # Test suite
+│   ├── unit/               # Unit tests
+│   ├── integration/        # Integration tests
+│   └── fixtures/           # Shared fixtures
+├── data/                   # Runtime data (git-ignored)
+│   ├── sqlite/             # SQLite database
+│   ├── pdfs/               # PDF storage
+│   └── vectorstore/        # ChromaDB embeddings
+├── docs/                   # Documentation
+└── infrastructure/         # Legacy (data only)
+```
 
-### Agent Boundaries
-Each Claude Code agent operates within assigned boundaries:
+## Development Commands
 
-```yaml
-agents:
-  DB-Manager:
-    owns: infrastructure/literature-database/
-    can_read: [shared/, active/]
-    can_write: [infrastructure/literature-database/, shared/types/]
-    
-  AI-Builder:
-    owns: infrastructure/literature-ai/
-    can_read: [all]
-    can_write: [infrastructure/literature-ai/, shared/configs/]
-    requires: literature-database API running
-    
-  Search-Builder:
-    owns: infrastructure/literature-search/
-    can_read: [shared/, infrastructure/literature-database/]
-    can_write: [infrastructure/literature-search/]
-    
-  UI-Builder:
-    owns: web-dashboard/
-    can_read: [all]
-    can_write: [web-dashboard/, shared/types/]
-    
-  Gateway-Builder:
-    owns: infrastructure/api-gateway/
-    can_read: [all]
-    can_write: [infrastructure/api-gateway/]
-Agent Communication Rules
+### Running Tests
+```bash
+/home/dreece23/miniforge3/bin/mamba run -n litai python -m pytest tests/ -q
+```
 
-No Direct Cross-Modification: Agents CANNOT modify other agents' owned directories
-API Contracts: Communication happens through documented APIs only
-Shared Types: Common interfaces defined in shared/types/
-Change Requests: Must document in docs/agent-requests.md for cross-boundary changes
-Conflict Resolution: User arbitrates any conflicts between agents
+### Linting
+```bash
+/home/dreece23/miniforge3/bin/mamba run -n litai python -m flake8 src/
+```
 
-Core Governance Principles
-1. SINGLE SOURCE OF TRUTH [ABSOLUTE]
-Monorepo Level:
+### Health Check
+```bash
+cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.health_check
+```
 
-Each service owns its data domain completely
-No duplicate implementations across services
-Shared logic MUST be in shared/ directory
-API contracts are the only integration points
+### Running MCP Server (for testing)
+```bash
+cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m mcp_server.server
+```
+
+## Code Style
+
+### Imports and Type Hints
+Always use future annotations for forward references:
+```python
+from __future__ import annotations
+from typing import Optional
+from dataclasses import dataclass
+```
+
+### Line Length
+- **120 characters max** (configured in `.flake8`)
+- E402 (module-level import not at top) is ignored in `mcp_server/` due to path setup
+
+### Module Docstrings
+Every module should have a docstring with usage examples:
+```python
+"""Paper Service - Business logic for paper operations.
+
+Usage:
+    from services import PaperService
+
+    paper = PaperService.get(123)
+    papers, total = PaperService.list(author="Smith", limit=20)
+"""
+```
+
+## Code Patterns
+
+### Exception Handling
+Use the custom exception hierarchy from `literature_core`:
+```python
+from literature_core import (
+    PaperNotFoundError,    # Entity not found
+    ValidationError,        # Invalid input
+    ExternalAPIError,       # External service failed
+    LiteratureError,        # Base class for all errors
+)
+
+# Raising exceptions
+raise PaperNotFoundError(paper_id=123)
+raise ValidationError("field_name", "Error message")
+
+# In MCP tools - exceptions are caught and formatted
+try:
+    result = PaperService.get(paper_id)
+except PaperNotFoundError:
+    return error(f"Paper {paper_id} not found")
+```
+
+### Response Helpers
+Use standard response helpers for consistency:
+```python
+from literature_core import success, error, paginated, created, batch_result
+
+# Success with data
+return success({"count": 10})
+
+# Error response
+return error("Something went wrong")
+
+# Paginated list
+return paginated(papers, total=100, limit=20, offset=0)
+
+# Created entity
+return created({"id": 123, "title": "New Paper"})
+```
+
+### Logging
+Use the centralized logger:
+```python
+from literature_core import get_logger
+
+logger = get_logger(__name__)
+
+logger.info("Processing paper", extra={"paper_id": 123})
+logger.error("Failed to fetch", extra={"error": str(e)})
+```
+
+### Dataclasses for Return Types
+Use dataclasses for structured returns:
+```python
+@dataclass
+class PaperListResult:
+    papers: list[dict]
+    total: int
+    limit: int
+    offset: int
+```
+
+### Service Layer
+Services are stateless with class methods:
+```python
+class PaperService:
+    @staticmethod
+    def get(paper_id: int) -> dict:
+        with get_session() as session:
+            paper = session.query(Paper).get(paper_id)
+            if not paper:
+                raise PaperNotFoundError(paper_id)
+            return paper.to_dict()
+```
+
+### MCP Tools
+Tools are thin wrappers over services:
+```python
+async def handle_get_paper(arguments: dict) -> list[TextContent]:
+    try:
+        paper_id = arguments["paper_id"]
+        result = PaperService.get(paper_id)
+        return [TextContent(type="text", text=json.dumps(success(result)))]
+    except PaperNotFoundError:
+        return [TextContent(type="text", text=json.dumps(error(f"Paper {paper_id} not found")))]
+```
+
+### Constants
+Use enums and constants from `literature_core.constants`:
+```python
+from literature_core import (
+    ReadStatus,           # "unread", "reading", "read"
+    DEFAULT_SEARCH_LIMIT, # 20
+    MAX_SEARCH_LIMIT,     # 500
+    MIN_RATING,           # 1
+    MAX_RATING,           # 5
+)
+```
+
+## Git Conventions
+
+### Branch Naming
+```
+feature/mcp-plugin     # Current development branch
+fix/search-ranking     # Bug fixes
+refactor/services      # Code improvements
+```
+
+### Commit Format
+```
+<scope>: <type>: <description>
 
 Examples:
+- mcp: feat: Add pagination to export_papers tool
+- mcp: fix: Handle missing DOI in search results
+- services: refactor: Extract embedding logic
+- tests: feat: Add citation service tests
+```
 
-Paper metadata: ONLY in literature-database
-Embeddings: ONLY in literature-ai
-External API calls: ONLY in literature-search
-UI components: ONLY in web-dashboard
+## Key Design Principles
 
-2. FILE ORGANIZATION [STRICT]
-Allowed Locations:
-infrastructure/*/
-  ├── src/           # Source code
-  ├── tests/         # Tests (mirror src/)
-  ├── config/        # Service config
-  ├── scripts/       # Service scripts
-  └── docs/          # Service docs
+1. **Single Source of Truth**: All paper data in SQLite, embeddings in ChromaDB
+2. **Service Layer Pattern**: Business logic in services, MCP tools are thin wrappers
+3. **Graceful Degradation**: If embeddings unavailable, fall back to keyword search
+4. **Explicit Over Implicit**: No magic - configuration in `src/config/`
 
-web-dashboard/
-  ├── src/
-  ├── public/
-  ├── tests/
-  └── docs/
+## What NOT to Do
 
-shared/              # ONLY truly shared code
-  ├── configs/       # Shared configurations
-  ├── scripts/       # Cross-service scripts
-  └── types/         # TypeScript/Python type definitions
-FORBIDDEN:
+- Don't create new services without adding corresponding tests
+- Don't bypass services by querying the database directly from MCP tools
+- Don't commit to `main` directly (use feature branches)
+- Don't add dependencies without updating `environment.yml`
 
-Files in monorepo root (except .gitignore, README.md, CLAUDE.md, etc.)
-Duplicate utilities across services
-"temp", "old", "backup" directories
-Cross-service imports except through APIs
+## GPU/LLM Notes
 
-3. ERROR HANDLING [MANDATORY]
-All agents MUST follow:
+When implementing AI features (extraction, summarization):
+- Local LLM via Ollama (RTX 4070, 8GB VRAM)
+- Max model size: ~14B with 4-bit quantization
+- Use `src/config/ai_settings.py` for model configuration
+- Prefer batch processing over real-time for large operations
 
-Show complete error trace
-Fix at the source
-Verify the fix works
-Test dependent services still work
-Document in service's CHANGELOG.md
+## Testing Patterns
 
-NEVER:
+### Test Organization
+Tests mirror the source structure:
+```
+tests/
+├── unit/services/          # Unit tests for services
+├── integration/tools/      # Integration tests for MCP tools
+├── fixtures/               # Shared test fixtures
+└── conftest.py             # pytest fixtures (db, session, etc.)
+```
 
-Create workarounds in different services
-Add try/except to hide cross-service issues
-Create "fixed" versions of files
-Bypass broken APIs with direct DB access
+### Test Class Naming
+Group related tests in descriptive classes:
+```python
+class TestPaperServiceCreate:
+    """Tests for paper creation."""
 
-4. GIT WORKFLOW [ENFORCED]
-main                 [Protected, stable]
-├── dev             [Integration branch]
-├── feat/*          [New features]
-├── fix/*           [Bug fixes]
-├── refactor/*      [Code improvements]
-└── experimental/*  [R&D work]
-Commit Format:
-<service>: <type>: <description>
+    def test_create_paper_minimal(self, db):
+        """Test creating a paper with only required fields."""
+        result = PaperService.create(title="Test Paper")
+        assert result["id"] is not None
 
-Examples:
-- database: feat: add zotero sync
-- ai: fix: memory leak in embeddings
-- dashboard: refactor: extract components
-- monorepo: chore: update dependencies
-5. DEPENDENCY MANAGEMENT [CRITICAL]
-Global Rules:
+    def test_create_paper_full(self, db):
+        """Test creating a paper with all fields."""
+        ...
+```
 
-Each service has its own environment/requirements
-Use mamba/conda for scientific packages
-Pin ALL versions exactly
-Document GPU requirements explicitly
+### Using Fixtures
+Use the `db` fixture for database tests (auto-cleans up):
+```python
+def test_get_paper(self, db):
+    # db fixture provides clean database state
+    paper = PaperService.create(title="Test")
+    result = PaperService.get(paper["id"])
+    assert result["title"] == "Test"
+```
 
-AI Service Special Requirements:
-yaml# infrastructure/literature-ai/environment.yml
-name: literature-ai
-channels:
-  - conda-forge
-  - pytorch
-dependencies:
-  - python=3.11
-  - pytorch=2.0.*  # Compatible with CUDA
-  - transformers=4.*
-  - pip:
-    - ollama
-    - langchain
-    - chromadb
-    
-# GPU Requirements:
-# - NVIDIA RTX 4070 or better
-# - 8GB+ VRAM
-# - CUDA 11.8+
-# - Qwen model: ~4GB VRAM per 7B parameters
-6. LLM CONFIGURATION [SPECIFIC]
-For literature-ai service:
-python# infrastructure/literature-ai/config/llm_config.py
-LLM_CONFIG = {
-    "provider": "ollama",
-    "base_url": "http://localhost:11434",
-    "models": {
-        "writer": "qwen:7b-q4_K_M",      # ~4GB VRAM
-        "triager": "qwen:7b-q4_K_M",     # Can share
-        "reader": "qwen:14b-q4_K_M",     # ~7GB VRAM
-    },
-    "fallback": "qwen:7b-q4_K_M",
-    "max_context": 8192,
-    "temperature": {
-        "writer": 0.7,
-        "triager": 0.3,
-        "reader": 0.1,
-    }
-}
+### Testing Exceptions
+```python
+def test_get_nonexistent_paper(self, db):
+    with pytest.raises(PaperNotFoundError):
+        PaperService.get(99999)
+```
 
-# IMPORTANT: RTX 4070 8GB VRAM Limits
-# - Can run 7B model with 4-bit quantization
-# - Can run 14B model with aggressive quantization
-# - Cannot run multiple models simultaneously
-# - Must unload models between switches
-7. TESTING REQUIREMENTS [MANDATORY]
-Service Level:
-
-Each service must have >80% test coverage
-Integration tests for API endpoints
-Unit tests for business logic
-
-Monorepo Level:
-bash# shared/scripts/test_all.sh
-#!/bin/bash
-# Run all service tests
-for service in infrastructure/*/; do
-    echo "Testing $service"
-    cd $service && pytest
-done
-
-# Run integration tests
-cd tests/integration && pytest
-8. API CONTRACTS [IMMUTABLE]
-Version Management:
-python# All APIs must version endpoints
-/api/v1/papers       # Current stable
-/api/v2/papers       # Breaking changes
-/api/experimental/   # Unstable features
-Documentation Requirements:
-
-OpenAPI/Swagger specs for each service
-Shared types in shared/types/
-Breaking changes require version bump
-Deprecation notices 2 weeks before removal
-
-9. CONTEXT AWARENESS [INTELLIGENT]
-Active Research Context:
-yaml# active/current-paper/.context
-version: 1.0
-project:
-  name: "Neural dynamics study"
-  stage: "writing"
-  manuscript: "manuscript/main.tex"
-  
-llm_preferences:
-  model: "qwen:7b"  # Override default
-  style: "academic"
-  citations: "apa"
-  
-focus:
-  topics: ["reinforcement learning", "dopamine"]
-  sections: ["discussion"]
-  todos: ["find controversy papers", "missing citations"]
-10. CHECKPOINT PROTOCOL [REQUIRED]
-Every Claude agent response MUST include:
-markdown## CHECKPOINT: [Task Name]
-
-**SERVICE**: [Which service/agent]
-**GOAL**: [What will be accomplished]
-**FILES TO MODIFY**:
-- path/to/file1.py [CREATE/MODIFY/DELETE]
-- path/to/file2.py [CREATE/MODIFY/DELETE]
-
-**IMPLEMENTATION**:
-[actual code]
-
-**VERIFICATION**:
-- [ ] Tests pass
-- [ ] Service starts
-- [ ] API responds
-- [ ] No breaking changes
-
-**SUMMARY**: [What was done]
-**NEXT STEPS**: [Suggested followup]
-Performance Constraints
-GPU/Memory Limits (RTX 4070 8GB)
-
-Max model size: ~14B parameters with 4-bit quantization
-Embedding batch size: 32 documents
-Vector dimension limit: 768 (for efficiency)
-Concurrent models: 1 (must serialize)
-
-Service Resource Allocation
-yamlresources:
-  literature-database:
-    ram: 2GB
-    cpu: 2 cores
-    
-  literature-ai:
-    ram: 8GB
-    gpu: 7GB VRAM
-    cpu: 4 cores
-    
-  literature-search:
-    ram: 1GB
-    cpu: 1 core
-    
-  web-dashboard:
-    ram: 1GB
-    cpu: 1 core
-    
-  api-gateway:
-    ram: 512MB
-    cpu: 1 core
-Development Workflow
-Starting New Feature
-bash# 1. Agent creates feature branch
-git checkout -b feat/service-name/feature-name
-
-# 2. Agent implements with checkpoint protocol
-# 3. Agent runs tests
-cd infrastructure/service-name && pytest
-
-# 4. Agent commits with proper format
-git add -A
-git commit -m "service: feat: description"
-
-# 5. User reviews and merges
-Debugging Protocol
-bash# 1. Identify failing service
-./shared/scripts/health_check.sh
-
-# 2. Check service logs
-tail -f infrastructure/*/logs/*.log
-
-# 3. Run service tests
-cd infrastructure/service-name && pytest -v
-
-# 4. Fix at source (no workarounds!)
-Inter-Service Communication
-Valid Patterns
-python# ✅ GOOD: Through API
-response = requests.get("http://localhost:8001/api/v1/papers")
-
-# ✅ GOOD: Through message queue
-celery.send_task("literature_ai.tasks.embed")
-
-# ✅ GOOD: Through shared types
-from shared.types import PaperMetadata
-Invalid Patterns
-python# ❌ BAD: Direct database access
-from literature_database.models import Paper
-
-# ❌ BAD: Cross-service imports
-from literature_ai.embeddings import embed
-
-# ❌ BAD: Shared mutable state
-GLOBAL_CACHE = {}  # Don't do this!
-Exception Handling
-When governance conflicts with best practice:
-
-DOCUMENT: Create issue in docs/governance-exceptions.md
-JUSTIFY: Explain why rule doesn't work
-PROPOSE: Minimal exception needed
-WAIT: User must approve
-UPDATE: Modify this document if pattern will recur
-
-Monitoring and Observability
-Each service MUST implement:
-python# Health check endpoint
-GET /health -> {"status": "ok", "version": "1.0.0"}
-
-# Metrics endpoint  
-GET /metrics -> Prometheus format
-
-# Structured logging
-logger.info("action", extra={"service": "name", "user": "id"})
-Approval Record
-Developer: @dreec
-Established: 2024-12-XX
-Last Updated: 2024-12-XX
-LLM Choice: Qwen (local via Ollama)
-GPU: NVIDIA RTX 4070 8GB
-Agent Assignment Log
-ServiceAgentStatusLast Updatedliterature-databaseDB-ManagerActive-literature-aiAI-BuilderPending-literature-searchSearch-BuilderPending-web-dashboardUI-BuilderPending-api-gatewayGateway-BuilderPending-
-Exception Log
-[Exceptions will be logged here with date, service, reason, and resolution]
-
-REMEMBER: Each Claude Code agent must respect service boundaries, follow the checkpoint protocol, and work within the constraints of the RTX 4070 8GB VRAM limit when implementing LLM features.
-
+### Requirements
+- Unit tests for all new service methods
+- Integration tests for MCP tools
+- Run full suite before committing:
+  ```bash
+  /home/dreece23/miniforge3/bin/mamba run -n litai python -m pytest tests/ -q
+  ```
