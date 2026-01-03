@@ -1,14 +1,30 @@
-# Literature AI Project State
+# Literature Management System - Project State
 
 ## Overview
-The literature-ai service is part of a monorepo for research literature management. It provides LLM-powered services for academic research including paper search, metadata enrichment, and PDF acquisition.
+A unified research literature management system with MCP (Model Context Protocol) integration for Claude Code and Claude Desktop. Provides paper search, metadata enrichment, citation management, and PDF acquisition.
 
-## Current Status (December 2024)
+## Current Status (January 2026)
 
 ### Database
-- **426 papers** in literature-database
-- **66 papers** were missing abstracts (to be enriched)
-- Schema supports: `full_text`, `file_path`, `abstract`, `doi`, `arxiv_id`, `pubmed_id`, `citation_count`
+- **445+ papers** in SQLite database
+- **Data location**: `data/literature.db`
+- **Vectorstore**: `data/vectorstore/` (ChromaDB, ~97% embedding coverage)
+- **PDFs**: Most in Zotero (`/mnt/c/Users/dreec/Zotero/storage/`), some locally in `data/pdfs/`
+
+### Project Structure
+```
+src/
+├── mcp_server/         # MCP server and tools
+├── services/           # Business logic (PaperService, SearchService, etc.)
+├── literature_core/    # Database models, ORM, config, exceptions
+├── embeddings/         # ChromaDB vector search
+├── extractors/         # Zotero sync
+└── config/             # Settings (ai_settings.py)
+tests/
+├── unit/services/      # Unit tests
+├── integration/tools/  # MCP tool tests
+└── fixtures/           # Shared fixtures
+```
 
 ### API Keys Configured
 | API | Status | Environment Variable |
@@ -16,51 +32,38 @@ The literature-ai service is part of a monorepo for research literature manageme
 | CrossRef | ✅ Working | `CROSSREF_EMAIL` |
 | OpenAlex | ✅ Working | `OPENALEX_EMAIL` |
 | Semantic Scholar | ✅ Working (1 req/sec) | `SEMANTIC_SCHOLAR_API_KEY` |
-| Springer Meta v2 | ✅ Working | `SPRINGER_API_KEY` |
-| Springer Open Access | ✅ Working | `SPRINGER_OPENACCESS_API_KEY` |
+| Springer | ✅ Working | `SPRINGER_API_KEY` |
 | Unpaywall | ✅ Working | `UNPAYWALL_EMAIL` |
 | arXiv | ✅ Working | No key needed |
 | PubMed | ✅ Working | `PUBMED_EMAIL` |
-| Wiley | ✅ Configured | `WILEY_API_TOKEN` |
-
-### Scripts Available
-1. **`scripts/enrich_papers.py`** - Enriches papers missing abstracts using external APIs
-2. **`scripts/acquire_pdfs.py`** - Downloads open access PDFs and extracts full text
-3. **`scripts/sync_papers.py`** - Syncs papers from literature-database to vectorstore
-
-### Overnight Dev Setup
-- Config: `.overnight-dev.json`
-- Git hooks installed at repo root
-- Test command runs both services (252 tests total)
-- Uses `litai` conda environment
 
 ## Environment
 - **Conda environment**: `litai`
 - **Python**: 3.11
 - **GPU**: RTX 4070 8GB VRAM
-- **LLM**: Qwen via Ollama (local)
+- **LLM**: Qwen via Ollama (local) or Claude via MCP session
 
 ## Key Files
-- `config/settings.py` - Pydantic settings configuration
-- `src/services/external_search.py` - External API integrations
-- `src/embeddings/embedding_service.py` - Sentence transformer embeddings
-- `src/context/vectorstore.py` - ChromaDB vectorstore
+- `src/literature_core/config.py` - Settings configuration
+- `src/services/` - All business logic services
+- `src/mcp_server/server.py` - MCP server entry point
+- `src/mcp_server/tools/` - MCP tool implementations
 
 ## Running Tests
 ```bash
-# Both services
-cd infrastructure/literature-database && mamba run -n litai pytest tests/ -q
-cd infrastructure/literature-ai && mamba run -n litai pytest tests/ -q
+/home/dreece23/miniforge3/bin/mamba run -n litai python -m pytest tests/ -q
+```
+
+## Running MCP Server
+```bash
+cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m mcp_server.server
 ```
 
 ## Common Tasks
 ```bash
-# Enrich papers missing abstracts
-mamba run -n litai python scripts/enrich_papers.py
+# Health check
+cd src && mamba run -n litai python -m scripts.health_check
 
-# Acquire open access PDFs
-mamba run -n litai python scripts/acquire_pdfs.py
-
-# Sync papers to vectorstore
-mamba run -n litai python scripts/sync_papers.py
+# Linting
+mamba run -n litai python -m flake8 src/
 ```
