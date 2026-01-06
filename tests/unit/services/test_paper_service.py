@@ -385,7 +385,23 @@ class TestPaperServiceContent:
         assert result["id"] == created["id"]
         assert result["title"] == "Test Paper"
         assert result["abstract"] == "Test Abstract"
-        assert result["full_text"] is None
+        # full_text not included by default (token efficiency)
+        assert "full_text" not in result
+
+    def test_get_content_with_full_text(self, db):
+        """Test get_content with full_text explicitly requested."""
+        created = PaperService.create(
+            title="Test Paper",
+            abstract="Test Abstract"
+        )
+
+        result = PaperService.get_content(created["id"], include_full_text=True)
+
+        assert result["id"] == created["id"]
+        assert result["title"] == "Test Paper"
+        # full_text included when requested (None if no chunks)
+        assert "full_text" in result
+        assert result["full_text"] is None  # No chunks added
 
     def test_get_content_not_found(self, db):
         """Test get_content for non-existent paper."""

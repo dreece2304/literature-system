@@ -84,14 +84,16 @@ class TestBatchPaperCreation:
     def test_create_papers_with_full_metadata(self, db):
         """Benchmark creating papers with full metadata."""
         from services import PaperService
+        import uuid
 
         def create_papers():
+            batch_id = uuid.uuid4().hex[:8]
             for i in range(20):
                 PaperService.create(
                     title=f"Full Metadata Paper {i}",
                     abstract="A" * 500,
                     year=2023,
-                    doi=f"10.1234/batch{i}",
+                    doi=f"10.1234/batch{batch_id}_{i}",
                     authors=[f"Author {j}" for j in range(5)],
                     tags=[f"tag{k}" for k in range(3)],
                     journal="Test Journal"

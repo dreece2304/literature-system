@@ -34,12 +34,12 @@ class FTSStatus:
     last_error: str | None = None
 
 
-# SQL statements for FTS5 setup
+# SQL statements for FTS5 v2 setup (title + abstract only, no full_text)
+# Full-text content search is handled by semantic search via ChromaDB chunks
 FTS5_CREATE_TABLE = """
 CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts USING fts5(
     title,
     abstract,
-    full_text,
     content='papers',
     content_rowid='id',
     tokenize='porter unicode61 remove_diacritics 2'
@@ -49,25 +49,37 @@ CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts USING fts5(
 # Triggers to keep FTS in sync with papers table
 FTS5_TRIGGER_INSERT = """
 CREATE TRIGGER IF NOT EXISTS papers_fts_insert AFTER INSERT ON papers BEGIN
-    INSERT INTO papers_fts(rowid, title, abstract, full_text)
-    VALUES (new.id, new.title, new.abstract, new.full_text);
+    INSERT INTO papers_fts(rowid, title, abstract)
+    VALUES (new.id, new.title, new.abstract);
 END;
 """
 
 FTS5_TRIGGER_DELETE = """
 CREATE TRIGGER IF NOT EXISTS papers_fts_delete AFTER DELETE ON papers BEGIN
-    INSERT INTO papers_fts(papers_fts, rowid, title, abstract, full_text)
-    VALUES ('delete', old.id, old.title, old.abstract, old.full_text);
+    INSERT INTO papers_fts(papers_fts, rowid, title, abstract)
+    VALUES ('delete', old.id, old.title, old.abstract);
 END;
 """
 
 FTS5_TRIGGER_UPDATE = """
 CREATE TRIGGER IF NOT EXISTS papers_fts_update AFTER UPDATE ON papers BEGIN
-    INSERT INTO papers_fts(papers_fts, rowid, title, abstract, full_text)
-    VALUES ('delete', old.id, old.title, old.abstract, old.full_text);
-    INSERT INTO papers_fts(rowid, title, abstract, full_text)
-    VALUES (new.id, new.title, new.abstract, new.full_text);
+    INSERT INTO papers_fts(papers_fts, rowid, title, abstract)
+    VALUES ('delete', old.id, old.title, old.abstract);
+    INSERT INTO papers_fts(rowid, title, abstract)
+    VALUES (new.id, new.title, new.abstract);
 END;
+"""
+
+# Legacy v1 SQL statements (with full_text) for migration purposes
+FTS5_V1_CREATE_TABLE = """
+CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts USING fts5(
+    title,
+    abstract,
+    full_text,
+    content='papers',
+    content_rowid='id',
+    tokenize='porter unicode61 remove_diacritics 2'
+);
 """
 
 
@@ -200,12 +212,12 @@ def rebuild_fts_index(engine: Engine | None = None, batch_size: int = 100) -> di
             # Get total count
             total = conn.execute(text("SELECT COUNT(*) FROM papers")).scalar() or 0
 
-            # Populate in batches
+            # Populate in batches (v2: title + abstract only)
             offset = 0
             while offset < total:
                 conn.execute(text("""
-                    INSERT INTO papers_fts(rowid, title, abstract, full_text)
-                    SELECT id, title, abstract, full_text
+                    INSERT INTO papers_fts(rowid, title, abstract)
+                    SELECT id, title, abstract
                     FROM papers
                     ORDER BY id
                     LIMIT :limit OFFSET :offset
@@ -234,6 +246,7 @@ def search_fts(
     year_max: int | None = None,
     include_snippets: bool = False,
     engine: Engine | None = None,
+    use_or_for_multiword: bool = True,
 ) -> list[FTSResult]:
     """Search papers using FTS5 with BM25 ranking.
 
@@ -244,6 +257,10 @@ def search_fts(
         year_max: Maximum publication year filter
         include_snippets: Whether to include highlighted snippets
         engine: SQLAlchemy engine (uses default if not provided)
+        use_or_for_multiword: If True, convert multi-word queries to OR logic
+                              (e.g., "EUV lithography" -> "EUV OR lithography")
+                              This improves recall for discovery searches.
+                              Set False for strict AND matching.
 
     Returns:
         List of FTSResult with paper_id and bm25_score
@@ -251,9 +268,22 @@ def search_fts(
     if not query or not query.strip():
         return []
 
-    # Escape special FTS5 characters in user query for safety
-    # but preserve intentional operators
     safe_query = query.strip()
+
+    # Convert multi-word queries to OR logic for better recall
+    # Only if query doesn't already contain FTS5 operators
+    if use_or_for_multiword:
+        fts5_operators = ["AND", "OR", "NOT", "NEAR", '"', "*", "(", ")"]
+        has_operators = any(op in safe_query.upper() for op in fts5_operators[:4]) or \
+                       any(op in safe_query for op in fts5_operators[4:])
+
+        if not has_operators:
+            # Split on whitespace and join with OR for multi-word queries
+            words = safe_query.split()
+            if len(words) > 1:
+                # Use OR to match ANY word (better recall)
+                safe_query = " OR ".join(words)
+                logger.debug(f"Converted multi-word query to OR: {safe_query}")
 
     if engine is None:
         engine = get_engine()
@@ -282,11 +312,12 @@ def search_fts(
             # FTS5 search with BM25 ranking
             # bm25() returns negative scores (more negative = better match)
             # We negate it so higher = better for consistency
+            # v2 weights: title=10.0, abstract=5.0 (no full_text)
             if include_snippets:
                 sql = f"""
                     SELECT
                         fts.rowid as paper_id,
-                        -bm25(papers_fts, 10.0, 5.0, 1.0) as bm25_score,
+                        -bm25(papers_fts, 10.0, 5.0) as bm25_score,
                         snippet(papers_fts, 0, '<mark>', '</mark>', '...', 32) as title_snippet,
                         snippet(papers_fts, 1, '<mark>', '</mark>', '...', 64) as abstract_snippet
                     FROM papers_fts fts
@@ -300,7 +331,7 @@ def search_fts(
                 sql = f"""
                     SELECT
                         fts.rowid as paper_id,
-                        -bm25(papers_fts, 10.0, 5.0, 1.0) as bm25_score
+                        -bm25(papers_fts, 10.0, 5.0) as bm25_score
                     FROM papers_fts fts
                     JOIN papers p ON p.id = fts.rowid
                     WHERE papers_fts MATCH :query

@@ -18,7 +18,8 @@ from mcp.types import Resource
 from loguru import logger
 
 # Add src directory to path for imports
-_src_path = Path(__file__).parent.parent.parent.parent.parent.parent / "src"
+# handlers.py is at src/mcp_server/resources/handlers.py, so parent.parent.parent = src/
+_src_path = Path(__file__).parent.parent.parent
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 

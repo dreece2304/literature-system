@@ -24,7 +24,7 @@ from typing import Any
 
 from sqlalchemy import func
 
-from literature_core import get_session, Paper
+from literature_core import get_session, Paper, PaperChunk
 
 logger = logging.getLogger(__name__)
 
@@ -129,11 +129,9 @@ class SearchDiagnosticsService:
                 # Total papers
                 diagnostics.total_papers = session.query(func.count(Paper.id)).scalar() or 0
 
-                # Papers with full text
+                # Papers with chunks (Paper.full_text column is deprecated)
                 diagnostics.papers_with_full_text = (
-                    session.query(func.count(Paper.id))
-                    .filter(Paper.full_text.isnot(None))
-                    .filter(Paper.full_text != "")
+                    session.query(func.count(func.distinct(PaperChunk.paper_id)))
                     .scalar() or 0
                 )
 

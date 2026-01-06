@@ -190,35 +190,32 @@ class TestFTSSearch:
         """Create multiple papers for search testing."""
         create_fts_tables(test_engine)
 
+        # Note: full_text column removed from Paper model
+        # FTS search indexes title and abstract only
         papers = [
             Paper(
                 title="Machine Learning for Natural Language Processing",
                 abstract="This paper explores ML techniques for NLP tasks including sentiment analysis.",
-                full_text="Full text about machine learning and NLP methods.",
                 year=2023
             ),
             Paper(
                 title="Deep Neural Networks in Computer Vision",
                 abstract="Convolutional neural networks for image classification.",
-                full_text="CNNs have revolutionized computer vision applications.",
                 year=2022
             ),
             Paper(
                 title="Reinforcement Learning for Robotics",
                 abstract="Applying RL algorithms to robotic control problems.",
-                full_text="Robots can learn complex behaviors through reinforcement.",
                 year=2024
             ),
             Paper(
                 title="Transformer Models for Text Generation",
                 abstract="GPT and BERT architectures for generating coherent text.",
-                full_text="Attention mechanisms in transformer models.",
                 year=2023
             ),
             Paper(
                 title="Statistical Methods in Data Science",
                 abstract="Classical statistics meets modern machine learning.",
-                full_text="Bayesian inference and frequentist approaches.",
                 year=2021
             ),
         ]

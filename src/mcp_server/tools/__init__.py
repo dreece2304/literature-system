@@ -12,9 +12,10 @@ from . import project
 from . import zotero
 from . import browser_pdf
 from . import discovery
+from . import citation_network
 
 __all__ = [
     "papers", "search", "external", "citations", "pdf",
     "collections", "notes", "import_export", "project", "zotero",
-    "browser_pdf", "discovery"
+    "browser_pdf", "discovery", "citation_network"
 ]

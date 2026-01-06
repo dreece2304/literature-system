@@ -30,10 +30,10 @@ class TestPaperToolSchemas:
         tools = await papers.list_tools()
 
         tool_names = [t.name for t in tools]
+        # Note: search_papers was moved to unified search tool in search.py
         expected = [
             "list_papers",
             "get_paper",
-            "search_papers",
             "add_paper",
             "update_paper",
             "get_paper_content",
@@ -359,17 +359,18 @@ class TestUpdatePaperTool:
 
 
 class TestSearchPapersTool:
-    """Tests for search_papers tool."""
+    """Tests for search tool (moved to search.py, testing via unified search)."""
 
     @pytest.mark.asyncio
     async def test_search_papers_by_title(self, db):
-        """Test searching papers by title."""
+        """Test searching papers by title using unified search tool."""
         from services import PaperService
+        from mcp_server.tools import search
 
         PaperService.create(title="Machine Learning Paper")
         PaperService.create(title="Chemistry Paper")
 
-        result = await papers.call_tool("search_papers", {"query": "Machine"})
+        result = await search.call_tool("search", {"query": "Machine", "mode": "keyword"})
 
         data = json.loads(result[0].text)
         assert data["search_type"] == "keyword"
@@ -377,14 +378,16 @@ class TestSearchPapersTool:
 
     @pytest.mark.asyncio
     async def test_search_papers_respects_limit(self, db):
-        """Test that search respects limit."""
+        """Test that search respects limit using unified search tool."""
         from services import PaperService
+        from mcp_server.tools import search
 
         for i in range(10):
             PaperService.create(title=f"Test Paper {i}")
 
-        result = await papers.call_tool("search_papers", {
+        result = await search.call_tool("search", {
             "query": "Test",
+            "mode": "keyword",
             "limit": 3
         })
 

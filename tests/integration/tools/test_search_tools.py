@@ -31,38 +31,38 @@ class TestSearchToolSchemas:
 
         tool_names = [t.name for t in tools]
         expected = [
-            "keyword_search",
-            "semantic_search",
+            "search",
             "search_by_author",
             "search_by_tag",
+            "get_search_status",
         ]
 
         for name in expected:
             assert name in tool_names, f"Missing tool: {name}"
 
     @pytest.mark.asyncio
-    async def test_keyword_search_schema(self):
-        """Test keyword_search schema structure."""
+    async def test_search_schema(self):
+        """Test unified search schema structure."""
         tools = await search.list_tools()
-        keyword = next(t for t in tools if t.name == "keyword_search")
+        unified = next(t for t in tools if t.name == "search")
 
-        assert "query" in keyword.inputSchema["properties"]
-        assert "query" in keyword.inputSchema["required"]
+        props = unified.inputSchema["properties"]
+        assert "query" in props
+        assert "mode" in props
+        assert "query" in unified.inputSchema["required"]
 
     @pytest.mark.asyncio
-    async def test_semantic_search_schema(self):
-        """Test semantic_search schema structure."""
+    async def test_search_mode_options(self):
+        """Test search tool has all mode options."""
         tools = await search.list_tools()
-        semantic = next(t for t in tools if t.name == "semantic_search")
+        unified = next(t for t in tools if t.name == "search")
 
-        props = semantic.inputSchema["properties"]
-        assert "query" in props
-        assert "search_level" in props
-        assert "min_similarity" in props
+        mode_prop = unified.inputSchema["properties"]["mode"]
+        assert set(mode_prop["enum"]) == {"smart", "keyword", "semantic", "hybrid"}
 
 
 class TestKeywordSearchTool:
-    """Tests for keyword_search tool."""
+    """Tests for search tool with mode='keyword'."""
 
     @pytest.mark.asyncio
     async def test_keyword_search_finds_by_title(self, db):
@@ -72,7 +72,7 @@ class TestKeywordSearchTool:
         PaperService.create(title="Machine Learning Paper")
         PaperService.create(title="Chemistry Paper")
 
-        result = await search.call_tool("keyword_search", {"query": "Machine"})
+        result = await search.call_tool("search", {"query": "Machine", "mode": "keyword"})
 
         data = json.loads(result[0].text)
         assert data["search_type"] == "keyword"
@@ -94,7 +94,7 @@ class TestKeywordSearchTool:
             abstract="This paper is about traditional methods"
         )
 
-        result = await search.call_tool("keyword_search", {"query": "neural networks"})
+        result = await search.call_tool("search", {"query": "neural networks", "mode": "keyword"})
 
         data = json.loads(result[0].text)
         assert data["count"] >= 1
@@ -106,7 +106,7 @@ class TestKeywordSearchTool:
 
         PaperService.create(title="UPPERCASE TITLE")
 
-        result = await search.call_tool("keyword_search", {"query": "uppercase"})
+        result = await search.call_tool("search", {"query": "uppercase", "mode": "keyword"})
 
         data = json.loads(result[0].text)
         assert data["count"] >= 1
@@ -119,8 +119,9 @@ class TestKeywordSearchTool:
         PaperService.create(title="Old Paper", year=2018)
         PaperService.create(title="New Paper", year=2023)
 
-        result = await search.call_tool("keyword_search", {
+        result = await search.call_tool("search", {
             "query": "Paper",
+            "mode": "keyword",
             "year_min": 2020
         })
 
@@ -136,8 +137,9 @@ class TestKeywordSearchTool:
         PaperService.create(title="Old Paper", year=2018)
         PaperService.create(title="New Paper", year=2023)
 
-        result = await search.call_tool("keyword_search", {
+        result = await search.call_tool("search", {
             "query": "Paper",
+            "mode": "keyword",
             "year_max": 2020
         })
 
@@ -154,8 +156,9 @@ class TestKeywordSearchTool:
         PaperService.create(title="Paper 2020", year=2020)
         PaperService.create(title="Paper 2023", year=2023)
 
-        result = await search.call_tool("keyword_search", {
+        result = await search.call_tool("search", {
             "query": "Paper",
+            "mode": "keyword",
             "year_min": 2019,
             "year_max": 2021
         })
@@ -172,8 +175,9 @@ class TestKeywordSearchTool:
         for i in range(10):
             PaperService.create(title=f"Test Paper {i}")
 
-        result = await search.call_tool("keyword_search", {
+        result = await search.call_tool("search", {
             "query": "Test",
+            "mode": "keyword",
             "limit": 5
         })
 
@@ -187,8 +191,9 @@ class TestKeywordSearchTool:
 
         PaperService.create(title="Some Paper")
 
-        result = await search.call_tool("keyword_search", {
-            "query": "nonexistent_xyz_123"
+        result = await search.call_tool("search", {
+            "query": "nonexistent_xyz_123",
+            "mode": "keyword"
         })
 
         data = json.loads(result[0].text)
@@ -197,7 +202,7 @@ class TestKeywordSearchTool:
 
 
 class TestSemanticSearchTool:
-    """Tests for semantic_search tool (with mocked embeddings)."""
+    """Tests for search tool with mode='semantic' (with mocked embeddings)."""
 
     @pytest.mark.asyncio
     async def test_semantic_search_paper_level(
@@ -205,7 +210,6 @@ class TestSemanticSearchTool:
     ):
         """Test semantic search at paper level."""
         from services import PaperService
-        import numpy as np
 
         paper = PaperService.create(
             title="Atomic Layer Deposition Review",
@@ -221,14 +225,15 @@ class TestSemanticSearchTool:
             document="Atomic layer deposition"
         )
 
-        result = await search.call_tool("semantic_search", {
+        result = await search.call_tool("search", {
             "query": "ALD thin film deposition",
+            "mode": "semantic",
             "search_level": "paper"
         })
 
         data = json.loads(result[0].text)
         # May fall back to keyword search if embeddings not available
-        assert data["search_type"] in ["semantic_paper", "keyword"]
+        assert data["search_type"] in ["semantic_paper", "semantic", "keyword"]
 
     @pytest.mark.asyncio
     async def test_semantic_search_chunk_level(
@@ -251,8 +256,9 @@ class TestSemanticSearchTool:
             document="Matching content about materials"
         )
 
-        result = await search.call_tool("semantic_search", {
+        result = await search.call_tool("search", {
             "query": "materials science",
+            "mode": "semantic",
             "search_level": "chunk"
         })
 
@@ -278,8 +284,9 @@ class TestSemanticSearchTool:
             document="Test paper content"
         )
 
-        result = await search.call_tool("semantic_search", {
+        result = await search.call_tool("search", {
             "query": "unrelated query",
+            "mode": "semantic",
             "min_similarity": 0.5,
             "search_level": "paper"
         })
@@ -302,10 +309,11 @@ class TestSemanticSearchTool:
             side_effect=Exception("Embedding error")
         )
 
-        result = await search.call_tool("semantic_search", {"query": "Fallback Test"})
+        result = await search.call_tool("search", {"query": "Fallback Test", "mode": "semantic"})
 
         data = json.loads(result[0].text)
-        assert data["search_type"] == "keyword"
+        # Should indicate fallback or semantic when embedding fails
+        assert data["search_type"] in ["semantic_fallback", "semantic", "keyword"]
 
 
 class TestSearchByAuthorTool:

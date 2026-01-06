@@ -136,19 +136,41 @@ class CitationService:
         """
         entries = []
         entry_pattern = r'@(\w+)\s*\{\s*([^,]+)\s*,([^@]+)\}'
-        field_pattern = r'(\w+)\s*=\s*[\{"]((?:[^{}"]|(?:\{[^{}]*\}))+)[\}"]\s*,?'
 
         for match in re.finditer(entry_pattern, content, re.DOTALL):
             entry_type, key, fields_text = match.groups()
             fields: dict[str, str] = {}
 
-            for field_match in re.finditer(field_pattern, fields_text, re.DOTALL):
+            # Parse fields with better handling of braces and quotes
+            # Pattern for brace-delimited values: field = {value with "quotes" ok}
+            brace_pattern = r'(\w+)\s*=\s*\{((?:[^{}]|\{[^{}]*\})*)\}'
+            # Pattern for quote-delimited values: field = "value"
+            quote_pattern = r'(\w+)\s*=\s*"([^"]*)"'
+            # Pattern for bare values (numbers, etc.): field = 2024
+            bare_pattern = r'(\w+)\s*=\s*(\d+)'
+
+            # Try brace-delimited first (most common in BibTeX)
+            for field_match in re.finditer(brace_pattern, fields_text, re.DOTALL):
                 field_name = field_match.group(1).lower()
                 field_value = field_match.group(2).strip()
-                # Clean up LaTeX artifacts
-                field_value = re.sub(r'[{}]', '', field_value)
+                # Clean up LaTeX artifacts but preserve content
+                field_value = re.sub(r'(?<![\\])[{}]', '', field_value)
                 field_value = field_value.replace('\\&', '&')
+                field_value = field_value.replace('\\%', '%')
                 fields[field_name] = field_value
+
+            # Try quote-delimited (less common)
+            for field_match in re.finditer(quote_pattern, fields_text, re.DOTALL):
+                field_name = field_match.group(1).lower()
+                if field_name not in fields:  # Don't overwrite brace values
+                    field_value = field_match.group(2).strip()
+                    fields[field_name] = field_value
+
+            # Try bare values (numbers)
+            for field_match in re.finditer(bare_pattern, fields_text):
+                field_name = field_match.group(1).lower()
+                if field_name not in fields:
+                    fields[field_name] = field_match.group(2)
 
             entries.append(BibEntry(
                 key=key.strip(),
@@ -183,6 +205,64 @@ class CitationService:
             raise ValidationError("file_path", f"Cannot read file: {e}")
 
         return cls.parse_bibtex(content)
+
+    # =========================================================================
+    # BibTeX Generation
+    # =========================================================================
+
+    @staticmethod
+    def generate_bibtex(papers: list[Paper]) -> list[dict[str, Any]]:
+        """Generate BibTeX entries for Paper objects.
+
+        Args:
+            papers: List of Paper ORM objects
+
+        Returns:
+            List of dicts with paper_id, key, and bibtex fields
+        """
+        results = []
+
+        for paper in papers:
+            # Generate citation key
+            first_author = ""
+            if paper.authors:
+                first_author = paper.authors[0].name.split()[-1].lower()
+                first_author = re.sub(r'[^a-z]', '', first_author)
+            year = paper.year or ""
+            title = paper.title or ""
+            title_word = (
+                re.sub(r'[^a-z]', '', title.split()[0].lower())
+                if title else ""
+            )
+            key = f"{first_author}{year}{title_word}"
+
+            # Build BibTeX fields
+            fields = []
+            if paper.title:
+                fields.append(f'  title = {{{paper.title}}}')
+            if paper.authors:
+                names = [a.name for a in paper.authors]
+                fields.append(f'  author = {{{" and ".join(names)}}}')
+            if paper.year:
+                fields.append(f'  year = {{{paper.year}}}')
+            if paper.journal:
+                fields.append(f'  journal = {{{paper.journal}}}')
+            if paper.volume:
+                fields.append(f'  volume = {{{paper.volume}}}')
+            if paper.pages:
+                fields.append(f'  pages = {{{paper.pages}}}')
+            if paper.doi:
+                fields.append(f'  doi = {{{paper.doi}}}')
+
+            bibtex = f"@article{{{key},\n" + ",\n".join(fields) + "\n}"
+
+            results.append({
+                "paper_id": paper.id,
+                "key": key,
+                "bibtex": bibtex,
+            })
+
+        return results
 
     # =========================================================================
     # TeX Citation Extraction

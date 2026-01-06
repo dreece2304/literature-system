@@ -156,27 +156,30 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             if arguments.get("doi"):
                 doi = arguments["doi"]
 
-                # Try CrossRef
-                cr_results = await service._search_crossref_multi(f"doi:{doi}", limit=1)
-                if cr_results:
+                # Try CrossRef with direct DOI lookup (not text search)
+                cr_result = await service.lookup_by_doi(doi)
+                if cr_result:
                     results["crossref"] = {
-                        "title": cr_results[0].title,
-                        "authors": cr_results[0].authors,
-                        "year": cr_results[0].year,
-                        "doi": cr_results[0].doi,
-                        "abstract": cr_results[0].abstract,
-                        "journal": cr_results[0].journal,
+                        "title": cr_result.title,
+                        "authors": cr_result.authors,
+                        "year": cr_result.year,
+                        "doi": cr_result.doi,
+                        "abstract": cr_result.abstract,
+                        "journal": cr_result.journal,
                     }
 
-                # Try Semantic Scholar for citation count
-                ss_results = await service._search_semantic_scholar_query(
-                    arguments.get("title", doi), limit=1
-                )
-                if ss_results:
-                    results["semantic_scholar"] = {
-                        "citation_count": ss_results[0].citation_count,
-                        "pdf_url": ss_results[0].pdf_url,
-                    }
+                # Try Semantic Scholar with direct DOI lookup
+                ss_id = await service._resolve_semantic_scholar_id(doi=doi)
+                if ss_id:
+                    # Get paper details using the resolved ID
+                    ss_results = await service._search_semantic_scholar_query(
+                        arguments.get("title", ""), limit=1
+                    )
+                    if ss_results:
+                        results["semantic_scholar"] = {
+                            "citation_count": ss_results[0].citation_count,
+                            "pdf_url": ss_results[0].pdf_url,
+                        }
 
             # Search by title if no DOI or no results
             elif arguments.get("title"):
@@ -262,7 +265,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                         pdf_urls.append({
                             "source": "semantic_scholar",
                             "url": r.pdf_url,
-                            "is_oa": r.is_open_access,
+                            "is_oa": getattr(r, 'is_open_access', None),
                         })
 
             if not pdf_urls:
@@ -282,10 +285,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             doi = arguments.get("doi")
 
             if doi:
-                # Try CrossRef
-                results = await service._search_crossref_multi(f"doi:{doi}", limit=1)
-                if results and results[0].abstract:
-                    enrichment["abstract"] = results[0].abstract
+                # Try CrossRef with direct DOI lookup
+                result = await service.lookup_by_doi(doi)
+                if result and result.abstract:
+                    enrichment["abstract"] = result.abstract
                     enrichment["source"] = "crossref"
 
             if not enrichment.get("abstract") and title:
@@ -376,23 +379,56 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return [TextContent(type="text", text=json.dumps(all_results, indent=2))]
 
         elif name == "get_citation_count":
-            query = arguments.get("doi") or arguments.get("title")
-            if not query:
+            doi = arguments.get("doi")
+            title = arguments.get("title")
+
+            if not doi and not title:
                 return [TextContent(
                     type="text",
                     text="Please provide either a DOI or title.",
                 )]
 
-            results = await service._search_semantic_scholar_query(query, limit=1)
-            if results and results[0].citation_count is not None:
-                return [TextContent(
-                    type="text",
-                    text=json.dumps({
-                        "title": results[0].title,
-                        "citation_count": results[0].citation_count,
-                        "source": "semantic_scholar",
-                    }, indent=2),
-                )]
+            # Try DOI lookup first (more accurate)
+            if doi:
+                ss_id = await service._resolve_semantic_scholar_id(doi=doi)
+                if ss_id:
+                    # Use the paper endpoint to get citation count
+                    base_url = f"https://api.semanticscholar.org/graph/v1/paper/{ss_id}"
+                    headers = {}
+                    if service.semantic_scholar_key:
+                        headers["x-api-key"] = service.semantic_scholar_key
+
+                    try:
+                        response, success = await service._make_request(
+                            "semantic_scholar", base_url,
+                            params={"fields": "title,citationCount"},
+                            headers=headers
+                        )
+                        if success and response and response.status_code == 200:
+                            data = response.json()
+                            return [TextContent(
+                                type="text",
+                                text=json.dumps({
+                                    "title": data.get("title"),
+                                    "citation_count": data.get("citationCount"),
+                                    "source": "semantic_scholar",
+                                }, indent=2),
+                            )]
+                    except Exception as e:
+                        logger.debug(f"Semantic Scholar lookup failed: {e}")
+
+            # Fallback to title search
+            if title:
+                results = await service._search_semantic_scholar_query(title, limit=1)
+                if results and results[0].citation_count is not None:
+                    return [TextContent(
+                        type="text",
+                        text=json.dumps({
+                            "title": results[0].title,
+                            "citation_count": results[0].citation_count,
+                            "source": "semantic_scholar",
+                        }, indent=2),
+                    )]
 
             return [TextContent(
                 type="text",

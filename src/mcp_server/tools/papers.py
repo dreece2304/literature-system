@@ -92,25 +92,7 @@ async def list_tools() -> list[Tool]:
                 "required": ["paper_id"],
             },
         ),
-        Tool(
-            name="search_papers",
-            description="Search papers by title, abstract, or full text",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query (searches title, abstract, full text)",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum results to return",
-                        "default": 10,
-                    },
-                },
-                "required": ["query"],
-            },
-        ),
+        # NOTE: search_papers removed - use smart_search, hybrid_search, or keyword_search instead
         Tool(
             name="add_paper",
             description="Add a new paper to the database",
@@ -189,9 +171,9 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="get_paper_content",
             description=(
-                "Get paper content for AI analysis (title, abstract, full text). "
-                "Use max_chars to limit full text length for long papers. "
-                "Use include_full_text=false to get only title and abstract."
+                "Get paper content for AI analysis (title, abstract, extraction). "
+                "By default returns only metadata and LLM extraction (~800 tokens). "
+                "Set include_full_text=true to also get full paper text (expensive)."
             ),
             inputSchema={
                 "type": "object",
@@ -202,8 +184,8 @@ async def list_tools() -> list[Tool]:
                     },
                     "include_full_text": {
                         "type": "boolean",
-                        "description": "Include full text content (default: true)",
-                        "default": True,
+                        "description": "Include full text content (default: false for token efficiency)",
+                        "default": False,
                     },
                     "max_chars": {
                         "type": "integer",
@@ -224,7 +206,11 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="store_extraction",
-            description="Store AI-extracted content (summary, findings, etc.) for a paper",
+            description=(
+                "Store AI-extracted content for a paper. Supports basic fields "
+                "(paper_type, topics, summary, findings, methodology) and comprehensive "
+                "fields (quantitative_results, citable_claims, techniques, etc.)."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -232,6 +218,7 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Paper ID",
                     },
+                    # Basic fields
                     "paper_type": {
                         "type": "string",
                         "description": "Type: research_article, review, conference, etc.",
@@ -253,6 +240,48 @@ async def list_tools() -> list[Tool]:
                     "methodology_summary": {
                         "type": "string",
                         "description": "Summary of methodology used",
+                    },
+                    # Extended fields
+                    "discussion_summary": {
+                        "type": "string",
+                        "description": "Summary of discussion section",
+                    },
+                    "future_directions": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Future research directions mentioned",
+                    },
+                    "quantitative_results": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "List of {metric, value, unit, conditions}",
+                    },
+                    "citable_claims": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Specific quotable assertions",
+                    },
+                    "techniques_used": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "List of {technique, purpose, specifics}",
+                    },
+                    "experimental_conditions": {
+                        "type": "object",
+                        "description": "{materials, temperature_range, pressure, key_parameters}",
+                    },
+                    "prior_work_comparison": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "List of {reference_claim, this_work, improvement}",
+                    },
+                    "research_context": {
+                        "type": "object",
+                        "description": "{problem_addressed, novelty, limitations, significance}",
+                    },
+                    "citation_contexts": {
+                        "type": "object",
+                        "description": "{introduction, methods, results, discussion}",
                     },
                 },
                 "required": ["paper_id"],
@@ -367,17 +396,16 @@ def _get_paper(arguments: dict[str, Any]) -> list[TextContent]:
 
 
 def _search_papers(arguments: dict[str, Any]) -> list[TextContent]:
-    """Search papers by query."""
-    query = arguments["query"]
-    limit = arguments.get("limit", 10)
-    results = PaperService.search(query, limit=limit)
+    """DEPRECATED: Use smart_search, hybrid_search, or keyword_search instead."""
+    # Return deprecation message instead of results
     return _to_response(
-        search_result(
-            results=results,
-            query=query,
-            search_type="keyword",
+        error(
+            "search_papers is deprecated. Use smart_search (recommended), "
+            "hybrid_search, or keyword_search instead for better results.",
+            code="DEPRECATED"
         )
     )
+    # Old implementation removed - use search tool instead
 
 
 def _add_paper(arguments: dict[str, Any]) -> list[TextContent]:
@@ -416,19 +444,19 @@ def _update_paper(arguments: dict[str, Any]) -> list[TextContent]:
 def _get_paper_content(arguments: dict[str, Any]) -> list[TextContent]:
     """Get paper content for AI analysis with optional truncation."""
     paper_id = arguments["paper_id"]
-    include_full_text = arguments.get("include_full_text", True)
+    include_full_text = arguments.get("include_full_text", False)  # Default False for efficiency
     max_chars = arguments.get("max_chars", 50000)
     offset = arguments.get("offset", 0)
 
-    content = PaperService.get_content(paper_id)
+    # Pass include_full_text to service - avoids fetching chunks if not needed
+    content = PaperService.get_content(paper_id, include_full_text=include_full_text)
 
-    # Handle full text truncation/pagination
+    # Handle full text truncation/pagination if included
     full_text = content.get("full_text")
     truncation_info = None
 
     if not include_full_text:
-        content["full_text"] = None
-        truncation_info = {"included": False, "reason": "include_full_text=false"}
+        truncation_info = {"included": False, "reason": "include_full_text=false (default)"}
     elif full_text:
         total_len = len(full_text)
 
@@ -463,8 +491,20 @@ def _get_paper_content(arguments: dict[str, Any]) -> list[TextContent]:
 
 
 def _store_extraction(arguments: dict[str, Any]) -> list[TextContent]:
-    """Store AI-extracted content for a paper."""
+    """Store AI-extracted content for a paper (basic and extended fields)."""
     paper_id = arguments.pop("paper_id")
+
+    # Build structured_data for extended fields
+    structured_data = {}
+    extended_fields = [
+        "research_context", "discussion_summary", "future_directions",
+        "quantitative_results", "citable_claims", "techniques_used",
+        "experimental_conditions", "prior_work_comparison", "citation_contexts"
+    ]
+    for field in extended_fields:
+        if field in arguments and arguments[field] is not None:
+            structured_data[field] = arguments[field]
+
     PaperService.store_extraction(
         paper_id=paper_id,
         paper_type=arguments.get("paper_type"),
@@ -472,9 +512,15 @@ def _store_extraction(arguments: dict[str, Any]) -> list[TextContent]:
         one_sentence_summary=arguments.get("one_sentence_summary"),
         key_findings=arguments.get("key_findings"),
         methodology_summary=arguments.get("methodology_summary"),
+        structured_data=structured_data if structured_data else None,
     )
+
+    response = {"paper_id": paper_id}
+    if structured_data:
+        response["extended_fields_stored"] = list(structured_data.keys())
+
     return _to_response(
-        success({"paper_id": paper_id}, message=f"Extraction stored for paper {paper_id}")
+        success(response, message=f"Extraction stored for paper {paper_id}")
     )
 
 

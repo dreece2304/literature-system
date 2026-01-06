@@ -14,6 +14,15 @@ Usage:
 
     # Get a collection
     collection = CollectionService.get(1)
+
+    # Search (unified entry point)
+    from services import UnifiedSearchService
+    results = await UnifiedSearchService.search("ALD thin films")
+
+    # Extraction (unified - includes PDF chunking and AI extraction)
+    from services import ExtractionService
+    result = ExtractionService.extract_pdf_and_store(paper_id)
+    stats = ExtractionService.get_queue_stats()
 """
 from .paper_service import PaperService
 from .collection_service import CollectionService
@@ -22,23 +31,33 @@ from .search_service import SearchService
 from .pdf_service import PDFService
 from .import_export_service import ImportExportService
 from .citation_service import CitationService
-from .hybrid_search_service import HybridSearchService
+from .unified_search_service import UnifiedSearchService
 from .search_diagnostics_service import SearchDiagnosticsService
 from .embedding_service import EmbeddingService
 from .validation_service import ValidationService
 from .extraction_service import ExtractionService
+from .paper_import_service import PaperImportService
+
+# Backwards-compatible aliases (DEPRECATED - use ExtractionService instead)
+# These will be removed in future version
+ChunkedExtractionService = ExtractionService
+ChunkingQueueService = ExtractionService
 
 __all__ = [
     "PaperService",
     "CollectionService",
     "NoteService",
     "SearchService",
+    "UnifiedSearchService",
     "PDFService",
     "ImportExportService",
     "CitationService",
-    "HybridSearchService",
     "SearchDiagnosticsService",
     "EmbeddingService",
     "ValidationService",
     "ExtractionService",
+    "PaperImportService",
+    # Deprecated aliases
+    "ChunkedExtractionService",
+    "ChunkingQueueService",
 ]

@@ -2,7 +2,8 @@
 
 This service provides keyword, entity-based, and semantic search capabilities.
 Semantic search supports both paper-level (title+abstract) and chunk-level
-(full text) embeddings.
+(full text) embeddings. Includes RRF (Reciprocal Rank Fusion) for merging
+multiple ranked result lists.
 
 Usage:
     from services import SearchService
@@ -21,6 +22,12 @@ Usage:
 
     # Search by tag
     papers = SearchService.search_by_tag("reinforcement-learning", limit=20)
+
+    # Merge multiple ranked lists with RRF
+    merged = SearchService.reciprocal_rank_fusion(
+        [keyword_results, semantic_results],
+        weights=[0.35, 0.65]
+    )
 """
 from __future__ import annotations
 
@@ -33,6 +40,11 @@ from literature_core import (
     Author,
     Tag,
     DEFAULT_SEARCH_LIMIT,
+)
+from services.search_constants import (
+    DEFAULT_RRF_K,
+    DEFAULT_ALPHA,
+    DEFAULT_MIN_SIMILARITY,
 )
 
 logger = get_logger(__name__)
@@ -101,6 +113,94 @@ class SearchService:
         return result
 
     # =========================================================================
+    # Reciprocal Rank Fusion (RRF)
+    # =========================================================================
+
+    @staticmethod
+    def reciprocal_rank_fusion(
+        ranked_lists: list[list[tuple[int, float]]],
+        k: int = DEFAULT_RRF_K,
+        weights: list[float] | None = None,
+    ) -> list[tuple[int, float]]:
+        """Merge multiple ranked lists using Reciprocal Rank Fusion.
+
+        RRF formula: score(d) = sum(weight_i * 1/(k + rank_i(d)))
+
+        This is the standard fusion method used in production search systems
+        because it's robust to score differences between ranking methods.
+
+        Args:
+            ranked_lists: List of ranked results, each as [(paper_id, score), ...]
+            k: RRF constant (default 60, standard value)
+            weights: Optional weights for each ranked list (default: equal)
+
+        Returns:
+            Merged results sorted by RRF score: [(paper_id, rrf_score), ...]
+
+        Example:
+            # Merge keyword and semantic results with semantic preference
+            merged = SearchService.reciprocal_rank_fusion(
+                [keyword_results, semantic_results],
+                weights=[0.35, 0.65]  # 35% keyword, 65% semantic
+            )
+        """
+        if weights is None:
+            weights = [1.0] * len(ranked_lists)
+
+        # Normalize weights
+        total_weight = sum(weights)
+        if total_weight > 0:
+            weights = [w / total_weight for w in weights]
+
+        # Calculate RRF scores
+        rrf_scores: dict[int, float] = {}
+
+        for list_idx, ranked_list in enumerate(ranked_lists):
+            weight = weights[list_idx]
+            for rank, (paper_id, _) in enumerate(ranked_list):
+                # RRF score contribution
+                rrf_contribution = weight * (1.0 / (k + rank + 1))
+                rrf_scores[paper_id] = rrf_scores.get(paper_id, 0.0) + rrf_contribution
+
+        # Sort by RRF score descending
+        sorted_results = sorted(
+            rrf_scores.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )
+
+        return sorted_results
+
+    @staticmethod
+    def normalize_scores(
+        results: list[tuple[int, float]],
+        method: str = "minmax"
+    ) -> list[tuple[int, float]]:
+        """Normalize scores to 0-1 range.
+
+        Args:
+            results: [(paper_id, score), ...]
+            method: "minmax" for min-max normalization
+
+        Returns:
+            Results with normalized scores
+        """
+        if not results:
+            return []
+
+        scores = [score for _, score in results]
+        min_score = min(scores)
+        max_score = max(scores)
+
+        if max_score == min_score:
+            return [(pid, 1.0) for pid, _ in results]
+
+        return [
+            (pid, (score - min_score) / (max_score - min_score))
+            for pid, score in results
+        ]
+
+    # =========================================================================
     # Keyword Search
     # =========================================================================
 
@@ -114,7 +214,9 @@ class SearchService:
     ) -> SearchResults:
         """Full-text keyword search across papers.
 
-        Searches title, abstract, and full text using SQL LIKE.
+        Uses FTS5 with BM25 ranking for fast, relevance-ranked results.
+        Multi-word queries use OR logic for better recall (finds papers
+        matching ANY word). Falls back to SQL LIKE if FTS5 unavailable.
 
         Args:
             query: Search query string
@@ -125,12 +227,57 @@ class SearchService:
         Returns:
             SearchResults with matching papers
         """
+        from literature_core.fts import search_fts, is_fts_available
+        from sqlalchemy.orm import joinedload
+
+        # Try FTS5 first (faster, ranked)
+        if is_fts_available():
+            fts_results = search_fts(
+                query=query,
+                limit=limit,
+                year_min=year_min,
+                year_max=year_max,
+                use_or_for_multiword=True,  # OR logic for multi-word queries
+            )
+
+            if fts_results:
+                # Fetch full paper objects in score order
+                paper_ids = [r.paper_id for r in fts_results]
+                scores = {r.paper_id: r.bm25_score for r in fts_results}
+
+                with get_session() as session:
+                    papers = (
+                        session.query(Paper)
+                        .options(joinedload(Paper.authors), joinedload(Paper.tags))
+                        .filter(Paper.id.in_(paper_ids))
+                        .all()
+                    )
+                    paper_map = {p.id: p for p in papers}
+
+                    # Preserve FTS5 ranking order
+                    results = []
+                    for paper_id in paper_ids:
+                        paper = paper_map.get(paper_id)
+                        if paper:
+                            results.append(cls.paper_to_result(
+                                paper, score=scores.get(paper_id)
+                            ))
+
+                logger.info(f"Keyword search '{query}' returned {len(results)} results (FTS5)")
+                return SearchResults(
+                    query=query,
+                    search_type="keyword_fts5",
+                    results=results,
+                    count=len(results),
+                )
+
+        # Fallback to SQL LIKE if FTS5 unavailable or no results
         with get_session() as session:
             search_pattern = f"%{query}%"
             db_query = session.query(Paper).filter(
                 (Paper.title.ilike(search_pattern))
                 | (Paper.abstract.ilike(search_pattern))
-                | (Paper.full_text.ilike(search_pattern))
+                # Note: Full-text search on chunks uses FTS5, not LIKE queries
             )
 
             if year_min:
@@ -140,10 +287,10 @@ class SearchService:
 
             papers = db_query.order_by(Paper.year.desc()).limit(limit).all()
 
-            logger.info(f"Keyword search '{query}' returned {len(papers)} results")
+            logger.info(f"Keyword search '{query}' returned {len(papers)} results (LIKE fallback)")
             return SearchResults(
                 query=query,
-                search_type="keyword",
+                search_type="keyword_like",
                 results=[cls.paper_to_result(p) for p in papers],
                 count=len(papers),
             )

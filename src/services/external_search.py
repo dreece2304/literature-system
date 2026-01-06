@@ -566,6 +566,195 @@ class ExternalSearchService:
 
         return results
 
+    # ==================== Citation Network (Semantic Scholar) ====================
+
+    async def get_paper_citations(
+        self, paper_id: str = None, doi: str = None, title: str = None, limit: int = 100
+    ) -> List[PaperResult]:
+        """Get papers that cite a given paper.
+
+        Args:
+            paper_id: Semantic Scholar paper ID (preferred)
+            doi: Paper DOI (will be resolved to SS ID)
+            title: Paper title (fallback, less accurate)
+            limit: Maximum citations to return
+
+        Returns:
+            List of citing papers
+        """
+        # Resolve to Semantic Scholar paper ID
+        ss_id = await self._resolve_semantic_scholar_id(paper_id, doi, title)
+        if not ss_id:
+            logger.warning("Could not resolve paper to Semantic Scholar ID")
+            return []
+
+        base_url = f"https://api.semanticscholar.org/graph/v1/paper/{ss_id}/citations"
+
+        params = {
+            "fields": "title,authors,year,venue,citationCount,externalIds,abstract",
+            "limit": min(limit, 1000),  # API max is 1000
+        }
+
+        headers = {}
+        if self.semantic_scholar_key:
+            headers["x-api-key"] = self.semantic_scholar_key
+
+        results = []
+
+        try:
+            response, success = await self._make_request(
+                "semantic_scholar", base_url, params=params, headers=headers
+            )
+            if not success or response is None or response.status_code != 200:
+                logger.warning(f"Failed to get citations: {response.status_code if response else 'no response'}")
+                return results
+
+            data = response.json()
+
+            for item in data.get("data", []):
+                citing_paper = item.get("citingPaper", {})
+                if not citing_paper.get("title"):
+                    continue
+
+                authors = [a.get("name", "") for a in citing_paper.get("authors", [])]
+                ext_ids = citing_paper.get("externalIds", {})
+
+                results.append(PaperResult(
+                    title=citing_paper.get("title", ""),
+                    authors=authors,
+                    year=citing_paper.get("year"),
+                    doi=ext_ids.get("DOI"),
+                    journal=citing_paper.get("venue"),
+                    abstract=citing_paper.get("abstract"),
+                    source="semantic_scholar",
+                    confidence=1.0,
+                    citation_count=citing_paper.get("citationCount"),
+                    arxiv_id=ext_ids.get("ArXiv"),
+                ))
+
+        except Exception as e:
+            logger.error(f"Error fetching citations: {e}")
+
+        return results
+
+    async def get_paper_references(
+        self, paper_id: str = None, doi: str = None, title: str = None, limit: int = 100
+    ) -> List[PaperResult]:
+        """Get papers that a given paper references.
+
+        Args:
+            paper_id: Semantic Scholar paper ID (preferred)
+            doi: Paper DOI (will be resolved to SS ID)
+            title: Paper title (fallback, less accurate)
+            limit: Maximum references to return
+
+        Returns:
+            List of referenced papers
+        """
+        # Resolve to Semantic Scholar paper ID
+        ss_id = await self._resolve_semantic_scholar_id(paper_id, doi, title)
+        if not ss_id:
+            logger.warning("Could not resolve paper to Semantic Scholar ID")
+            return []
+
+        base_url = f"https://api.semanticscholar.org/graph/v1/paper/{ss_id}/references"
+
+        params = {
+            "fields": "title,authors,year,venue,citationCount,externalIds,abstract",
+            "limit": min(limit, 1000),
+        }
+
+        headers = {}
+        if self.semantic_scholar_key:
+            headers["x-api-key"] = self.semantic_scholar_key
+
+        results = []
+
+        try:
+            response, success = await self._make_request(
+                "semantic_scholar", base_url, params=params, headers=headers
+            )
+            if not success or response is None or response.status_code != 200:
+                logger.warning(f"Failed to get references: {response.status_code if response else 'no response'}")
+                return results
+
+            data = response.json()
+
+            for item in data.get("data", []):
+                cited_paper = item.get("citedPaper", {})
+                if not cited_paper.get("title"):
+                    continue
+
+                authors = [a.get("name", "") for a in cited_paper.get("authors", [])]
+                ext_ids = cited_paper.get("externalIds", {})
+
+                results.append(PaperResult(
+                    title=cited_paper.get("title", ""),
+                    authors=authors,
+                    year=cited_paper.get("year"),
+                    doi=ext_ids.get("DOI"),
+                    journal=cited_paper.get("venue"),
+                    abstract=cited_paper.get("abstract"),
+                    source="semantic_scholar",
+                    confidence=1.0,
+                    citation_count=cited_paper.get("citationCount"),
+                    arxiv_id=ext_ids.get("ArXiv"),
+                ))
+
+        except Exception as e:
+            logger.error(f"Error fetching references: {e}")
+
+        return results
+
+    async def _resolve_semantic_scholar_id(
+        self, paper_id: str = None, doi: str = None, title: str = None
+    ) -> Optional[str]:
+        """Resolve various identifiers to a Semantic Scholar paper ID."""
+        if paper_id:
+            return paper_id
+
+        if doi:
+            # Try DOI lookup
+            base_url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}"
+            headers = {}
+            if self.semantic_scholar_key:
+                headers["x-api-key"] = self.semantic_scholar_key
+
+            try:
+                response, success = await self._make_request(
+                    "semantic_scholar", base_url, params={"fields": "paperId"}, headers=headers
+                )
+                if success and response and response.status_code == 200:
+                    data = response.json()
+                    return data.get("paperId")
+            except Exception as e:
+                logger.debug(f"DOI lookup failed: {e}")
+
+        if title:
+            # Search by title
+            results = await self._search_semantic_scholar_query(title, 1)
+            if results:
+                # Need to get the paper ID - search again with paperId field
+                base_url = "https://api.semanticscholar.org/graph/v1/paper/search"
+                params = {"query": title, "limit": 1, "fields": "paperId,title"}
+                headers = {}
+                if self.semantic_scholar_key:
+                    headers["x-api-key"] = self.semantic_scholar_key
+
+                try:
+                    response, success = await self._make_request(
+                        "semantic_scholar", base_url, params=params, headers=headers
+                    )
+                    if success and response and response.status_code == 200:
+                        data = response.json()
+                        papers = data.get("data", [])
+                        if papers:
+                            return papers[0].get("paperId")
+                except Exception as e:
+                    logger.debug(f"Title search for ID failed: {e}")
+
+        return None
+
     # ==================== OpenAlex ====================
     async def _search_openalex(self, query: str, limit: int = 10) -> List[PaperResult]:
         """Search OpenAlex for papers."""

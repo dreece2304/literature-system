@@ -29,7 +29,7 @@ from literature_core import (
     ValidationError,
     LiteratureError,
 )
-from services import ImportExportService
+from services import ImportExportService, PaperImportService
 
 logger = get_logger(__name__)
 
@@ -155,6 +155,86 @@ async def list_tools() -> list[Tool]:
                 "required": ["collection_id"],
             },
         ),
+        Tool(
+            name="import_paper_wizard",
+            description=(
+                "Unified smart paper import. Accepts DOI, arXiv ID, or title, "
+                "automatically fetches metadata from CrossRef/OpenAlex/Semantic Scholar, "
+                "checks for duplicates, tracks metadata provenance, and optionally "
+                "triggers PDF chunking. Returns detailed result with sources used and "
+                "what enrichment is still needed."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "doi": {
+                        "type": "string",
+                        "description": "DOI to import (most reliable method)",
+                    },
+                    "arxiv_id": {
+                        "type": "string",
+                        "description": "arXiv ID to import (e.g., '2301.12345')",
+                    },
+                    "title": {
+                        "type": "string",
+                        "description": "Paper title to search for (use with authors/year for disambiguation)",
+                    },
+                    "authors": {
+                        "type": "string",
+                        "description": "Author names for disambiguation when searching by title",
+                    },
+                    "year": {
+                        "type": "integer",
+                        "description": "Publication year for disambiguation when searching by title",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tags to apply to the imported paper",
+                    },
+                    "collection_id": {
+                        "type": "integer",
+                        "description": "Collection to add the paper to",
+                    },
+                    "pdf_path": {
+                        "type": "string",
+                        "description": "Local path to PDF file to attach",
+                    },
+                    "skip_duplicate_check": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Skip duplicate detection (use with caution)",
+                    },
+                    "auto_chunk_pdf": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "Automatically extract and chunk PDF text if provided",
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="get_enrichment_queue",
+            description=(
+                "Get papers needing enrichment (missing abstract, PDF, or chunks). "
+                "Useful for finding papers that need additional processing."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "status": {
+                        "type": "string",
+                        "enum": ["needs_abstract", "needs_pdf", "needs_chunks", "pending", "failed"],
+                        "description": "Filter by specific enrichment status",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "default": 20,
+                        "description": "Maximum papers to return",
+                    },
+                },
+            },
+        ),
     ]
 
 
@@ -247,6 +327,70 @@ def _export_collection(arguments: dict[str, Any]) -> list[TextContent]:
     return [TextContent(type="text", text=output)]
 
 
+async def _import_paper_wizard(arguments: dict[str, Any]) -> list[TextContent]:
+    """Import paper using the unified wizard workflow."""
+    from dataclasses import asdict
+
+    result = await PaperImportService.import_paper(
+        doi=arguments.get("doi"),
+        arxiv_id=arguments.get("arxiv_id"),
+        title=arguments.get("title"),
+        authors=arguments.get("authors"),
+        year=arguments.get("year"),
+        tags=arguments.get("tags"),
+        collection_id=arguments.get("collection_id"),
+        pdf_path=arguments.get("pdf_path"),
+        skip_duplicate_check=arguments.get("skip_duplicate_check", False),
+        auto_chunk_pdf=arguments.get("auto_chunk_pdf", True),
+    )
+
+    response = {
+        "status": result.status,
+        "sources_checked": result.sources_checked,
+    }
+
+    if result.status == "success":
+        response["paper"] = result.paper
+        response["provenance"] = {
+            "metadata_source": result.metadata_source,
+            "metadata_confidence": result.metadata_confidence,
+            "sources_used": result.sources_used,
+        }
+        response["enrichment"] = {
+            "status": result.enrichment_status,
+            "missing_fields": result.missing_fields,
+        }
+        if result.warnings:
+            response["warnings"] = result.warnings
+
+    elif result.status == "duplicate":
+        if result.duplicate_info:
+            response["duplicate"] = {
+                "match_type": result.duplicate_info.match_type,
+                "existing_paper_id": result.duplicate_info.existing_paper_id,
+                "existing_paper_title": result.duplicate_info.existing_paper_title,
+                "similarity": result.duplicate_info.similarity,
+            }
+
+    if result.message:
+        response["message"] = result.message
+
+    return _to_response(response)
+
+
+def _get_enrichment_queue(arguments: dict[str, Any]) -> list[TextContent]:
+    """Get papers needing enrichment."""
+    papers = PaperImportService.get_enrichment_queue(
+        status=arguments.get("status"),
+        limit=arguments.get("limit", 20),
+    )
+
+    return _to_response({
+        "count": len(papers),
+        "papers": papers,
+    })
+
+
 # ============================================================================
 # Main entry point
 # ============================================================================
@@ -262,19 +406,27 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     Returns:
         List of TextContent with the result
     """
-    tool_map = {
+    # Sync tools
+    sync_tool_map = {
         "import_bibtex": _import_bibtex,
         "export_papers": _export_papers,
         "export_collection": _export_collection,
+        "get_enrichment_queue": _get_enrichment_queue,
     }
 
-    if name not in tool_map and name != "import_from_external":
+    # Async tools
+    async_tools = {"import_from_external", "import_paper_wizard"}
+
+    all_tools = set(sync_tool_map.keys()) | async_tools
+    if name not in all_tools:
         return _to_response(error(f"Unknown import/export tool: {name}", code="UNKNOWN_TOOL"))
 
     try:
         if name == "import_from_external":
             return await _import_from_external(arguments)
-        return tool_map[name](arguments)
+        if name == "import_paper_wizard":
+            return await _import_paper_wizard(arguments)
+        return sync_tool_map[name](arguments)
 
     except CollectionNotFoundError as e:
         logger.warning(f"Collection not found: {e.collection_id}")

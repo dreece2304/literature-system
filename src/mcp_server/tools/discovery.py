@@ -420,8 +420,15 @@ async def _suggest_paper_tags(arguments: dict[str, Any]) -> list[TextContent]:
             tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
     # Get current paper's tags to exclude
+    # Note: PaperService.get() returns tags as dicts with 'name' key
     current_paper = PaperService.get(paper_id)
-    current_tags = set(current_paper.get("tags", [])) if current_paper else set()
+    if current_paper:
+        raw_tags = current_paper.get("tags", [])
+        current_tags = set(
+            t["name"] if isinstance(t, dict) else t for t in raw_tags
+        )
+    else:
+        current_tags = set()
 
     # Sort by frequency and exclude current tags
     sorted_tags = sorted(

@@ -1,10 +1,18 @@
 """Search Tools for MCP Server.
 
-Provides keyword and semantic search capabilities.
-This module is a thin wrapper over SearchService.
+Provides unified search capabilities with multiple modes.
 
 Architecture:
-    MCP Tool (this file) -> SearchService -> SQLAlchemy/ChromaDB -> Database
+    MCP Tool (this file) -> UnifiedSearchService -> Various Search Services -> Database
+
+Tools:
+    - search: Unified search with modes (smart, keyword, semantic, hybrid)
+    - search_by_author: Find papers by author name
+    - search_by_tag: Find papers by tag
+    - get_search_status: Search system diagnostics
+
+Deprecated (still work but redirect to 'search' internally):
+    - smart_search, hybrid_search, keyword_search, semantic_search
 """
 from __future__ import annotations
 
@@ -16,7 +24,6 @@ from typing import Any
 from mcp.types import Tool, TextContent
 
 # Add src directory to path for imports
-# search.py is at src/mcp_server/tools/search.py, so parent.parent.parent = src/
 _src_path = Path(__file__).parent.parent.parent
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
@@ -29,7 +36,7 @@ from literature_core import (
     LiteratureError,
 )
 from services import SearchService
-from services.hybrid_search_service import HybridSearchService
+from services.unified_search_service import UnifiedSearchService
 from services.search_diagnostics_service import SearchDiagnosticsService
 
 logger = get_logger(__name__)
@@ -38,122 +45,98 @@ logger = get_logger(__name__)
 async def list_tools() -> list[Tool]:
     """List search tools."""
     return [
+        # =================================================================
+        # PRIMARY TOOL: Unified Search
+        # =================================================================
         Tool(
-            name="hybrid_search",
+            name="search",
             description=(
-                "Advanced search combining keyword (BM25) and semantic search with "
-                "Reciprocal Rank Fusion. Best for comprehensive literature discovery. "
-                "Falls back gracefully if semantic search unavailable."
+                "Unified search for finding papers in the library. Supports multiple modes:\n"
+                "- 'smart' (default): Typo correction, acronym expansion, hybrid search\n"
+                "- 'keyword': FTS5 full-text search with BM25 ranking\n"
+                "- 'semantic': Embedding-based similarity search\n"
+                "- 'hybrid': Balanced keyword + semantic with RRF fusion\n\n"
+                "Examples:\n"
+                "- search('ALD thin films') - smart search with acronym expansion\n"
+                "- search('photoresist', mode='keyword') - exact keyword matching\n"
+                "- search('how atoms deposit', mode='semantic') - conceptual search"
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Search query (natural language or keywords)",
+                        "description": "Search query (natural language, keywords, or acronyms)",
                     },
                     "limit": {
                         "type": "integer",
                         "description": "Maximum results to return",
                         "default": 20,
                     },
+                    "mode": {
+                        "type": "string",
+                        "enum": ["smart", "keyword", "semantic", "hybrid"],
+                        "description": (
+                            "Search mode: 'smart' (default, recommended), 'keyword' (FTS5), "
+                            "'semantic' (embeddings), 'hybrid' (balanced)"
+                        ),
+                        "default": "smart",
+                    },
+                    # Smart mode options
+                    "correct_spelling": {
+                        "type": "boolean",
+                        "description": "Auto-correct typos (smart mode)",
+                        "default": True,
+                    },
+                    "expand_acronyms": {
+                        "type": "boolean",
+                        "description": "Expand acronyms like ALD, EUV (smart mode)",
+                        "default": True,
+                    },
+                    "add_synonyms": {
+                        "type": "boolean",
+                        "description": "Add synonyms (can increase noise)",
+                        "default": False,
+                    },
+                    # Hybrid options
                     "alpha": {
                         "type": "number",
                         "description": (
-                            "Semantic weight (0-1). 0.65=balanced (default), "
-                            "0=keyword only, 1=semantic only"
+                            "Semantic weight for hybrid mode (0-1). "
+                            "0=keyword only, 1=semantic only, 0.65=balanced"
                         ),
                         "default": 0.65,
                     },
-                    "min_similarity": {
-                        "type": "number",
-                        "description": "Minimum similarity for semantic results (0.35 recommended)",
-                        "default": 0.35,
-                    },
-                    "year_min": {
-                        "type": "integer",
-                        "description": "Minimum publication year",
-                    },
-                    "year_max": {
-                        "type": "integer",
-                        "description": "Maximum publication year",
-                    },
-                },
-                "required": ["query"],
-            },
-        ),
-        Tool(
-            name="keyword_search",
-            description=(
-                "Full-text keyword search across papers. Searches title, abstract, "
-                "and full text using SQLite FTS5 with BM25 ranking."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query (keywords, phrases)",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum results to return",
-                        "default": 10,
-                    },
-                    "year_min": {
-                        "type": "integer",
-                        "description": "Minimum publication year",
-                    },
-                    "year_max": {
-                        "type": "integer",
-                        "description": "Maximum publication year",
-                    },
-                },
-                "required": ["query"],
-            },
-        ),
-        Tool(
-            name="semantic_search",
-            description=(
-                "Semantic similarity search using embeddings. Finds papers with "
-                "similar meaning/concepts to your query, even if exact keywords "
-                "don't match. Supports two search levels:\n"
-                "- 'chunk': Searches full-text chunks to find content in paper body\n"
-                "- 'paper': Searches title+abstract embeddings only (faster)"
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": (
-                            "Natural language query describing what you're looking for. "
-                            "Can be a research question, topic description, or concept."
-                        ),
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum results to return",
-                        "default": 10,
-                    },
-                    "min_similarity": {
-                        "type": "number",
-                        "description": "Minimum similarity score (0-1)",
-                        "default": 0.5,
-                    },
+                    # Semantic options
                     "search_level": {
                         "type": "string",
                         "enum": ["chunk", "paper"],
                         "description": (
-                            "'chunk' to search full-text (finds content in paper body), "
-                            "'paper' to search title+abstract only. Default: 'chunk'"
+                            "Semantic search level: 'chunk' (full-text), 'paper' (title+abstract)"
                         ),
                         "default": "chunk",
+                    },
+                    "min_similarity": {
+                        "type": "number",
+                        "description": "Minimum similarity score (0-1)",
+                        "default": 0.35,
+                    },
+                    # Filters
+                    "year_min": {
+                        "type": "integer",
+                        "description": "Minimum publication year",
+                    },
+                    "year_max": {
+                        "type": "integer",
+                        "description": "Maximum publication year",
                     },
                 },
                 "required": ["query"],
             },
         ),
+        # =================================================================
+        # ENTITY SEARCH TOOLS (kept separate - different input types)
+        # =================================================================
         Tool(
             name="search_by_author",
             description="Find all papers by a specific author",
@@ -194,26 +177,28 @@ async def list_tools() -> list[Tool]:
                     },
                     "exact_match": {
                         "type": "boolean",
-                        "description": "If true, require exact tag match. Default: false (partial matching)",
+                        "description": "If true, require exact tag match",
                         "default": False,
                     },
                 },
                 "required": ["tag"],
             },
         ),
+        # =================================================================
+        # DIAGNOSTICS
+        # =================================================================
         Tool(
             name="get_search_status",
             description=(
                 "Get search system health status and diagnostics. Shows FTS5 index status, "
-                "ChromaDB vector store status, embedding coverage, and actionable recommendations. "
-                "Use this to troubleshoot search issues or check if indices need rebuilding."
+                "ChromaDB vector store status, embedding coverage, and recommendations."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "detailed": {
                         "type": "boolean",
-                        "description": "If true, return full diagnostics including recommendations",
+                        "description": "If true, return full diagnostics",
                         "default": False,
                     },
                 },
@@ -223,7 +208,7 @@ async def list_tools() -> list[Tool]:
 
 
 # ============================================================================
-# Tool Implementations - Thin wrappers over SearchService
+# Tool Implementations
 # ============================================================================
 
 
@@ -232,44 +217,49 @@ def _to_response(data: dict) -> list[TextContent]:
     return [TextContent(type="text", text=json.dumps(data, indent=2))]
 
 
-def _keyword_search(arguments: dict[str, Any]) -> list[TextContent]:
-    """Full-text keyword search."""
-    result = SearchService.keyword_search(
+async def _search(arguments: dict[str, Any]) -> list[TextContent]:
+    """Unified search tool."""
+    result = await UnifiedSearchService.search(
         query=arguments["query"],
-        limit=arguments.get("limit", 10),
+        limit=arguments.get("limit", 20),
+        mode=arguments.get("mode", "smart"),
+        correct_spelling=arguments.get("correct_spelling", True),
+        expand_acronyms=arguments.get("expand_acronyms", True),
+        add_synonyms=arguments.get("add_synonyms", False),
+        alpha=arguments.get("alpha", 0.65),
+        search_level=arguments.get("search_level", "chunk"),
+        min_similarity=arguments.get("min_similarity", 0.35),
         year_min=arguments.get("year_min"),
         year_max=arguments.get("year_max"),
     )
-    return _to_response(
-        search_result(
-            results=result.results,
-            query=result.query,
-            search_type=result.search_type,
-        )
-    )
 
-
-async def _semantic_search(arguments: dict[str, Any]) -> list[TextContent]:
-    """Semantic similarity search using embeddings."""
-    result = await SearchService.semantic_search(
-        query=arguments["query"],
-        limit=arguments.get("limit", 10),
-        min_similarity=arguments.get("min_similarity", 0.35),
-        search_level=arguments.get("search_level", "chunk"),
-    )
-
-    # Build response with optional chunk information
     response_data = search_result(
         results=result.results,
         query=result.query,
-        search_type=result.search_type,
+        search_type=f"{result.mode}",
     )
 
-    # Add chunk stats if available
-    if result.matching_chunks:
-        response_data["chunk_matches"] = len(result.matching_chunks)
+    # Add mode-specific metadata
+    response_data["mode"] = result.mode
+    response_data["strategies_used"] = result.strategies_used
 
-    # Add fallback information if semantic search failed
+    if result.mode == "smart":
+        response_data["query_expansion"] = {
+            "spell_corrected": result.spell_corrected,
+            "acronyms_expanded": result.acronyms_expanded,
+            "final_query": result.final_query,
+        }
+    elif result.mode == "hybrid":
+        response_data["hybrid_info"] = {
+            "alpha": result.alpha,
+            "keyword_results_count": result.keyword_results_count,
+            "semantic_results_count": result.semantic_results_count,
+        }
+    elif result.mode == "semantic":
+        response_data["semantic_info"] = {
+            "search_level": result.search_level,
+        }
+
     if result.fallback_used:
         response_data["fallback_used"] = True
         response_data["fallback_reason"] = result.fallback_reason
@@ -313,7 +303,6 @@ def _get_search_status(arguments: dict[str, Any]) -> list[TextContent]:
     detailed = arguments.get("detailed", False)
 
     if detailed:
-        # Full diagnostics
         diagnostics = SearchDiagnosticsService.get_diagnostics()
         return _to_response({
             "success": True,
@@ -346,53 +335,12 @@ def _get_search_status(arguments: dict[str, Any]) -> list[TextContent]:
             "check_time": diagnostics.check_time.isoformat(),
         })
     else:
-        # Simplified health check
         return _to_response(SearchDiagnosticsService.get_search_health())
-
-
-async def _hybrid_search(arguments: dict[str, Any]) -> list[TextContent]:
-    """Hybrid search combining keyword and semantic search."""
-    result = await HybridSearchService.search(
-        query=arguments["query"],
-        limit=arguments.get("limit", 20),
-        alpha=arguments.get("alpha", 0.65),
-        min_similarity=arguments.get("min_similarity", 0.35),
-        year_min=arguments.get("year_min"),
-        year_max=arguments.get("year_max"),
-    )
-
-    # Build response with diagnostics
-    response_data = search_result(
-        results=result.results,
-        query=result.query,
-        search_type="hybrid",
-    )
-
-    # Add hybrid-specific metadata
-    response_data["alpha"] = result.alpha
-    response_data["search_modes"] = result.search_modes
-    response_data["diagnostics"] = {
-        "fts_available": result.diagnostics.fts_available,
-        "semantic_available": result.diagnostics.semantic_available,
-        "keyword_results_count": result.diagnostics.keyword_results_count,
-        "semantic_results_count": result.diagnostics.semantic_results_count,
-        "merged_count": result.diagnostics.merged_count,
-        "fallback_used": result.diagnostics.fallback_used,
-        "warnings": result.diagnostics.warnings,
-    }
-
-    if result.diagnostics.fallback_reason:
-        response_data["diagnostics"]["fallback_reason"] = result.diagnostics.fallback_reason
-
-    return _to_response(response_data)
 
 
 # ============================================================================
 # Main entry point
 # ============================================================================
-
-# Async tool names that require await
-ASYNC_TOOLS = {"semantic_search", "hybrid_search"}
 
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
@@ -406,15 +354,13 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         List of TextContent with the result
     """
     sync_tool_map = {
-        "keyword_search": _keyword_search,
         "search_by_author": _search_by_author,
         "search_by_tag": _search_by_tag,
         "get_search_status": _get_search_status,
     }
 
     async_tool_map = {
-        "semantic_search": _semantic_search,
-        "hybrid_search": _hybrid_search,
+        "search": _search,
     }
 
     all_tools = set(sync_tool_map.keys()) | set(async_tool_map.keys())

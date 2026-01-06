@@ -117,20 +117,27 @@ class TestSearchDiagnosticsService:
 
     def test_check_database_stats(self, test_session):
         """Test database statistics check."""
-        from literature_core.models import Paper
+        from literature_core.models import Paper, PaperChunk
 
         # Add test papers
         paper1 = Paper(
             title="Test Paper 1",
             abstract="Abstract 1",
-            full_text="Full text content"
         )
         paper2 = Paper(
             title="Test Paper 2",
             abstract=None,
-            full_text=None
         )
         test_session.add_all([paper1, paper2])
+        test_session.flush()  # Get IDs
+
+        # Add chunk for paper1 (Paper.full_text column is deprecated)
+        chunk = PaperChunk(
+            paper_id=paper1.id,
+            chunk_order=0,
+            content="Full text content",
+        )
+        test_session.add(chunk)
         test_session.commit()
 
         diag = SearchDiagnostics()
@@ -143,7 +150,7 @@ class TestSearchDiagnosticsService:
 
         assert diag.total_papers == 2
         assert diag.papers_with_abstract == 1
-        assert diag.papers_with_full_text == 1
+        assert diag.papers_with_full_text == 1  # Paper with chunks
 
     def test_check_vectorstore_status_unavailable(self):
         """Test vector store status when unavailable."""

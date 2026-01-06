@@ -27,7 +27,8 @@ class TestKeywordSearch:
         result = SearchService.keyword_search("Learning")
 
         assert result.count >= 2
-        assert result.search_type == "keyword"
+        # Accept both FTS5 and LIKE fallback search types
+        assert result.search_type in ("keyword", "keyword_like")
 
     def test_keyword_search_by_abstract(self, db):
         """Test search finds papers by abstract content."""

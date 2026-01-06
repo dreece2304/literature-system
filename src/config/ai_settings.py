@@ -17,28 +17,29 @@ SRC_DIR = Path(__file__).parent.parent              # src/
 DATA_DIR = PROJECT_ROOT / "data"
 LOGS_DIR = PROJECT_ROOT / "logs"
 
-# Legacy data directories (where embeddings were generated)
-LEGACY_AI_DATA_DIR = PROJECT_ROOT / "infrastructure/literature-ai/data"
+# Data directory (consolidated location for all runtime data)
+# Previously used LEGACY_AI_DATA_DIR for infrastructure/literature-ai/data
 
 
 class OllamaSettings(BaseSettings):
     """Ollama service configuration."""
 
     host: str = Field(default="http://localhost:11434", description="Ollama API URL")
-    timeout: int = Field(default=120, description="Request timeout in seconds")
+    timeout: int = Field(default=300, description="Request timeout in seconds (300s for large papers)")
     keep_alive: int = Field(default=60, description="Model keep-alive time in seconds")
 
     # Model specifications
     writer_model: str = Field(default="qwen:7b-q5_K_M", description="Model for writing assistance")
     triager_model: str = Field(default="qwen:7b-q4_K_M", description="Model for paper triage")
-    reader_model: str = Field(default="qwen:7b-q5_K_M", description="Model for Q&A")
+    reader_model: str = Field(default="qwen2.5:7b-instruct-q5_K_M", description="Model for Q&A and extraction")
 
     # Model parameters
     writer_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     triager_temperature: float = Field(default=0.3, ge=0.0, le=2.0)
     reader_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
 
-    max_context_length: int = Field(default=8192, description="Maximum context window")
+    max_context_length: int = Field(default=28000, description="Maximum context window (28K for qwen2.5)")
+    num_predict: int = Field(default=3000, description="Maximum tokens to generate in response")
 
     model_config = SettingsConfigDict(env_prefix="OLLAMA_")
 
@@ -66,7 +67,7 @@ class ChromaDBSettings(BaseSettings):
     """ChromaDB vector store configuration."""
 
     persist_directory: Path = Field(
-        default=LEGACY_AI_DATA_DIR / "vectorstore",
+        default=DATA_DIR / "vectorstore",
         description="ChromaDB persistence directory"
     )
     collection_name: str = Field(default="papers", description="Collection name")
@@ -150,25 +151,13 @@ class LiteratureDatabaseSettings(BaseSettings):
     # Database path (used by service layer)
     # ai_settings.py is at src/config/ai_settings.py, so parent.parent.parent = research/
     database_path: Path = Field(
-        default=PROJECT_ROOT / "infrastructure" / "literature-database" / "data" / "metadata" / "literature.db",
+        default=PROJECT_ROOT / "data" / "literature.db",
         description="Path to SQLite database file"
     )
 
     timeout: int = Field(default=30, description="Database query timeout in seconds")
 
     model_config = SettingsConfigDict(env_prefix="LITDB_")
-
-
-class ClaudeSettings(BaseSettings):
-    """Anthropic Claude API configuration for extraction."""
-
-    api_key: Optional[str] = Field(default=None, description="Anthropic API key")
-    model: str = Field(default="claude-sonnet-4-20250514", description="Claude model to use")
-    max_tokens: int = Field(default=4096, description="Maximum tokens in response")
-    temperature: float = Field(default=0.1, ge=0.0, le=1.0, description="Sampling temperature")
-    timeout: int = Field(default=120, description="Request timeout in seconds")
-
-    model_config = SettingsConfigDict(env_prefix="ANTHROPIC_")
 
 
 class MCPSettings(BaseSettings):
@@ -229,6 +218,45 @@ class GPUSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GPU_")
 
 
+class ClaudeSettings(BaseSettings):
+    """Claude API settings for AI extraction.
+
+    Uses Anthropic API for paper extraction. Token-efficient strategy:
+    - Haiku for most papers (fast, cheap, good for structured extraction)
+    - Sonnet for complex/long papers requiring deeper analysis
+    - Caches abstracts-only extraction to avoid re-processing
+    """
+
+    api_key: Optional[str] = Field(default=None, description="Anthropic API key")
+    default_model: str = Field(
+        default="claude-haiku-4-20250514",
+        description="Default model for extraction (Haiku for efficiency)"
+    )
+    complex_model: str = Field(
+        default="claude-sonnet-4-20250514",
+        description="Model for complex papers (Sonnet for depth)"
+    )
+    timeout: int = Field(default=120, description="Request timeout in seconds")
+    temperature: float = Field(default=0.1, ge=0.0, le=1.0, description="Sampling temperature")
+    max_tokens: int = Field(default=4096, description="Maximum tokens in response")
+
+    # Token efficiency settings
+    max_input_chars: int = Field(
+        default=50000,
+        description="Max chars to send (approx 12.5K tokens)"
+    )
+    abstract_only_threshold: int = Field(
+        default=500,
+        description="If abstract > this length, skip full text for basic extraction"
+    )
+    use_tiered_models: bool = Field(
+        default=True,
+        description="Use Haiku for simple papers, Sonnet for complex"
+    )
+
+    model_config = SettingsConfigDict(env_prefix="CLAUDE_")
+
+
 class Settings(BaseSettings):
     """Master settings aggregating all configuration sections."""
 
@@ -246,10 +274,10 @@ class Settings(BaseSettings):
     redis: RedisSettings = Field(default_factory=RedisSettings)
     celery: CelerySettings = Field(default_factory=CelerySettings)
     litdb: LiteratureDatabaseSettings = Field(default_factory=LiteratureDatabaseSettings)
-    claude: ClaudeSettings = Field(default_factory=ClaudeSettings)
     mcp: MCPSettings = Field(default_factory=MCPSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     gpu: GPUSettings = Field(default_factory=GPUSettings)
+    claude: ClaudeSettings = Field(default_factory=ClaudeSettings)
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -273,10 +301,10 @@ __all__ = [
     "RedisSettings",
     "CelerySettings",
     "LiteratureDatabaseSettings",
-    "ClaudeSettings",
     "MCPSettings",
     "LoggingSettings",
     "GPUSettings",
+    "ClaudeSettings",
     "PROJECT_ROOT",
     "DATA_DIR",
     "LOGS_DIR",

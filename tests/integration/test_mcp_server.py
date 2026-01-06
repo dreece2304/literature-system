@@ -49,10 +49,10 @@ class TestToolRegistration:
         tool_names = [t.name for t in tools]
 
         expected_tools = [
-            "keyword_search",
-            "semantic_search",
+            "search",
             "search_by_author",
-            "search_by_tag"
+            "search_by_tag",
+            "get_search_status"
         ]
 
         for expected in expected_tools:
@@ -134,17 +134,18 @@ class TestToolSchemas:
         from mcp_server.tools.search import list_tools
 
         tools = await list_tools()
-        keyword_search = next(
-            (t for t in tools if t.name == "keyword_search"), None
+        search_tool = next(
+            (t for t in tools if t.name == "search"), None
         )
 
-        assert keyword_search is not None
-        schema = getattr(keyword_search, 'inputSchema', None) or getattr(
-            keyword_search, 'input_schema', None
+        assert search_tool is not None
+        schema = getattr(search_tool, 'inputSchema', None) or getattr(
+            search_tool, 'input_schema', None
         )
 
         properties = schema.get("properties", {})
         assert "query" in properties
+        assert "mode" in properties
 
 
 class TestToolRouting:
@@ -170,7 +171,7 @@ class TestToolRouting:
         # Create paper first
         PaperService.create(title="Searchable Paper", year=2023)
 
-        result = await call_tool("keyword_search", {"query": "Searchable"})
+        result = await call_tool("search", {"query": "Searchable", "mode": "keyword"})
 
         data = json.loads(result[0].text)
         assert "results" in data or "search_type" in data
@@ -332,8 +333,8 @@ class TestEndToEndWorkflows:
             "year": 2024
         })
 
-        # Search for it
-        result = await search_call("keyword_search", {"query": unique_term})
+        # Search for it using unified search tool
+        result = await search_call("search", {"query": unique_term, "mode": "keyword"})
         data = json.loads(result[0].text)
 
         assert data["count"] >= 1

@@ -113,17 +113,22 @@ class TestGetEmbeddingStatus:
         paper2 = PaperService.create(title="Paper 2", abstract="Abstract 2")
         PaperService.create(title="Paper 3")  # No abstract or full text
 
-        # Add full_text directly in DB (not supported by PaperService.create)
+        # Add chunks for paper2 (Paper.full_text column is deprecated)
         with get_session() as session:
-            p = session.query(Paper).filter(Paper.id == paper2["id"]).first()
-            p.full_text = "Full text content"
+            from literature_core import PaperChunk
+            chunk = PaperChunk(
+                paper_id=paper2["id"],
+                chunk_order=0,
+                content="Full text content chunk",
+            )
+            session.add(chunk)
             session.commit()
 
         status = EmbeddingService.get_embedding_status()
 
         assert status.total_papers == 3
         assert status.papers_with_abstract == 2
-        assert status.papers_with_full_text == 1
+        assert status.papers_with_full_text == 1  # Paper with chunks
 
     def test_get_status_with_ids(
         self, db, mock_embedding_generator, mock_vector_store, mock_chunk_store
@@ -201,10 +206,16 @@ class TestProcessQueue:
             abstract="Short abstract",
         )
 
-        # Add full_text directly in DB
+        # Add chunks for paper (Paper.full_text column is deprecated)
         with get_session() as session:
-            p = session.query(Paper).filter(Paper.id == paper["id"]).first()
-            p.full_text = "This is a longer full text that should be chunked. " * 20
+            from literature_core import PaperChunk
+            full_text = "This is a longer full text that should be chunked. " * 20
+            chunk = PaperChunk(
+                paper_id=paper["id"],
+                chunk_order=0,
+                content=full_text,
+            )
+            session.add(chunk)
             session.commit()
 
         result = await EmbeddingService.process_queue(
@@ -316,10 +327,16 @@ class TestEmbedPaper:
             abstract="Short abstract",
         )
 
-        # Add full_text directly in DB
+        # Add chunks for paper (Paper.full_text column is deprecated)
         with get_session() as session:
-            p = session.query(Paper).filter(Paper.id == paper["id"]).first()
-            p.full_text = "This is the full text of the paper. " * 50
+            from literature_core import PaperChunk
+            full_text = "This is the full text of the paper. " * 50
+            chunk = PaperChunk(
+                paper_id=paper["id"],
+                chunk_order=0,
+                content=full_text,
+            )
+            session.add(chunk)
             session.commit()
 
         result = await EmbeddingService.embed_paper(
@@ -377,10 +394,16 @@ class TestEmbedPaper:
             abstract="Comprehensive abstract about the research",
         )
 
-        # Add full_text directly in DB
+        # Add chunks for paper (Paper.full_text column is deprecated)
         with get_session() as session:
-            p = session.query(Paper).filter(Paper.id == paper["id"]).first()
-            p.full_text = "Full text content " * 100
+            from literature_core import PaperChunk
+            full_text = "Full text content " * 100
+            chunk = PaperChunk(
+                paper_id=paper["id"],
+                chunk_order=0,
+                content=full_text,
+            )
+            session.add(chunk)
             session.commit()
 
         result = await EmbeddingService.embed_paper(

@@ -13,6 +13,7 @@ MIGRATED: HTTP calls replaced with direct SQLAlchemy queries.
 import hashlib
 import json
 import os
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -24,7 +25,8 @@ from mcp.types import TextContent, Tool
 from config.ai_settings import DATA_DIR
 
 # Add src directory to path for literature_core imports
-_src_path = Path(__file__).parent.parent.parent.parent.parent.parent / "src"
+# browser_pdf.py is at src/mcp_server/tools/browser_pdf.py, so parent.parent.parent = src/
+_src_path = Path(__file__).parent.parent.parent
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 
@@ -398,19 +400,18 @@ def _get_download_queue_status(arguments: dict[str, Any]) -> list[TextContent]:
 
 
 def _process_downloaded_pdfs(arguments: dict[str, Any]) -> list[TextContent]:
-    """Process downloaded PDFs and update database."""
+    """Process downloaded PDFs and update database.
+
+    Processes PDFs from two sources:
+    1. Files tracked in status.json (from Windows-side fetcher or manual downloads)
+    2. PDFs in the downloads directory (for DOI-based matching)
+
+    Uses shutil.copy2 + unlink for cross-filesystem compatibility (WSL).
+    """
     auto_match = arguments.get("auto_match", True)
 
-    if not DOWNLOADS_DIR.exists():
-        return [TextContent(
-            type="text",
-            text=json.dumps({
-                "status": "error",
-                "message": f"Downloads directory not found: {DOWNLOADS_DIR}",
-            }, indent=2),
-        )]
-
-    # Load queue
+    # Load status and queue
+    status = _load_status()
     queue = _load_queue()
 
     results = {
@@ -420,32 +421,59 @@ def _process_downloaded_pdfs(arguments: dict[str, Any]) -> list[TextContent]:
         "errors": [],
     }
 
-    # Find PDFs to process
-    pdf_files = list(DOWNLOADS_DIR.glob("*.pdf"))
-    logger.info(f"Found {len(pdf_files)} PDFs to process")
+    # Helper to convert Windows path to WSL path
+    def to_wsl_path(windows_path: str) -> Path:
+        """Convert Windows path to WSL path."""
+        if not windows_path:
+            return None
+        # Handle both C:\\ and C:\ formats
+        path = windows_path.replace("\\", "/")
+        if path.startswith("C:/"):
+            path = "/mnt/c/" + path[3:]
+        elif path.startswith("c:/"):
+            path = "/mnt/c/" + path[3:]
+        return Path(path)
+
+    # Collect PDFs to process from status.json (successful downloads)
+    pdfs_to_process = []
+    for paper_id_str, info in status.items():
+        if info.get("status") == "success" and info.get("file_path"):
+            pdf_path = to_wsl_path(info["file_path"])
+            if pdf_path and pdf_path.exists():
+                pdfs_to_process.append({
+                    "path": pdf_path,
+                    "paper_id": info.get("paper_id"),
+                    "doi": info.get("doi"),
+                    "source": "status.json",
+                })
+
+    # Also check downloads directory for untracked PDFs
+    if DOWNLOADS_DIR.exists():
+        tracked_names = {p["path"].name for p in pdfs_to_process}
+        for pdf_path in DOWNLOADS_DIR.glob("*.pdf"):
+            if pdf_path.name not in tracked_names:
+                pdfs_to_process.append({
+                    "path": pdf_path,
+                    "paper_id": None,
+                    "doi": None,
+                    "source": "downloads_dir",
+                })
+
+    logger.info(f"Found {len(pdfs_to_process)} PDFs to process")
 
     with get_session() as session:
-        for pdf_path in pdf_files:
+        for pdf_info in pdfs_to_process:
+            pdf_path = pdf_info["path"]
+            paper_id = pdf_info["paper_id"]
+            doi = pdf_info["doi"]
+
             try:
-                # Try to match to a paper
-                paper_id = None
-                doi = None
-
-                # Check queue for matching file
-                for item in queue:
-                    if item.get("file_path") and Path(item["file_path"]).name == pdf_path.name:
-                        paper_id = item["paper_id"]
-                        doi = item.get("doi")
-                        break
-
-                # Try to extract DOI from filename
+                # If no paper_id, try to match by DOI from filename
                 if not paper_id and auto_match:
-                    # Filename format: 10.1016_j.memsci.2020.118610.pdf
                     filename = pdf_path.stem
+                    # Filename format: 10.1016_j.memsci.2020.118610.pdf
                     if filename.startswith("10."):
-                        # Reconstruct DOI
-                        doi = filename.replace("_", "/", 1)  # First underscore is /
-                        # Look up paper by DOI
+                        doi = filename.replace("_", "/", 1)
                         paper = session.query(Paper).filter(Paper.doi == doi).first()
                         if paper:
                             paper_id = paper.id
@@ -470,20 +498,32 @@ def _process_downloaded_pdfs(arguments: dict[str, Any]) -> list[TextContent]:
                 if paper.file_path:
                     existing = Path(paper.file_path)
                     if existing.exists():
-                        # Check if same file
-                        if _compute_file_hash(pdf_path) == paper.file_hash:
+                        new_hash = _compute_file_hash(pdf_path)
+                        if new_hash == paper.file_hash:
                             results["already_imported"].append({
                                 "paper_id": paper_id,
                                 "filename": pdf_path.name,
                             })
-                            # Delete duplicate
+                            # Delete duplicate source file
                             pdf_path.unlink()
                             continue
 
-                # Move PDF to storage location
+                # Copy PDF to storage location (use copy for cross-filesystem support)
                 PDF_STORAGE_PATH.mkdir(parents=True, exist_ok=True)
                 dest_path = PDF_STORAGE_PATH / pdf_path.name
-                pdf_path.rename(dest_path)
+
+                # Handle duplicate filenames
+                if dest_path.exists():
+                    base = pdf_path.stem
+                    suffix = pdf_path.suffix
+                    counter = 1
+                    while dest_path.exists():
+                        dest_path = PDF_STORAGE_PATH / f"{base}_{counter}{suffix}"
+                        counter += 1
+
+                # Copy then delete (cross-filesystem safe)
+                shutil.copy2(pdf_path, dest_path)
+                pdf_path.unlink()
 
                 # Extract text and compute hash
                 full_text, word_count = _extract_text_from_pdf(dest_path)
@@ -493,12 +533,12 @@ def _process_downloaded_pdfs(arguments: dict[str, Any]) -> list[TextContent]:
                 paper.file_path = str(dest_path)
                 paper.file_hash = file_hash
                 paper.word_count = word_count
-                if full_text:
-                    paper.full_text = full_text
+                # NOTE: No longer setting paper.full_text - use ExtractionService.extract_pdf_and_store()
+                # to create PaperChunk records instead. Call queue_pdf_extraction() after this.
 
                 results["processed"].append({
                     "paper_id": paper_id,
-                    "doi": doi,
+                    "doi": doi or paper.doi,
                     "file_path": str(dest_path),
                     "word_count": word_count,
                 })

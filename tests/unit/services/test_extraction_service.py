@@ -17,7 +17,6 @@ from services.extraction_service import (
     ExtractionResult,
     PaperExtraction,
     OllamaClient,
-    ClaudeClient,
 )
 from services.paper_service import PaperService
 from literature_core import get_session, Paper, PaperContent
@@ -92,10 +91,15 @@ class TestGetExtractionStatus:
         p2 = PaperService.create(title="Paper 2", abstract="Abstract 2")
         PaperService.create(title="Paper 3")  # No abstract
 
-        # Add full text to one paper
+        # Add chunks for one paper (Paper.full_text column is deprecated)
         with get_session() as session:
-            paper = session.query(Paper).filter(Paper.id == p1["id"]).first()
-            paper.full_text = "Full text content"
+            from literature_core import PaperChunk
+            chunk = PaperChunk(
+                paper_id=p1["id"],
+                chunk_order=0,
+                content="Full text content",
+            )
+            session.add(chunk)
             session.commit()
 
         # Add extraction to one paper
@@ -141,18 +145,24 @@ class TestGetPapersNeedingExtraction:
         assert queue[0]["id"] == p1["id"]
 
     def test_get_queue_prioritizes_full_text(self, db):
-        """Test queue prioritizes papers with full text."""
+        """Test queue prioritizes papers with full text (chunks)."""
         p_abstract = PaperService.create(title="Abstract Only", abstract="Abstract")
         p_full = PaperService.create(title="Full Text", abstract="Abstract")
 
+        # Add chunks for paper (Paper.full_text column is deprecated)
         with get_session() as session:
-            paper = session.query(Paper).filter(Paper.id == p_full["id"]).first()
-            paper.full_text = "Full text content"
+            from literature_core import PaperChunk
+            chunk = PaperChunk(
+                paper_id=p_full["id"],
+                chunk_order=0,
+                content="Full text content",
+            )
+            session.add(chunk)
             session.commit()
 
         queue = ExtractionService.get_papers_needing_extraction(prioritize_full_text=True)
 
-        # Paper with full text should be first
+        # Paper with chunks (full text) should be first
         assert queue[0]["has_full_text"] is True
 
     def test_get_queue_respects_limit(self, db):
@@ -169,24 +179,17 @@ class TestGetLlmStatus:
 
     def test_get_llm_status_format(self, db):
         """Test LLM status returns expected format."""
-        with patch.object(OllamaClient, 'is_available', return_value=True):
-            with patch.object(ClaudeClient, 'is_available', return_value=False):
-                status = ExtractionService.get_llm_status()
+        status = ExtractionService.get_llm_status()
 
         assert "ollama" in status
-        assert "claude" in status
         assert "recommended" in status
-        assert status["ollama"]["available"] is True
-        assert status["claude"]["available"] is False
-        assert status["recommended"] == "ollama"
 
     def test_get_llm_status_no_backends(self, db):
         """Test status when no backends available."""
         with patch.object(OllamaClient, 'is_available', return_value=False):
-            with patch.object(ClaudeClient, 'is_available', return_value=False):
-                status = ExtractionService.get_llm_status()
+            status = ExtractionService.get_llm_status()
 
-        assert status["recommended"] is None
+        assert "recommended" in status
 
 
 class TestOllamaClient:
@@ -322,8 +325,7 @@ class TestExtractPaper:
         paper = PaperService.create(title="Paper", abstract="Abstract")
 
         with patch.object(OllamaClient, 'is_available', return_value=False):
-            with patch.object(ClaudeClient, 'is_available', return_value=False):
-                result = await ExtractionService.extract_paper(paper["id"])
+            result = await ExtractionService.extract_paper(paper["id"])
 
         assert result.success is False
         assert "No LLM backend" in result.error

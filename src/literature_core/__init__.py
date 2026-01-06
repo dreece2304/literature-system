@@ -78,6 +78,11 @@ from .constants import (
     ExportFormat,
     BibTeXType,
     CitationStyle,
+    # Workflow status constants
+    MetadataSource,
+    EnrichmentStatus,
+    ChunkingStatus,
+    ImportMethod,
     DEFAULT_SEARCH_LIMIT,
     MAX_SEARCH_LIMIT,
     DEFAULT_MIN_SIMILARITY,
@@ -138,6 +143,13 @@ from .models import (
     CitationLocation,
     PaperContent,
     ProjectRelevance,
+    # Structured extraction models
+    PaperChunk,
+    PaperTable,
+    PaperFigure,
+    PaperReference,
+    ExtractionMetadata,
+    CitedClaim,
     # Association tables
     paper_authors,
     paper_tags,
@@ -206,6 +218,11 @@ __all__ = [
     "ExportFormat",
     "BibTeXType",
     "CitationStyle",
+    # Workflow status constants
+    "MetadataSource",
+    "EnrichmentStatus",
+    "ChunkingStatus",
+    "ImportMethod",
     "DEFAULT_SEARCH_LIMIT",
     "MAX_SEARCH_LIMIT",
     "DEFAULT_MIN_SIMILARITY",
@@ -258,6 +275,13 @@ __all__ = [
     "CitationLocation",
     "PaperContent",
     "ProjectRelevance",
+    # Structured extraction models
+    "PaperChunk",
+    "PaperTable",
+    "PaperFigure",
+    "PaperReference",
+    "ExtractionMetadata",
+    "CitedClaim",
     # Association tables
     "paper_authors",
     "paper_tags",

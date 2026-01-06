@@ -41,6 +41,100 @@ class ExtractionStatus:
     ALL = [NONE, BASIC, COMPREHENSIVE]
 
 
+class MetadataSource:
+    """Sources where paper metadata can come from.
+
+    Used for tracking provenance of imported paper data.
+    """
+
+    CROSSREF = "crossref"
+    OPENALEX = "openalex"
+    SEMANTIC_SCHOLAR = "semantic_scholar"
+    ARXIV = "arxiv"
+    PUBMED = "pubmed"
+    MANUAL = "manual"
+    ZOTERO = "zotero"
+    BIBTEX = "bibtex"
+
+    # Priority order for metadata lookup (most reliable first)
+    LOOKUP_PRIORITY = [CROSSREF, OPENALEX, SEMANTIC_SCHOLAR, ARXIV]
+
+    ALL = [CROSSREF, OPENALEX, SEMANTIC_SCHOLAR, ARXIV, PUBMED, MANUAL, ZOTERO, BIBTEX]
+
+    @classmethod
+    def is_valid(cls, source: str) -> bool:
+        return source in cls.ALL
+
+
+class EnrichmentStatus:
+    """Status of paper enrichment workflow.
+
+    Tracks what data is available and what's still needed for a paper.
+    """
+
+    PENDING = "pending"                 # Just added, needs triage
+    NEEDS_PDF = "needs_pdf"             # Has metadata, waiting for PDF
+    NEEDS_EXTRACTION = "needs_extraction"  # Has PDF/chunks, queued for AI extraction
+    NEEDS_REVIEW = "needs_review"       # Auto-process found issue, needs human decision
+    COMPLETE = "complete"               # Fully processed
+    FAILED = "failed"                   # Unrecoverable error
+
+    ALL = [PENDING, NEEDS_PDF, NEEDS_EXTRACTION, NEEDS_REVIEW, COMPLETE, FAILED]
+
+    # Backwards compatibility for old status values
+    LEGACY_MAPPING = {
+        "needs_abstract": NEEDS_EXTRACTION,
+        "needs_chunks": NEEDS_EXTRACTION,
+    }
+
+    @classmethod
+    def is_valid(cls, status: str) -> bool:
+        return status in cls.ALL
+
+    @classmethod
+    def normalize(cls, status: str) -> str:
+        """Normalize legacy status values to current values."""
+        return cls.LEGACY_MAPPING.get(status, status)
+
+
+class ChunkingStatus:
+    """PDF chunking status values.
+
+    Tracks the state of PDF text extraction and chunking.
+    """
+
+    NONE = "none"            # No PDF or never queued
+    PENDING = "pending"      # Queued for processing
+    PROCESSING = "processing"  # Currently processing
+    COMPLETE = "complete"    # Successfully chunked
+    FAILED = "failed"        # Chunking failed
+
+    ALL = [NONE, PENDING, PROCESSING, COMPLETE, FAILED]
+
+    @classmethod
+    def is_valid(cls, status: str) -> bool:
+        return status in cls.ALL
+
+
+class ImportMethod:
+    """How a paper was imported into the system.
+
+    Tracks the import method for auditing and debugging.
+    """
+
+    WIZARD = "wizard"        # Unified import wizard
+    BIBTEX = "bibtex"        # BibTeX import
+    EXTERNAL = "external"    # Legacy import_from_external
+    MANUAL = "manual"        # Manual creation
+    ZOTERO = "zotero"        # Zotero sync
+
+    ALL = [WIZARD, BIBTEX, EXTERNAL, MANUAL, ZOTERO]
+
+    @classmethod
+    def is_valid(cls, method: str) -> bool:
+        return method in cls.ALL
+
+
 class NoteType:
     """Types of notes that can be attached to papers."""
 

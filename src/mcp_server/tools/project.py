@@ -18,7 +18,8 @@ from typing import Any
 from mcp.types import Tool, TextContent
 
 # Add src directory to path for imports
-_src_path = Path(__file__).parent.parent.parent.parent.parent.parent / "src"
+# project.py is at src/mcp_server/tools/project.py, so parent.parent.parent = src/
+_src_path = Path(__file__).parent.parent.parent
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 

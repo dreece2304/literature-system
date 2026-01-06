@@ -19,7 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-from literature_core import get_session, Paper, get_logger
+from literature_core import get_session, Paper, PaperChunk, get_logger
+from .paper_service import PaperService
 
 if TYPE_CHECKING:
     pass
@@ -100,9 +101,11 @@ class EmbeddingService:
             status.papers_with_abstract = (
                 session.query(Paper).filter(Paper.abstract.isnot(None)).count()
             )
-            status.papers_with_full_text = (
-                session.query(Paper).filter(Paper.full_text.isnot(None)).count()
+            # Count papers with chunks (Paper.full_text column is deprecated)
+            papers_with_chunks_db = set(
+                p[0] for p in session.query(PaperChunk.paper_id).distinct().all()
             )
+            status.papers_with_full_text = len(papers_with_chunks_db)
 
             # Get all paper IDs for comparison
             all_paper_ids = set(
@@ -112,12 +115,6 @@ class EmbeddingService:
                 p.id
                 for p in session.query(Paper.id).filter(
                     Paper.abstract.isnot(None)
-                ).all()
-            )
-            papers_with_fulltext_ids = set(
-                p.id
-                for p in session.query(Paper.id).filter(
-                    Paper.full_text.isnot(None)
                 ).all()
             )
 
@@ -162,8 +159,8 @@ class EmbeddingService:
                         if m.get("paper_id")
                     )
 
-            # Papers needing chunk embedding: have full_text but no chunks
-            needing_chunks = papers_with_fulltext_ids - chunked_paper_ids
+            # Papers needing chunk embedding: have text chunks but no embeddings
+            needing_chunks = papers_with_chunks_db - chunked_paper_ids
             status.papers_needing_chunk_embedding = len(needing_chunks)
             if include_ids:
                 status.paper_ids_needing_chunk_embedding = sorted(needing_chunks)
@@ -261,13 +258,15 @@ class EmbeddingService:
 
                     for paper in papers:
                         try:
-                            if not paper.full_text:
+                            # Get full text from chunks (Paper.full_text column is deprecated)
+                            full_text = PaperService.get_full_text(paper.id, session)
+                            if not full_text:
                                 continue
 
                             # Generate chunk embeddings
                             chunk_embeddings = generator.embed_paper_chunks(
                                 paper_id=paper.id,
-                                full_text=paper.full_text,
+                                full_text=full_text,
                                 chunk_size=chunk_size,
                                 chunk_overlap=chunk_overlap,
                             )
@@ -342,7 +341,9 @@ class EmbeddingService:
                     result.errors.append(f"Paper embedding: {str(e)}")
 
             # Generate chunk embeddings
-            if include_chunk_embedding and paper.full_text:
+            # Get full text from chunks (Paper.full_text column is deprecated)
+            full_text = PaperService.get_full_text(paper_id, session)
+            if include_chunk_embedding and full_text:
                 try:
                     chunk_store = get_chunk_store()
 
@@ -354,7 +355,7 @@ class EmbeddingService:
 
                     chunk_embeddings = generator.embed_paper_chunks(
                         paper_id=paper.id,
-                        full_text=paper.full_text,
+                        full_text=full_text,
                     )
 
                     if chunk_embeddings:

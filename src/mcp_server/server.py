@@ -294,7 +294,7 @@ Be thorough but concise.""",
                         type="text",
                         text=f"""Find papers related to: {query}
 
-1. Use semantic_search to find up to {limit} related papers
+1. Use search with mode="semantic" to find up to {limit} related papers
 2. For each result, briefly explain why it's relevant
 3. Group results by relevance level (highly relevant, somewhat relevant)
 4. Suggest which papers deserve closer examination""",

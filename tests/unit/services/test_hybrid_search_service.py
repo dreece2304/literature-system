@@ -1,20 +1,17 @@
-"""Tests for Hybrid Search Service with Reciprocal Rank Fusion.
+"""Tests for Search Services - RRF and Unified Search.
 
 Tests cover:
-- RRF algorithm correctness
-- Score normalization
-- Hybrid search with keyword + semantic
-- Graceful degradation when components unavailable
+- RRF algorithm correctness (SearchService.reciprocal_rank_fusion)
+- Score normalization (SearchService.normalize_scores)
+- Unified search modes (smart, keyword, semantic, hybrid)
 """
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from literature_core.models import Paper
 from literature_core.fts import create_fts_tables
-from services.hybrid_search_service import (
-    HybridSearchService,
-    HybridSearchResults,
-    HybridSearchDiagnostics,
+from services.search_service import SearchService
+from services.search_constants import (
     DEFAULT_RRF_K,
     DEFAULT_ALPHA,
     DEFAULT_MIN_SIMILARITY,
@@ -22,7 +19,7 @@ from services.hybrid_search_service import (
 
 
 class TestReciprocalRankFusion:
-    """Tests for the RRF algorithm."""
+    """Tests for the RRF algorithm in SearchService."""
 
     def test_rrf_single_list(self):
         """Test RRF with a single ranked list."""
@@ -32,7 +29,7 @@ class TestReciprocalRankFusion:
             (3, 0.7),  # rank 2
         ]
 
-        merged = HybridSearchService.reciprocal_rank_fusion(
+        merged = SearchService.reciprocal_rank_fusion(
             ranked_lists=[results],
             k=60,
         )
@@ -52,7 +49,7 @@ class TestReciprocalRankFusion:
         keyword_results = [(1, 0.9), (2, 0.8), (3, 0.7)]
         semantic_results = [(1, 0.95), (3, 0.85), (2, 0.75)]
 
-        merged = HybridSearchService.reciprocal_rank_fusion(
+        merged = SearchService.reciprocal_rank_fusion(
             ranked_lists=[keyword_results, semantic_results],
             k=60,
         )
@@ -69,7 +66,7 @@ class TestReciprocalRankFusion:
         keyword_results = [(1, 0.9), (2, 0.8)]  # Has 1, 2
         semantic_results = [(3, 0.95), (1, 0.85)]  # Has 3, 1
 
-        merged = HybridSearchService.reciprocal_rank_fusion(
+        merged = SearchService.reciprocal_rank_fusion(
             ranked_lists=[keyword_results, semantic_results],
             k=60,
         )
@@ -90,7 +87,7 @@ class TestReciprocalRankFusion:
         semantic_results = [(2, 0.95)]  # Only item 2
 
         # Heavy semantic weight
-        merged = HybridSearchService.reciprocal_rank_fusion(
+        merged = SearchService.reciprocal_rank_fusion(
             ranked_lists=[keyword_results, semantic_results],
             k=60,
             weights=[0.1, 0.9],  # 10% keyword, 90% semantic
@@ -105,7 +102,7 @@ class TestReciprocalRankFusion:
         keyword_results = [(1, 0.9), (2, 0.8)]
         semantic_results = []  # Empty
 
-        merged = HybridSearchService.reciprocal_rank_fusion(
+        merged = SearchService.reciprocal_rank_fusion(
             ranked_lists=[keyword_results, semantic_results],
             k=60,
         )
@@ -116,7 +113,7 @@ class TestReciprocalRankFusion:
 
     def test_rrf_both_empty(self):
         """Test RRF with both lists empty."""
-        merged = HybridSearchService.reciprocal_rank_fusion(
+        merged = SearchService.reciprocal_rank_fusion(
             ranked_lists=[[], []],
             k=60,
         )
@@ -124,13 +121,13 @@ class TestReciprocalRankFusion:
 
 
 class TestScoreNormalization:
-    """Tests for score normalization."""
+    """Tests for score normalization in SearchService."""
 
     def test_normalize_minmax(self):
         """Test min-max normalization."""
         results = [(1, 100.0), (2, 50.0), (3, 0.0)]
 
-        normalized = HybridSearchService.normalize_scores(results, method="minmax")
+        normalized = SearchService.normalize_scores(results, method="minmax")
 
         id_to_score = {pid: score for pid, score in normalized}
         assert id_to_score[1] == 1.0  # Max -> 1.0
@@ -139,210 +136,59 @@ class TestScoreNormalization:
 
     def test_normalize_empty(self):
         """Test normalization with empty input."""
-        normalized = HybridSearchService.normalize_scores([])
+        normalized = SearchService.normalize_scores([])
         assert normalized == []
 
     def test_normalize_single_value(self):
         """Test normalization with single value."""
         results = [(1, 5.0)]
-        normalized = HybridSearchService.normalize_scores(results)
+        normalized = SearchService.normalize_scores(results)
         # Single value normalizes to 1.0
         assert normalized[0][1] == 1.0
 
     def test_normalize_same_values(self):
         """Test normalization when all values are same."""
         results = [(1, 5.0), (2, 5.0), (3, 5.0)]
-        normalized = HybridSearchService.normalize_scores(results)
+        normalized = SearchService.normalize_scores(results)
         # All same -> all 1.0
         for _, score in normalized:
             assert score == 1.0
 
 
-class TestHybridSearchWithFTS:
-    """Tests for hybrid search with FTS5 integration."""
-
-    @pytest.fixture
-    def papers_with_fts(self, test_engine, test_session):
-        """Create papers with FTS5 index."""
-        create_fts_tables(test_engine)
-
-        papers = [
-            Paper(
-                title="Machine Learning for Natural Language Processing",
-                abstract="Deep learning approaches to NLP.",
-                year=2023
-            ),
-            Paper(
-                title="Neural Network Architectures",
-                abstract="Survey of modern neural architectures.",
-                year=2024
-            ),
-            Paper(
-                title="Statistical Methods in Data Science",
-                abstract="Classical statistical techniques.",
-                year=2022
-            ),
-        ]
-
-        for paper in papers:
-            test_session.add(paper)
-        test_session.commit()
-
-        return {"papers": papers, "engine": test_engine}
+class TestUnifiedSearchModes:
+    """Tests for UnifiedSearchService search modes."""
 
     @pytest.mark.asyncio
-    async def test_hybrid_search_keyword_only(self, papers_with_fts):
-        """Test hybrid search with keyword-only mode."""
-        engine = papers_with_fts["engine"]
+    async def test_unified_keyword_search(self):
+        """Test UnifiedSearchService keyword mode."""
+        from services.unified_search_service import UnifiedSearchService
 
-        # Patch get_engine to use test engine
-        with patch('literature_core.fts.get_engine', return_value=engine):
-            with patch('services.hybrid_search_service.get_fts_status') as mock_status:
-                mock_status.return_value = MagicMock(is_available=True)
-
-                with patch('services.hybrid_search_service.search_fts') as mock_fts:
-                    # Mock FTS results
-                    mock_fts.return_value = [
-                        MagicMock(paper_id=1, bm25_score=5.0),
-                        MagicMock(paper_id=2, bm25_score=3.0),
-                    ]
-
-                    results = await HybridSearchService.search(
-                        query="machine learning",
-                        limit=10,
-                        alpha=0.0,  # Keyword only
-                        search_modes=["keyword"],
-                    )
-
-                    assert results.count >= 0
-                    assert results.alpha == 0.0
-                    assert "keyword" in results.search_modes
-
-    @pytest.mark.asyncio
-    async def test_hybrid_search_returns_diagnostics(self, papers_with_fts):
-        """Test that hybrid search returns proper diagnostics."""
-        engine = papers_with_fts["engine"]
-
-        with patch('literature_core.fts.get_engine', return_value=engine):
-            with patch('services.hybrid_search_service.get_fts_status') as mock_status:
-                mock_status.return_value = MagicMock(is_available=True)
-
-                with patch('services.hybrid_search_service.search_fts') as mock_fts:
-                    mock_fts.return_value = []
-
-                    results = await HybridSearchService.search(
-                        query="test query",
-                        limit=10,
-                    )
-
-                    assert hasattr(results, 'diagnostics')
-                    diag = results.diagnostics
-                    assert hasattr(diag, 'fts_available')
-                    assert hasattr(diag, 'keyword_results_count')
-                    assert hasattr(diag, 'semantic_results_count')
-
-    @pytest.mark.asyncio
-    async def test_hybrid_search_fallback_when_fts_unavailable(self, papers_with_fts):
-        """Test fallback to SQL LIKE when FTS5 unavailable."""
-        with patch('services.hybrid_search_service.get_fts_status') as mock_status:
-            mock_status.return_value = MagicMock(is_available=False)
-
-            results = await HybridSearchService.search(
-                query="machine",
-                limit=10,
-                alpha=0.0,
-                search_modes=["keyword"],
+        with patch.object(SearchService, 'keyword_search') as mock_keyword:
+            mock_keyword.return_value = MagicMock(
+                results=[{"id": 1, "title": "Test"}],
+                count=1,
+                search_type="keyword_fts5"
             )
 
-            # Should still work with fallback
-            assert results.diagnostics.fallback_used is True
-            assert "FTS5 not available" in results.diagnostics.fallback_reason
+            result = await UnifiedSearchService.search(
+                query="test",
+                limit=10,
+                mode="keyword"
+            )
 
-
-class TestHybridSearchMocked:
-    """Tests with fully mocked components."""
-
-    @pytest.mark.asyncio
-    async def test_hybrid_search_combines_results(self):
-        """Test that hybrid search properly combines keyword and semantic."""
-        with patch('services.hybrid_search_service.get_fts_status') as mock_fts_status:
-            mock_fts_status.return_value = MagicMock(is_available=True)
-
-            with patch('services.hybrid_search_service.search_fts') as mock_fts:
-                # Keyword results: paper 1, 2, 3
-                mock_fts.return_value = [
-                    MagicMock(paper_id=1, bm25_score=10.0),
-                    MagicMock(paper_id=2, bm25_score=8.0),
-                    MagicMock(paper_id=3, bm25_score=6.0),
-                ]
-
-                with patch.object(
-                    HybridSearchService, '_semantic_search', new_callable=AsyncMock
-                ) as mock_semantic:
-                    # Semantic results: paper 3, 4, 1 (different order, partial overlap)
-                    mock_semantic.return_value = [
-                        (3, 0.95),  # Paper 3 is best semantically
-                        (4, 0.85),  # Paper 4 only in semantic
-                        (1, 0.75),  # Paper 1 also in keyword
-                    ]
-
-                    with patch('services.hybrid_search_service.get_session') as mock_session:
-                        # Mock the database session
-                        mock_paper_1 = MagicMock(
-                            id=1, title="Paper 1", year=2024,
-                            abstract="Abstract 1", doi="10.1/1",
-                            authors=[], tags=[]
-                        )
-                        mock_paper_3 = MagicMock(
-                            id=3, title="Paper 3", year=2023,
-                            abstract="Abstract 3", doi="10.1/3",
-                            authors=[], tags=[]
-                        )
-                        mock_paper_4 = MagicMock(
-                            id=4, title="Paper 4", year=2022,
-                            abstract="Abstract 4", doi="10.1/4",
-                            authors=[], tags=[]
-                        )
-
-                        mock_query = MagicMock()
-                        mock_query.options.return_value.filter.return_value.all.return_value = [
-                            mock_paper_1, mock_paper_3, mock_paper_4
-                        ]
-                        mock_session.return_value.__enter__.return_value.query.return_value = mock_query
-
-                        results = await HybridSearchService.search(
-                            query="test",
-                            limit=10,
-                            alpha=0.5,  # Equal weight
-                        )
-
-                        # Papers 1 and 3 should rank higher (in both lists)
-                        assert results.count > 0
-                        assert results.diagnostics.keyword_results_count == 3
-                        assert results.diagnostics.semantic_results_count == 3
+            assert result.mode == "keyword"
+            mock_keyword.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_hybrid_search_with_year_filter(self):
-        """Test hybrid search with year filters."""
-        with patch('services.hybrid_search_service.get_fts_status') as mock_status:
-            mock_status.return_value = MagicMock(is_available=True)
+    async def test_unified_smart_search_expands_acronyms(self):
+        """Test that smart search expands acronyms."""
+        from services.unified_search_service import UnifiedSearchService
 
-            with patch('services.hybrid_search_service.search_fts') as mock_fts:
-                mock_fts.return_value = []
+        # Just test the expansion logic, not the full search
+        expansion = UnifiedSearchService.expand_query("ALD thin films")
 
-                results = await HybridSearchService.search(
-                    query="test",
-                    limit=10,
-                    year_min=2020,
-                    year_max=2024,
-                    search_modes=["keyword"],
-                )
-
-                # Verify year filters were passed
-                mock_fts.assert_called_once()
-                call_kwargs = mock_fts.call_args[1]
-                assert call_kwargs.get('year_min') == 2020
-                assert call_kwargs.get('year_max') == 2024
+        assert "ALD -> atomic layer deposition" in expansion.acronyms_expanded
+        assert "atomic layer deposition" in expansion.final_query.lower()
 
 
 class TestDefaultValues:

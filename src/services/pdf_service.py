@@ -57,6 +57,7 @@ from literature_core import (
     PaperNotFoundError,
     PDFError,
     DEFAULT_SEARCH_LIMIT,
+    EnrichmentStatus,
 )
 
 logger = get_logger(__name__)
@@ -171,11 +172,15 @@ class PDFService:
             raise PDFError(f"Cannot read file for hashing: {e}")
 
     @staticmethod
-    def extract_text(file_path: Path) -> tuple[str, int]:
-        """Extract text from PDF using pdfplumber.
+    def extract_text(file_path: Path | str, use_ocr: bool = True) -> tuple[str, int]:
+        """Extract text from PDF using pdfplumber, with OCR fallback.
+
+        First attempts text extraction with pdfplumber (fast, for text-based PDFs).
+        If no text is found and use_ocr=True, falls back to OCR using Tesseract.
 
         Args:
-            file_path: Path to PDF file
+            file_path: Path to PDF file (string or Path object)
+            use_ocr: Whether to use OCR fallback for image-based PDFs
 
         Returns:
             Tuple of (full_text, word_count)
@@ -183,6 +188,10 @@ class PDFService:
         Raises:
             PDFError: If text extraction fails
         """
+        # Convert string to Path if needed
+        if isinstance(file_path, str):
+            file_path = Path(file_path)
+
         try:
             import pdfplumber
         except ImportError:
@@ -198,10 +207,63 @@ class PDFService:
 
             combined = "\n\n".join(full_text)
             word_count = len(combined.split())
+
+            # If pdfplumber found text, return it
+            if word_count > 0:
+                return combined, word_count
+
+            # No text found - try OCR if enabled
+            if use_ocr:
+                logger.info(f"No embedded text found in {file_path.name}, trying OCR...")
+                ocr_text, ocr_words = PDFService._extract_text_ocr(file_path)
+                if ocr_words > 0:
+                    logger.info(f"OCR extracted {ocr_words} words from {file_path.name}")
+                    return ocr_text, ocr_words
+                else:
+                    logger.warning(f"OCR also found no text in {file_path.name}")
+
             return combined, word_count
 
         except Exception as e:
             raise PDFError(f"Failed to extract text from PDF: {e}")
+
+    @staticmethod
+    def _extract_text_ocr(file_path: Path) -> tuple[str, int]:
+        """Extract text from PDF using OCR (Tesseract).
+
+        Converts PDF pages to images and runs OCR on each.
+
+        Args:
+            file_path: Path to PDF file
+
+        Returns:
+            Tuple of (full_text, word_count)
+        """
+        try:
+            from pdf2image import convert_from_path
+            import pytesseract
+        except ImportError as e:
+            logger.warning(f"OCR dependencies not available: {e}")
+            return "", 0
+
+        try:
+            # Convert PDF to images (150 DPI is good balance of speed/quality)
+            images = convert_from_path(file_path, dpi=150)
+
+            full_text = []
+            for i, image in enumerate(images):
+                # Run OCR on each page
+                text = pytesseract.image_to_string(image, lang='eng')
+                if text and text.strip():
+                    full_text.append(text.strip())
+
+            combined = "\n\n".join(full_text)
+            word_count = len(combined.split())
+            return combined, word_count
+
+        except Exception as e:
+            logger.warning(f"OCR extraction failed: {e}")
+            return "", 0
 
     @staticmethod
     def generate_filename(paper: dict) -> str:
@@ -541,11 +603,10 @@ class PDFService:
 
             # Extract text and compute hash
             try:
-                full_text, word_count = cls.extract_text(file_path)
+                _, word_count = cls.extract_text(file_path)
                 file_hash = cls.compute_file_hash(file_path)
             except PDFError as e:
                 logger.warning(f"Text extraction failed: {e}")
-                full_text = ""
                 word_count = 0
                 file_hash = cls.compute_file_hash(file_path)
 
@@ -553,15 +614,17 @@ class PDFService:
             paper.file_path = str(file_path)
             paper.file_hash = file_hash
             paper.word_count = word_count
-            if full_text:
-                paper.full_text = full_text
+            # NOTE: We no longer write to paper.full_text - chunking creates PaperChunk records instead
+
+            # Update enrichment status to needs_extraction (has PDF, needs AI processing)
+            paper.enrichment_status = EnrichmentStatus.NEEDS_EXTRACTION
 
             logger.info(
                 f"Acquired PDF for paper {paper_id}: {file_path} "
                 f"({word_count} words, source: {source})"
             )
 
-            return AcquireResult(
+            result = AcquireResult(
                 status="success",
                 paper_id=paper_id,
                 file_path=str(file_path),
@@ -570,6 +633,19 @@ class PDFService:
                 source=source,
                 tried_sources=tried_sources,
             )
+
+        # Auto-queue chunking after successful PDF acquisition
+        # Done outside transaction to avoid long locks
+        if result.status == "success":
+            try:
+                from .extraction_service import ExtractionService
+                ExtractionService.queue_extraction(paper_id)
+                logger.info(f"Queued paper {paper_id} for extraction after PDF acquisition")
+            except Exception as e:
+                # Don't fail the acquisition if queuing fails
+                logger.warning(f"Failed to queue extraction for paper {paper_id}: {e}")
+
+        return result
 
     # =========================================================================
     # Private Helper Methods for PDF Acquisition

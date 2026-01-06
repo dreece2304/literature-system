@@ -14,19 +14,60 @@ Usage:
         sync_with_zotero()
 
 Environment Variables:
+    LITCORE_PROJECT_ROOT - Project root directory (auto-detected if not set)
     LITCORE_DATABASE_PATH - Path to SQLite database
     LITCORE_PDF_STORAGE_PATH - Path to PDF storage
+    LITCORE_CHROMA_PATH - Path to ChromaDB vectorstore
     LITCORE_ZOTERO_API_KEY - Zotero API key
     LITCORE_LOG_LEVEL - Logging level (DEBUG, INFO, WARNING, ERROR)
 """
+import os
 from pathlib import Path
 from typing import Optional
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-# Default base directories for data storage
-_DEFAULT_DATA_DIR = Path(__file__).parent.parent.parent / "infrastructure/literature-database/data"
-_AI_DATA_DIR = Path(__file__).parent.parent.parent / "infrastructure/literature-ai/data"
+def _find_project_root() -> Path:
+    """Find project root by looking for marker files.
+
+    Searches upward from current file for:
+    1. LITCORE_PROJECT_ROOT environment variable (highest priority)
+    2. .git directory (best indicator of repo root)
+    3. data/ directory with literature.db (indicates correct root)
+    4. Falls back to parent of src/ directory
+
+    Note: pyproject.toml is NOT used as a marker because it may exist
+    in subdirectories like src/.
+    """
+    # Check environment variable first
+    env_root = os.environ.get("LITCORE_PROJECT_ROOT")
+    if env_root:
+        return Path(env_root)
+
+    # Start from the config.py file location
+    current = Path(__file__).resolve().parent
+
+    # Search upward for markers (prioritize .git)
+    for _ in range(10):  # Limit search depth
+        if (current / ".git").exists():
+            return current
+        # Check for data directory with database (strong indicator)
+        if (current / "data" / "literature.db").exists():
+            return current
+        if current.parent == current:  # Reached filesystem root
+            break
+        current = current.parent
+
+    # Fallback: assume src/literature_core/config.py structure
+    # Go up 3 levels: config.py -> literature_core -> src -> project_root
+    return Path(__file__).resolve().parent.parent.parent
+
+
+# Project root (auto-detected or from environment)
+PROJECT_ROOT = _find_project_root()
+
+# Default data directory: {PROJECT_ROOT}/data/
+_DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
 
 
 class Settings(BaseSettings):
@@ -43,17 +84,17 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    # Database - default to infrastructure/literature-database/data/metadata/literature.db
-    database_path: Path = _DEFAULT_DATA_DIR / "metadata/literature.db"
+    # Database - default to {PROJECT_ROOT}/data/literature.db
+    database_path: Path = _DEFAULT_DATA_DIR / "literature.db"
 
-    # ChromaDB for semantic search (in literature-ai data directory)
-    chroma_path: Path = _AI_DATA_DIR / "vectorstore"
+    # ChromaDB for semantic search
+    chroma_path: Path = _DEFAULT_DATA_DIR / "vectorstore"
 
     # PDF storage
     pdf_storage_path: Path = _DEFAULT_DATA_DIR / "pdfs"
 
-    # Search index (Whoosh)
-    search_index_path: Path = _DEFAULT_DATA_DIR / "whoosh"
+    # Search index cache
+    search_index_path: Path = _DEFAULT_DATA_DIR / "cache" / "search_index"
 
     # Zotero integration
     zotero_api_key: Optional[str] = None
