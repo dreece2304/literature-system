@@ -26,6 +26,7 @@ from literature_core import (  # noqa: E402
     search_result,
     error,
     success,
+    serialize,
     SearchError,
     PaperNotFoundError,
     LiteratureError,
@@ -40,10 +41,7 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="find_similar_papers",
-            description=(
-                "Find papers similar to a given paper based on semantic similarity. "
-                "Uses embeddings to find papers with related content, topics, or methods."
-            ),
+            description="Find semantically similar papers via embeddings",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -61,17 +59,21 @@ async def list_tools() -> list[Tool]:
                         "description": "Minimum similarity score (0-1)",
                         "default": 0.5,
                     },
+                    "include_summary": {
+                        "type": "boolean",
+                        "description": (
+                            "Include one_sentence_summary and paper_type from extractions. "
+                            "Useful for quickly evaluating relevance without separate calls."
+                        ),
+                        "default": False,
+                    },
                 },
                 "required": ["paper_id"],
             },
         ),
         Tool(
             name="find_papers_like_text",
-            description=(
-                "Find papers matching a free-form text description. "
-                "Useful for finding papers relevant to a research question, concept, "
-                "or paragraph of text."
-            ),
+            description="Find papers matching a text description or research question",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -92,17 +94,21 @@ async def list_tools() -> list[Tool]:
                         "description": "Minimum similarity score (0-1)",
                         "default": 0.5,
                     },
+                    "include_summary": {
+                        "type": "boolean",
+                        "description": (
+                            "Include one_sentence_summary and paper_type from extractions. "
+                            "Useful for quickly evaluating relevance without separate calls."
+                        ),
+                        "default": False,
+                    },
                 },
                 "required": ["text"],
             },
         ),
         Tool(
             name="suggest_citations_for_text",
-            description=(
-                "Suggest papers to cite for a given text snippet. "
-                "Searches the library for papers relevant to the text that could "
-                "serve as supporting citations."
-            ),
+            description="Suggest papers to cite for a text snippet",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -126,10 +132,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_reading_queue",
-            description=(
-                "Get reading queue of unread papers. "
-                "Returns papers sorted by rating (highest first) and date added."
-            ),
+            description="Unread papers sorted by rating and date added",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -153,10 +156,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="suggest_paper_tags",
-            description=(
-                "Suggest tags for a paper based on similar papers' tags. "
-                "Analyzes related papers to recommend relevant tags."
-            ),
+            description="Suggest tags based on similar papers' tags",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -175,11 +175,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_embedding_status",
-            description=(
-                "Get embedding coverage status. Shows how many papers have embeddings "
-                "generated and how many need processing. Use this to check if "
-                "semantic search will work well."
-            ),
+            description="Embedding coverage status (papers with/without embeddings)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -193,11 +189,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="process_embedding_queue",
-            description=(
-                "Generate embeddings for papers that don't have them. "
-                "Processes papers in batch to build semantic search index. "
-                "Run this after adding new papers to enable semantic search."
-            ),
+            description="Generate embeddings for papers missing them (batch)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -221,10 +213,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="embed_paper",
-            description=(
-                "Generate embeddings for a single paper. "
-                "Use this after adding a paper to make it searchable immediately."
-            ),
+            description="Generate embeddings for a single paper",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -254,9 +243,69 @@ async def list_tools() -> list[Tool]:
 # ============================================================================
 
 
-def _to_response(data: dict) -> list[TextContent]:
+def _to_response(data: dict, tool_name: str | None = None) -> list[TextContent]:
     """Convert a response dict to TextContent list."""
-    return [TextContent(type="text", text=json.dumps(data, indent=2))]
+    return [TextContent(type="text", text=serialize(data, tool_name))]
+
+
+def _enrich_with_summaries(results: list[dict]) -> list[dict]:
+    """Batch-enrich search results with extraction summaries.
+
+    Efficiently fetches one_sentence_summary and paper_type for all results
+    in a single database query.
+
+    Args:
+        results: List of search result dicts with 'id' field
+
+    Returns:
+        Results with added 'summary', 'paper_type', and 'topics' fields
+    """
+    if not results:
+        return results
+
+    from literature_core import get_session
+    from literature_core.models import PaperContent
+
+    paper_ids = [r["id"] for r in results if "id" in r]
+
+    with get_session() as session:
+        contents = session.query(
+            PaperContent.paper_id,
+            PaperContent.one_sentence_summary,
+            PaperContent.paper_type,
+            PaperContent.topics,
+            PaperContent.deep_one_sentence_summary,
+            PaperContent.deep_paper_type,
+        ).filter(PaperContent.paper_id.in_(paper_ids)).all()
+
+        # Build lookup map
+        summary_map = {}
+        for content in contents:
+            # Prefer deep extraction if available, else quick
+            summary = content.deep_one_sentence_summary or content.one_sentence_summary
+            paper_type = content.deep_paper_type or content.paper_type
+            summary_map[content.paper_id] = {
+                "summary": summary,
+                "paper_type": paper_type,
+                "topics": content.topics or [],
+            }
+
+    # Enrich results
+    enriched = []
+    for result in results:
+        paper_id = result.get("id")
+        enriched_result = result.copy()
+        if paper_id in summary_map:
+            enriched_result["summary"] = summary_map[paper_id]["summary"]
+            enriched_result["paper_type"] = summary_map[paper_id]["paper_type"]
+            enriched_result["topics"] = summary_map[paper_id]["topics"]
+        else:
+            enriched_result["summary"] = None
+            enriched_result["paper_type"] = None
+            enriched_result["topics"] = []
+        enriched.append(enriched_result)
+
+    return enriched
 
 
 async def _find_similar_papers(arguments: dict[str, Any]) -> list[TextContent]:
@@ -264,6 +313,7 @@ async def _find_similar_papers(arguments: dict[str, Any]) -> list[TextContent]:
     paper_id = arguments["paper_id"]
     limit = arguments.get("limit", 10)
     min_similarity = arguments.get("min_similarity", 0.5)
+    include_summary = arguments.get("include_summary", False)
 
     result = await SearchService.find_similar_papers(
         paper_id=paper_id,
@@ -271,9 +321,13 @@ async def _find_similar_papers(arguments: dict[str, Any]) -> list[TextContent]:
         min_similarity=min_similarity,
     )
 
+    results = result.results
+    if include_summary:
+        results = _enrich_with_summaries(results)
+
     return _to_response(
         search_result(
-            results=result.results,
+            results=results,
             query=result.query,
             search_type=result.search_type,
         )
@@ -285,6 +339,7 @@ async def _find_papers_like_text(arguments: dict[str, Any]) -> list[TextContent]
     text = arguments["text"]
     limit = arguments.get("limit", 10)
     min_similarity = arguments.get("min_similarity", 0.5)
+    include_summary = arguments.get("include_summary", False)
 
     result = await SearchService.find_papers_like_text(
         text=text,
@@ -292,9 +347,13 @@ async def _find_papers_like_text(arguments: dict[str, Any]) -> list[TextContent]
         min_similarity=min_similarity,
     )
 
+    results = result.results
+    if include_summary:
+        results = _enrich_with_summaries(results)
+
     return _to_response(
         search_result(
-            results=result.results,
+            results=results,
             query=text[:100] + "..." if len(text) > 100 else text,
             search_type=result.search_type,
         )

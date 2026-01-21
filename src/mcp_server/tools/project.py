@@ -26,6 +26,7 @@ if str(_src_path) not in sys.path:
 from literature_core import (
     get_logger,
     error,
+    serialize,
     ValidationError,
     LiteratureError,
 )
@@ -316,9 +317,9 @@ async def list_tools() -> list[Tool]:
 # ============================================================================
 
 
-def _to_response(data: dict) -> list[TextContent]:
+def _to_response(data: dict, tool_name: str | None = None) -> list[TextContent]:
     """Convert a response dict to TextContent list."""
-    return [TextContent(type="text", text=json.dumps(data, indent=2))]
+    return [TextContent(type="text", text=serialize(data, tool_name))]
 
 
 def _parse_bib_file(arguments: dict[str, Any]) -> list[TextContent]:

@@ -32,6 +32,7 @@ from literature_core import (
     get_logger,
     search_result,
     error,
+    serialize,
     SearchError,
     LiteratureError,
 )
@@ -50,17 +51,7 @@ async def list_tools() -> list[Tool]:
         # =================================================================
         Tool(
             name="search",
-            description=(
-                "Unified search for finding papers in the library. Supports multiple modes:\n"
-                "- 'smart' (default): Typo correction, acronym expansion, hybrid search\n"
-                "- 'keyword': FTS5 full-text search with BM25 ranking\n"
-                "- 'semantic': Embedding-based similarity search\n"
-                "- 'hybrid': Balanced keyword + semantic with RRF fusion\n\n"
-                "Examples:\n"
-                "- search('ALD thin films') - smart search with acronym expansion\n"
-                "- search('photoresist', mode='keyword') - exact keyword matching\n"
-                "- search('how atoms deposit', mode='semantic') - conceptual search"
-            ),
+            description="Search papers. Modes: smart (default), keyword (FTS5), semantic, hybrid, exact",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -75,10 +66,10 @@ async def list_tools() -> list[Tool]:
                     },
                     "mode": {
                         "type": "string",
-                        "enum": ["smart", "keyword", "semantic", "hybrid"],
+                        "enum": ["smart", "keyword", "semantic", "hybrid", "exact"],
                         "description": (
                             "Search mode: 'smart' (default, recommended), 'keyword' (FTS5), "
-                            "'semantic' (embeddings), 'hybrid' (balanced)"
+                            "'semantic' (embeddings), 'hybrid' (balanced), 'exact' (fast known-paper lookup)"
                         ),
                         "default": "smart",
                     },
@@ -121,6 +112,14 @@ async def list_tools() -> list[Tool]:
                         "description": "Minimum similarity score (0-1)",
                         "default": 0.35,
                     },
+                    # Re-ranking options
+                    "rerank": {
+                        "type": "boolean",
+                        "description": (
+                            "Enable cross-encoder re-ranking for better precision. "
+                            "If not specified, uses the setting default (RERANKER_ENABLED)."
+                        ),
+                    },
                     # Filters
                     "year_min": {
                         "type": "integer",
@@ -129,6 +128,15 @@ async def list_tools() -> list[Tool]:
                     "year_max": {
                         "type": "integer",
                         "description": "Maximum publication year",
+                    },
+                    # Summary enrichment
+                    "include_summary": {
+                        "type": "boolean",
+                        "description": (
+                            "Include one_sentence_summary and paper_type from extractions. "
+                            "Useful for browsing results without separate get_paper_content calls."
+                        ),
+                        "default": False,
                     },
                 },
                 "required": ["query"],
@@ -158,11 +166,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="search_by_tag",
-            description=(
-                "Find all papers with a specific tag. By default uses partial matching "
-                "(e.g., 'ML' matches 'machine-learning', 'ML-theory'). "
-                "Set exact_match=true for exact tag name matching."
-            ),
+            description="Find papers by tag (partial match by default)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -189,10 +193,7 @@ async def list_tools() -> list[Tool]:
         # =================================================================
         Tool(
             name="get_search_status",
-            description=(
-                "Get search system health status and diagnostics. Shows FTS5 index status, "
-                "ChromaDB vector store status, embedding coverage, and recommendations."
-            ),
+            description="Search system health (FTS5, ChromaDB, embedding coverage)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -212,9 +213,69 @@ async def list_tools() -> list[Tool]:
 # ============================================================================
 
 
-def _to_response(data: dict) -> list[TextContent]:
+def _to_response(data: dict, tool_name: str | None = None) -> list[TextContent]:
     """Convert a response dict to TextContent list."""
-    return [TextContent(type="text", text=json.dumps(data, indent=2))]
+    return [TextContent(type="text", text=serialize(data, tool_name))]
+
+
+def _enrich_with_summaries(results: list[dict]) -> list[dict]:
+    """Batch-enrich search results with extraction summaries.
+
+    Efficiently fetches one_sentence_summary and paper_type for all results
+    in a single database query.
+
+    Args:
+        results: List of search result dicts with 'id' field
+
+    Returns:
+        Results with added 'summary' and 'paper_type' fields
+    """
+    if not results:
+        return results
+
+    from literature_core import get_session
+    from literature_core.models import PaperContent
+
+    paper_ids = [r["id"] for r in results if "id" in r]
+
+    with get_session() as session:
+        contents = session.query(
+            PaperContent.paper_id,
+            PaperContent.one_sentence_summary,
+            PaperContent.paper_type,
+            PaperContent.topics,
+            PaperContent.deep_one_sentence_summary,
+            PaperContent.deep_paper_type,
+        ).filter(PaperContent.paper_id.in_(paper_ids)).all()
+
+        # Build lookup map
+        summary_map = {}
+        for content in contents:
+            # Prefer deep extraction if available, else quick
+            summary = content.deep_one_sentence_summary or content.one_sentence_summary
+            paper_type = content.deep_paper_type or content.paper_type
+            summary_map[content.paper_id] = {
+                "summary": summary,
+                "paper_type": paper_type,
+                "topics": content.topics or [],
+            }
+
+    # Enrich results
+    enriched = []
+    for result in results:
+        paper_id = result.get("id")
+        enriched_result = result.copy()
+        if paper_id in summary_map:
+            enriched_result["summary"] = summary_map[paper_id]["summary"]
+            enriched_result["paper_type"] = summary_map[paper_id]["paper_type"]
+            enriched_result["topics"] = summary_map[paper_id]["topics"]
+        else:
+            enriched_result["summary"] = None
+            enriched_result["paper_type"] = None
+            enriched_result["topics"] = []
+        enriched.append(enriched_result)
+
+    return enriched
 
 
 async def _search(arguments: dict[str, Any]) -> list[TextContent]:
@@ -229,12 +290,18 @@ async def _search(arguments: dict[str, Any]) -> list[TextContent]:
         alpha=arguments.get("alpha", 0.65),
         search_level=arguments.get("search_level", "chunk"),
         min_similarity=arguments.get("min_similarity", 0.35),
+        rerank=arguments.get("rerank"),  # None = use settings default
         year_min=arguments.get("year_min"),
         year_max=arguments.get("year_max"),
     )
 
+    # Enrich results with summaries if requested
+    results = result.results
+    if arguments.get("include_summary", False):
+        results = _enrich_with_summaries(results)
+
     response_data = search_result(
-        results=result.results,
+        results=results,
         query=result.query,
         search_type=f"{result.mode}",
     )

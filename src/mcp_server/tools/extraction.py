@@ -20,7 +20,7 @@ _src_path = Path(__file__).parent.parent.parent
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 
-from literature_core import get_logger, success, error, batch_result  # noqa: E402
+from literature_core import get_logger, success, error, batch_result, serialize  # noqa: E402
 from services import ExtractionService, PaperService, PaperImportService  # noqa: E402
 from literature_core import Paper, PaperContent, PaperReference, get_session  # noqa: E402
 from dataclasses import asdict  # noqa: E402
@@ -34,32 +34,17 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="get_extraction_status",
-            description=(
-                "Get extraction coverage statistics. Shows how many papers have "
-                "AI-extracted summaries, key findings, and methodology."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
+            description="Extraction coverage stats (papers with summaries, findings, methodology)",
+            inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="get_llm_status",
-            description=(
-                "Check which LLM backends are available for extraction. "
-                "Shows Ollama (local) and Claude API status."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
+            description="Check LLM backend availability (Ollama, Claude API)",
+            inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="get_reextraction_queue",
-            description=(
-                "Get papers that have existing extractions (for re-extraction with "
-                "updated models). Filter by extraction age, schema version, or model."
-            ),
+            description="Papers with extractions available for re-extraction. Filter by age/version/model",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -85,11 +70,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="extract_paper",
-            description=(
-                "Extract structured content from a paper using AI. Extracts: "
-                "paper type, topics, one-sentence summary, key findings, methodology. "
-                "Uses Ollama by default, falls back to Claude if configured."
-            ),
+            description="Legacy single-pass AI extraction. Prefer extract_paper_quick or extract_paper_deep",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -113,12 +94,58 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="extract_paper_quick",
+            description="Quick extraction (abstract-only): paper_type, topics, one_sentence_summary",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "Paper ID to extract",
+                    },
+                    "backend": {
+                        "type": "string",
+                        "enum": ["ollama", "auto"],
+                        "description": "LLM backend: ollama or auto (local only)",
+                        "default": "auto",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Re-extract even if extraction exists (default: false)",
+                        "default": False,
+                    },
+                },
+                "required": ["paper_id"],
+            },
+        ),
+        Tool(
+            name="extract_paper_deep",
+            description="Deep extraction (full-text): findings, methodology, claims, techniques. Requires PDF chunks",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "Paper ID to extract",
+                    },
+                    "backend": {
+                        "type": "string",
+                        "enum": ["ollama", "auto"],
+                        "description": "LLM backend: ollama or auto (local only)",
+                        "default": "auto",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Re-extract even if deep extraction exists (default: false)",
+                        "default": False,
+                    },
+                },
+                "required": ["paper_id"],
+            },
+        ),
+        Tool(
             name="extract_papers_batch",
-            description=(
-                "Extract multiple papers in batch. Includes rate limiting to "
-                "avoid overloading the LLM. Use for processing the extraction queue "
-                "or re-extracting papers with force=true."
-            ),
+            description="Batch extraction with rate limiting. Uses queue if no paper_ids specified",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -153,10 +180,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="delete_extraction",
-            description=(
-                "Delete extraction for a paper to allow re-extraction. "
-                "Use when extraction quality was poor or paper content was updated."
-            ),
+            description="Delete extraction to allow re-extraction",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -170,15 +194,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="prepare_extraction",
-            description=(
-                "Prepare paper content and project context for Claude-powered extraction. "
-                "Returns paper text, project definitions with relevance hints, and whether "
-                "the paper is already cited in each project's .bib file. "
-                "Use tier='quick' for title+abstract only (fast categorization), "
-                "tier='deep' for full text (detailed extraction). "
-                "After receiving the response, Claude should extract the structured data "
-                "and call store_full_extraction to save it."
-            ),
+            description="Get paper content for Claude extraction. tier: quick (abstract) or deep (full text)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -201,13 +217,10 @@ async def list_tools() -> list[Tool]:
                 "required": ["paper_id"],
             },
         ),
-        # PDF Processing tools (renamed from chunking)
+        # PDF Processing tools
         Tool(
             name="get_pdf_processing_status",
-            description=(
-                "Get PDF processing status for a paper. Shows whether text chunks "
-                "have been extracted, are queued, or failed."
-            ),
+            description="PDF chunk extraction status for a paper",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -221,10 +234,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_pdf_processing_queue",
-            description=(
-                "Get papers in the PDF processing queue. Filter by status: pending, "
-                "processing, failed, or needs_processing (PDFs without chunks)."
-            ),
+            description="Papers in PDF processing queue. Filter by status",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -243,10 +253,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="queue_pdf_processing",
-            description=(
-                "Queue a paper for PDF text extraction. Use when a PDF is linked "
-                "but text chunks haven't been extracted yet."
-            ),
+            description="Queue paper for PDF text chunking",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -265,10 +272,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="process_pdf_queue",
-            description=(
-                "Process papers in the PDF queue. Extracts text from PDFs and "
-                "splits into searchable chunks."
-            ),
+            description="Extract text from queued PDFs into searchable chunks",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -276,6 +280,11 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "default": 10,
                         "description": "Maximum papers to process",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Re-extract even if chunks exist (use when chunk_count is 0)",
                     },
                 },
             },
@@ -300,12 +309,8 @@ async def list_tools() -> list[Tool]:
         ),
         # Reference tools
         Tool(
-            name="get_paper_references",
-            description=(
-                "Get references extracted from a paper's bibliography. Shows raw text "
-                "and any parsed fields (title, authors, year, DOI). Use to find "
-                "related papers worth importing."
-            ),
+            name="get_extracted_references",
+            description="References from paper's PDF bibliography. For API lookup use get_paper_references",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -325,10 +330,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="match_reference_to_library",
-            description=(
-                "Try to match an extracted reference to papers already in the library. "
-                "Uses DOI matching and title similarity."
-            ),
+            description="Match extracted reference to library papers via DOI/title",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -342,10 +344,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="import_reference",
-            description=(
-                "Import an extracted reference as a new paper using the import wizard. "
-                "Uses parsed DOI, arXiv ID, or title to fetch metadata."
-            ),
+            description="Import extracted reference as new paper via DOI/arXiv/title",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -368,10 +367,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_unmatched_references",
-            description=(
-                "Get unmatched references across all papers. Useful for finding "
-                "potentially valuable papers to import from your library."
-            ),
+            description="Unmatched references across papers (import candidates)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -391,12 +387,7 @@ async def list_tools() -> list[Tool]:
         # Verification tools
         Tool(
             name="verify_paper_extraction",
-            description=(
-                "Verify extracted data against source text for a single paper. "
-                "Checks if key findings, citable claims, and quantitative results "
-                "can be found in the paper's text. Returns verification score and "
-                "lists of verified vs unverified claims. Use to detect hallucinations."
-            ),
+            description="Verify extraction against source text. Detects hallucinations",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -410,11 +401,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="batch_verify_extractions",
-            description=(
-                "Verify extractions for multiple papers. Returns results sorted by "
-                "verification score (lowest/most problematic first). Use to find "
-                "papers with potentially hallucinated extractions."
-            ),
+            description="Batch verify extractions, sorted by verification score (lowest first)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -433,11 +420,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_quality_report",
-            description=(
-                "Generate a quality report for extractions. Shows papers with issues, "
-                "warnings, and quality scores. Different from verification - this checks "
-                "structural quality (summary length, findings count) not hallucination."
-            ),
+            description="Extraction quality report (structural checks, not hallucination)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -449,12 +432,31 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        # Deep extraction workflow
+        Tool(
+            name="flag_for_deep_extraction",
+            description="Flag papers for deep extraction (sets NEEDS_DEEP_EXTRACTION status)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "Single paper ID to flag",
+                    },
+                    "paper_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "Multiple paper IDs to flag (batch)",
+                    },
+                },
+            },
+        ),
     ]
 
 
-def _to_response(data: dict) -> list[TextContent]:
+def _to_response(data: dict, tool_name: str | None = None) -> list[TextContent]:
     """Convert a response dict to TextContent list."""
-    return [TextContent(type="text", text=json.dumps(data, indent=2))]
+    return [TextContent(type="text", text=serialize(data, tool_name))]
 
 
 def _get_extraction_status(arguments: dict[str, Any]) -> list[TextContent]:
@@ -527,6 +529,89 @@ async def _extract_paper(arguments: dict[str, Any]) -> list[TextContent]:
         result.error or "Extraction failed",
         code="EXTRACTION_FAILED",
         details={"paper_id": paper_id}
+    ))
+
+
+async def _extract_paper_quick(arguments: dict[str, Any]) -> list[TextContent]:
+    """Extract quick tier (abstract-only) for a paper."""
+    paper_id = arguments["paper_id"]
+    backend = arguments.get("backend", "auto")
+    force = arguments.get("force", False)
+
+    result = await ExtractionService.extract_paper_quick(
+        paper_id=paper_id,
+        backend=backend,
+        force=force
+    )
+
+    response = {
+        "paper_id": result.paper_id,
+        "success": result.success,
+        "tier": "quick",
+        "extractor_model": result.extractor_model,
+    }
+
+    if result.success:
+        response["extraction"] = {
+            "paper_type": result.paper_type,
+            "topics": result.topics,
+            "one_sentence_summary": result.one_sentence_summary,
+        }
+
+    if result.error:
+        response["message"] = result.error
+
+    if result.elapsed_seconds:
+        response["elapsed_seconds"] = round(result.elapsed_seconds, 2)
+
+    return _to_response(success(response) if result.success else error(
+        result.error or "Quick extraction failed",
+        code="EXTRACTION_FAILED",
+        details={"paper_id": paper_id, "tier": "quick"}
+    ))
+
+
+async def _extract_paper_deep(arguments: dict[str, Any]) -> list[TextContent]:
+    """Extract deep tier using 2-pass approach (chunks → consolidation)."""
+    paper_id = arguments["paper_id"]
+    backend = arguments.get("backend", "auto")
+    force = arguments.get("force", False)
+
+    result = await ExtractionService.extract_paper_deep(
+        paper_id=paper_id,
+        backend=backend,
+        force=force
+    )
+
+    response = {
+        "paper_id": result.paper_id,
+        "success": result.success,
+        "tier": "deep",
+        "extractor_model": result.extractor_model,
+    }
+
+    if result.success:
+        response["extraction"] = {
+            "paper_type": result.paper_type,
+            "topics": result.topics,
+            "one_sentence_summary": result.one_sentence_summary,
+            "key_findings": result.key_findings,
+            "methodology_summary": result.methodology_summary,
+            "quantitative_results": result.quantitative_results,
+            "citable_claims": result.citable_claims,
+            "techniques_used": result.techniques_used,
+        }
+
+    if result.error:
+        response["message"] = result.error
+
+    if result.elapsed_seconds:
+        response["elapsed_seconds"] = round(result.elapsed_seconds, 2)
+
+    return _to_response(success(response) if result.success else error(
+        result.error or "Deep extraction failed",
+        code="EXTRACTION_FAILED",
+        details={"paper_id": paper_id, "tier": "deep"}
     ))
 
 
@@ -768,9 +853,9 @@ def _get_pdf_processing_queue(arguments: dict[str, Any]) -> list[TextContent]:
     status = arguments.get("status")
     limit = arguments.get("limit", 20)
 
-    # Map needs_processing to needs_chunking for service compatibility
+    # Map needs_processing to needs_extraction for service compatibility
     if status == "needs_processing":
-        status = "needs_chunking"
+        status = "needs_extraction"
 
     papers = ExtractionService.get_extraction_queue(status=status, limit=limit)
 
@@ -793,8 +878,9 @@ def _queue_pdf_processing(arguments: dict[str, Any]) -> list[TextContent]:
 def _process_pdf_queue(arguments: dict[str, Any]) -> list[TextContent]:
     """Process papers in the PDF queue."""
     limit = arguments.get("limit", 10)
+    force = arguments.get("force", False)
 
-    results = ExtractionService.process_extraction_queue(limit=limit)
+    results = ExtractionService.process_extraction_queue(limit=limit, force=force)
 
     summary = {
         "processed": len(results),
@@ -837,8 +923,8 @@ def _retry_pdf_processing(arguments: dict[str, Any]) -> list[TextContent]:
 # ============================================================================
 
 
-def _get_paper_references(arguments: dict[str, Any]) -> list[TextContent]:
-    """Get references for a paper."""
+def _get_extracted_references(arguments: dict[str, Any]) -> list[TextContent]:
+    """Get PDF-extracted references for a paper."""
     paper_id = arguments["paper_id"]
     status_filter = arguments.get("status", "all")
 
@@ -1094,6 +1180,30 @@ def _get_quality_report(arguments: dict[str, Any]) -> list[TextContent]:
     return _to_response(success({"report": report}))
 
 
+def _flag_for_deep_extraction(arguments: dict) -> list[TextContent]:
+    """Flag a paper or papers for deep extraction."""
+    paper_ids = arguments.get("paper_ids")
+    paper_id = arguments.get("paper_id")
+
+    if paper_ids:
+        # Batch flag
+        result = PaperService.batch_flag_for_deep_extraction(paper_ids)
+        return _to_response(success(result))
+    elif paper_id:
+        # Single flag
+        try:
+            paper = PaperService.flag_for_deep_extraction(paper_id)
+            return _to_response(success({
+                "paper_id": paper_id,
+                "status": "flagged",
+                "enrichment_status": paper.get("enrichment_status"),
+            }))
+        except Exception as e:
+            return _to_response(error(str(e)))
+    else:
+        return _to_response(error("Must provide paper_id or paper_ids"))
+
+
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Execute an extraction tool.
 
@@ -1116,6 +1226,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
         if name == "extract_paper":
             return await _extract_paper(arguments)
+
+        if name == "extract_paper_quick":
+            return await _extract_paper_quick(arguments)
+
+        if name == "extract_paper_deep":
+            return await _extract_paper_deep(arguments)
 
         if name == "extract_papers_batch":
             return await _extract_papers_batch(arguments)
@@ -1143,8 +1259,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             return _retry_pdf_processing(arguments)
 
         # Reference tools
-        if name == "get_paper_references":
-            return _get_paper_references(arguments)
+        if name == "get_extracted_references":
+            return _get_extracted_references(arguments)
 
         if name == "match_reference_to_library":
             return _match_reference_to_library(arguments)
@@ -1164,6 +1280,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
         if name == "get_quality_report":
             return _get_quality_report(arguments)
+
+        if name == "flag_for_deep_extraction":
+            return _flag_for_deep_extraction(arguments)
 
         return _to_response(error(f"Unknown extraction tool: {name}", code="UNKNOWN_TOOL"))
 

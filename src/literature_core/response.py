@@ -4,7 +4,7 @@ All MCP tools should use these helpers to ensure consistent response format.
 This makes it easier for clients to parse responses and handle errors uniformly.
 
 Usage:
-    from literature_core.response import success, error, paginated
+    from literature_core.response import success, error, paginated, serialize
 
     def get_paper(paper_id: int) -> dict:
         try:
@@ -13,7 +13,87 @@ Usage:
         except PaperNotFoundError as e:
             return error(str(e), code=e.code, details={"paper_id": e.paper_id})
 """
+from __future__ import annotations
+
+import json
+import os
+from collections import Counter
+from datetime import datetime
+from pathlib import Path
 from typing import Any
+
+# Compact JSON by default (saves ~30-40% tokens in responses)
+# Set LITERATURE_JSON_INDENT=1 for readable responses during debugging
+COMPACT_JSON = os.environ.get("LITERATURE_JSON_INDENT", "0") != "1"
+
+# Tool usage tracking - stores counts in memory, persisted on shutdown
+_tool_usage: Counter = Counter()
+_usage_file = Path(__file__).parent.parent.parent / "data" / "tool_usage.json"
+
+
+def serialize(data: Any, tool_name: str | None = None) -> str:
+    """Serialize response data to JSON string.
+
+    Uses compact format by default for token efficiency.
+    Set env LITERATURE_JSON_INDENT=1 for readable output.
+
+    Args:
+        data: Response dict from success/error/paginated helpers
+        tool_name: Optional tool name for usage tracking
+
+    Returns:
+        JSON string (compact by default)
+    """
+    if tool_name:
+        _track_tool_usage(tool_name)
+
+    if COMPACT_JSON:
+        return json.dumps(data, separators=(",", ":"))
+    return json.dumps(data, indent=2)
+
+
+def _track_tool_usage(tool_name: str) -> None:
+    """Track tool invocation for analytics."""
+    _tool_usage[tool_name] += 1
+
+
+def get_tool_usage() -> dict[str, int]:
+    """Get current tool usage statistics."""
+    return dict(_tool_usage)
+
+
+def save_tool_usage() -> None:
+    """Persist tool usage to disk."""
+    if not _tool_usage:
+        return
+    try:
+        existing = {}
+        if _usage_file.exists():
+            with open(_usage_file) as f:
+                existing = json.load(f)
+
+        # Merge with existing counts
+        for tool, count in _tool_usage.items():
+            existing[tool] = existing.get(tool, 0) + count
+
+        existing["_last_updated"] = datetime.now().isoformat()
+
+        _usage_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(_usage_file, "w") as f:
+            json.dump(existing, f, indent=2)
+    except Exception:
+        pass  # Don't fail on tracking errors
+
+
+def load_tool_usage() -> dict[str, Any]:
+    """Load historical tool usage from disk."""
+    try:
+        if _usage_file.exists():
+            with open(_usage_file) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
 
 
 def success(data: Any, message: str | None = None) -> dict:

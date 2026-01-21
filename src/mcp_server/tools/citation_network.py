@@ -25,7 +25,9 @@ from literature_core import (  # noqa: E402
     get_logger,
     success,
     error,
+    serialize,
     LiteratureError,
+    PaperReference,
 )
 from services import PaperService  # noqa: E402
 from services.external_search import ExternalSearchService  # noqa: E402
@@ -38,10 +40,7 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="get_paper_citations",
-            description=(
-                "Get papers that cite a given paper. Uses Semantic Scholar API. "
-                "Can look up by paper ID (from database), DOI, or title."
-            ),
+            description="Papers citing this paper (via Semantic Scholar). Lookup by paper_id/DOI/title",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -67,10 +66,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_paper_references",
-            description=(
-                "Get papers that a given paper references (its bibliography). "
-                "Uses Semantic Scholar API."
-            ),
+            description="Papers referenced by this paper (bibliography via Semantic Scholar)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -96,10 +92,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="find_common_references",
-            description=(
-                "Find papers that share common references with a given paper. "
-                "Useful for finding related work in the same research area."
-            ),
+            description="Papers sharing references with a given paper (related work)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -123,11 +116,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="build_citation_graph",
-            description=(
-                "Build a citation graph for a set of papers showing citation "
-                "relationships. Returns nodes and edges in JSON format suitable "
-                "for visualization."
-            ),
+            description="Build citation graph (nodes/edges) for visualization",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -152,6 +141,72 @@ async def list_tools() -> list[Tool]:
                 "required": ["paper_ids"],
             },
         ),
+        Tool(
+            name="import_references_from_paper",
+            description="Import paper's references into library (from review papers)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "Database paper ID of the citing paper (e.g., a review paper)",
+                    },
+                    "min_year": {
+                        "type": "integer",
+                        "description": "Only import papers from this year or later",
+                    },
+                    "max_imports": {
+                        "type": "integer",
+                        "description": "Maximum number of new papers to import",
+                        "default": 50,
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tags to apply to imported papers",
+                    },
+                },
+                "required": ["paper_id"],
+            },
+        ),
+        Tool(
+            name="get_local_citations",
+            description="Local citation graph query (no API calls)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "Database paper ID to query",
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["citing", "cited", "both"],
+                        "description": "'citing' = papers that cite this, 'cited' = papers this cites",
+                        "default": "both",
+                    },
+                },
+                "required": ["paper_id"],
+            },
+        ),
+        Tool(
+            name="link_papers_citation",
+            description="Create citation link between two papers",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "citing_paper_id": {
+                        "type": "integer",
+                        "description": "ID of the paper doing the citing",
+                    },
+                    "cited_paper_id": {
+                        "type": "integer",
+                        "description": "ID of the paper being cited",
+                    },
+                },
+                "required": ["citing_paper_id", "cited_paper_id"],
+            },
+        ),
     ]
 
 
@@ -160,9 +215,9 @@ async def list_tools() -> list[Tool]:
 # ============================================================================
 
 
-def _to_response(data: dict) -> list[TextContent]:
+def _to_response(data: dict, tool_name: str | None = None) -> list[TextContent]:
     """Convert a response dict to TextContent list."""
-    return [TextContent(type="text", text=json.dumps(data, indent=2))]
+    return [TextContent(type="text", text=serialize(data, tool_name))]
 
 
 def _paper_result_to_dict(result) -> dict:
@@ -173,7 +228,11 @@ def _paper_result_to_dict(result) -> dict:
         "year": result.year,
         "doi": result.doi,
         "journal": result.journal,
-        "abstract": result.abstract[:300] + "..." if result.abstract and len(result.abstract) > 300 else result.abstract,
+        "abstract": (
+            result.abstract[:300] + "..."
+            if result.abstract and len(result.abstract) > 300
+            else result.abstract
+        ),
         "citation_count": result.citation_count,
         "arxiv_id": result.arxiv_id,
         "source": result.source,
@@ -181,7 +240,10 @@ def _paper_result_to_dict(result) -> dict:
 
 
 async def _get_paper_citations(arguments: dict[str, Any]) -> list[TextContent]:
-    """Get papers that cite a given paper."""
+    """Get papers that cite a given paper.
+
+    Tries sources in order: OpenAlex -> Semantic Scholar.
+    """
     paper_id = arguments.get("paper_id")
     doi = arguments.get("doi")
     title = arguments.get("title")
@@ -200,7 +262,19 @@ async def _get_paper_citations(arguments: dict[str, Any]) -> list[TextContent]:
         return _to_response(error("Must provide paper_id, doi, or title", code="INVALID_INPUT"))
 
     service = ExternalSearchService()
-    results = await service.get_paper_citations(doi=doi, title=title, limit=limit)
+    results = []
+    source_used = None
+
+    # 1. Try OpenAlex first (best rate limits, good coverage)
+    results = await service.get_paper_citations_openalex(doi=doi, title=title, limit=limit)
+    if results:
+        source_used = "openalex"
+
+    # 2. Fall back to Semantic Scholar
+    if not results:
+        results = await service.get_paper_citations(doi=doi, title=title, limit=limit)
+        if results:
+            source_used = "semantic_scholar"
 
     # Check which citing papers are in our library
     citing_papers = []
@@ -222,12 +296,16 @@ async def _get_paper_citations(arguments: dict[str, Any]) -> list[TextContent]:
         "source_doi": doi,
         "source_title": title,
         "citation_count": len(citing_papers),
+        "source": source_used or "none",
         "citations": citing_papers,
     }))
 
 
 async def _get_paper_references(arguments: dict[str, Any]) -> list[TextContent]:
-    """Get papers that a given paper references."""
+    """Get papers that a given paper references.
+
+    Tries sources in order: OpenAlex -> Semantic Scholar -> PDF extraction.
+    """
     paper_id = arguments.get("paper_id")
     doi = arguments.get("doi")
     title = arguments.get("title")
@@ -242,11 +320,57 @@ async def _get_paper_references(arguments: dict[str, Any]) -> list[TextContent]:
         else:
             return _to_response(error(f"Paper {paper_id} not found", code="NOT_FOUND"))
 
-    if not doi and not title:
+    if not doi and not title and not paper_id:
         return _to_response(error("Must provide paper_id, doi, or title", code="INVALID_INPUT"))
 
     service = ExternalSearchService()
-    results = await service.get_paper_references(doi=doi, title=title, limit=limit)
+    results = []
+    source_used = None
+
+    # 1. Try OpenAlex first (best rate limits, good coverage)
+    if doi or title:
+        results = await service.get_paper_references_openalex(doi=doi, title=title, limit=limit)
+        if results:
+            source_used = "openalex"
+
+    # 2. Fall back to Semantic Scholar
+    if not results and (doi or title):
+        results = await service.get_paper_references(doi=doi, title=title, limit=limit)
+        if results:
+            source_used = "semantic_scholar"
+
+    # 3. Fall back to PDF extraction if we have paper_id
+    if not results and paper_id:
+        from literature_core import get_session
+        with get_session() as session:
+            refs = session.query(PaperReference).filter(
+                PaperReference.paper_id == paper_id
+            ).order_by(PaperReference.reference_order).limit(limit).all()
+
+            if refs:
+                source_used = "pdf_extraction"
+                # Return extracted references in similar format
+                return _to_response(success({
+                    "source_doi": doi,
+                    "source_title": title,
+                    "reference_count": len(refs),
+                    "source": "pdf_extraction",
+                    "references": [
+                        {
+                            "raw_text": ref.raw_text,
+                            "title": ref.parsed_title,
+                            "authors": ref.parsed_authors,
+                            "year": ref.parsed_year,
+                            "doi": ref.parsed_doi,
+                            "match_status": ref.match_status,
+                            "matched_paper_id": ref.matched_paper_id,
+                            "in_library": ref.matched_paper_id is not None,
+                            "library_id": ref.matched_paper_id,
+                            "confidence": ref.parse_confidence,
+                        }
+                        for ref in refs
+                    ],
+                }))
 
     # Check which referenced papers are in our library
     referenced_papers = []
@@ -268,6 +392,7 @@ async def _get_paper_references(arguments: dict[str, Any]) -> list[TextContent]:
         "source_doi": doi,
         "source_title": title,
         "reference_count": len(referenced_papers),
+        "source": source_used or "none",
         "references": referenced_papers,
     }))
 
@@ -348,7 +473,7 @@ async def _build_citation_graph(arguments: dict[str, Any]) -> list[TextContent]:
     """Build a citation graph for visualization."""
     paper_ids = arguments["paper_ids"]
     include_external = arguments.get("include_external", False)
-    depth = arguments.get("depth", 1)
+    # depth = arguments.get("depth", 1)  # Reserved for future multi-level graph
 
     nodes = []
     edges = []
@@ -475,6 +600,229 @@ async def _build_citation_graph(arguments: dict[str, Any]) -> list[TextContent]:
     }))
 
 
+async def _import_references_from_paper(arguments: dict[str, Any]) -> list[TextContent]:
+    """Import references from a paper and create citation links."""
+    from literature_core import get_session, Paper, PaperCitation
+    from services.paper_import_service import PaperImportService
+
+    paper_id = arguments["paper_id"]
+    min_year = arguments.get("min_year")
+    max_imports = arguments.get("max_imports", 50)
+    tags = arguments.get("tags", [])
+
+    # Get the source paper
+    paper = PaperService.get(paper_id)
+    if not paper:
+        return _to_response(error(f"Paper {paper_id} not found", code="NOT_FOUND"))
+
+    doi = paper.get("doi")
+    title = paper.get("title")
+
+    if not doi and not title:
+        return _to_response(error("Paper has no DOI or title for lookup", code="INVALID_INPUT"))
+
+    # Fetch references via OpenAlex
+    service = ExternalSearchService()
+    references = await service.get_paper_references_openalex(doi=doi, title=title, limit=200)
+
+    if not references:
+        # Fallback to Semantic Scholar
+        references = await service.get_paper_references(doi=doi, title=title, limit=200)
+
+    if not references:
+        return _to_response(success({
+            "source_paper_id": paper_id,
+            "references_found": 0,
+            "already_in_library": 0,
+            "newly_imported": 0,
+            "links_created": 0,
+            "message": "No references found via external APIs"
+        }))
+
+    # Apply year filter
+    if min_year:
+        references = [r for r in references if r.year and r.year >= min_year]
+
+    # Check which are already in library and import missing ones
+    already_in_library = []
+    newly_imported = []
+    links_created = 0
+    import_errors = []
+
+    with get_session() as session:
+        for ref in references:
+            cited_paper_id = None
+
+            # Check if already in library by DOI
+            if ref.doi:
+                existing = session.query(Paper).filter(Paper.doi == ref.doi).first()
+                if existing:
+                    cited_paper_id = existing.id
+                    already_in_library.append({
+                        "id": existing.id,
+                        "title": existing.title,
+                        "doi": existing.doi
+                    })
+
+            # If not in library and we have room to import
+            if cited_paper_id is None and len(newly_imported) < max_imports:
+                if ref.doi:
+                    try:
+                        # Import via DOI
+                        result = PaperImportService.import_paper(
+                            doi=ref.doi,
+                            tags=tags,
+                            skip_duplicate_check=False
+                        )
+                        if result.get("success") and result.get("data", {}).get("id"):
+                            cited_paper_id = result["data"]["id"]
+                            newly_imported.append({
+                                "id": cited_paper_id,
+                                "title": ref.title,
+                                "doi": ref.doi
+                            })
+                    except Exception as e:
+                        import_errors.append(f"{ref.title[:50]}: {str(e)[:50]}")
+
+            # Create citation link if we have both paper IDs
+            if cited_paper_id:
+                # Check if link already exists
+                existing_link = session.query(PaperCitation).filter(
+                    PaperCitation.citing_paper_id == paper_id,
+                    PaperCitation.cited_paper_id == cited_paper_id
+                ).first()
+
+                if not existing_link:
+                    link = PaperCitation(
+                        citing_paper_id=paper_id,
+                        cited_paper_id=cited_paper_id,
+                        source="openalex"
+                    )
+                    session.add(link)
+                    links_created += 1
+
+        session.commit()
+
+    return _to_response(success({
+        "source_paper_id": paper_id,
+        "source_title": title,
+        "references_found": len(references),
+        "already_in_library": len(already_in_library),
+        "newly_imported": len(newly_imported),
+        "links_created": links_created,
+        "imported_papers": newly_imported[:10],  # Limit output size
+        "errors": import_errors[:5] if import_errors else None,
+    }))
+
+
+async def _get_local_citations(arguments: dict[str, Any]) -> list[TextContent]:
+    """Query the local citation graph."""
+    from literature_core import get_session, Paper, PaperCitation
+
+    paper_id = arguments["paper_id"]
+    direction = arguments.get("direction", "both")
+
+    # Verify paper exists
+    paper = PaperService.get(paper_id)
+    if not paper:
+        return _to_response(error(f"Paper {paper_id} not found", code="NOT_FOUND"))
+
+    citing_papers = []
+    cited_papers = []
+
+    with get_session() as session:
+        if direction in ("citing", "both"):
+            # Papers that cite this one (incoming citations)
+            incoming = session.query(PaperCitation).filter(
+                PaperCitation.cited_paper_id == paper_id
+            ).all()
+
+            for link in incoming:
+                citing = session.query(Paper).get(link.citing_paper_id)
+                if citing:
+                    citing_papers.append({
+                        "id": citing.id,
+                        "title": citing.title,
+                        "year": citing.year,
+                        "doi": citing.doi,
+                        "source": link.source,
+                    })
+
+        if direction in ("cited", "both"):
+            # Papers that this one cites (outgoing citations)
+            outgoing = session.query(PaperCitation).filter(
+                PaperCitation.citing_paper_id == paper_id
+            ).all()
+
+            for link in outgoing:
+                cited = session.query(Paper).get(link.cited_paper_id)
+                if cited:
+                    cited_papers.append({
+                        "id": cited.id,
+                        "title": cited.title,
+                        "year": cited.year,
+                        "doi": cited.doi,
+                        "source": link.source,
+                    })
+
+    return _to_response(success({
+        "paper_id": paper_id,
+        "paper_title": paper.get("title"),
+        "citing_this": citing_papers if direction in ("citing", "both") else None,
+        "cited_by_this": cited_papers if direction in ("cited", "both") else None,
+        "citing_count": len(citing_papers) if direction in ("citing", "both") else None,
+        "cited_count": len(cited_papers) if direction in ("cited", "both") else None,
+    }))
+
+
+async def _link_papers_citation(arguments: dict[str, Any]) -> list[TextContent]:
+    """Manually create a citation link between two papers."""
+    from literature_core import get_session, PaperCitation
+
+    citing_paper_id = arguments["citing_paper_id"]
+    cited_paper_id = arguments["cited_paper_id"]
+
+    # Verify both papers exist
+    citing = PaperService.get(citing_paper_id)
+    if not citing:
+        return _to_response(error(f"Citing paper {citing_paper_id} not found", code="NOT_FOUND"))
+
+    cited = PaperService.get(cited_paper_id)
+    if not cited:
+        return _to_response(error(f"Cited paper {cited_paper_id} not found", code="NOT_FOUND"))
+
+    with get_session() as session:
+        # Check if link already exists
+        existing = session.query(PaperCitation).filter(
+            PaperCitation.citing_paper_id == citing_paper_id,
+            PaperCitation.cited_paper_id == cited_paper_id
+        ).first()
+
+        if existing:
+            return _to_response(success({
+                "status": "already_exists",
+                "message": "Citation link already exists",
+                "citing_paper_id": citing_paper_id,
+                "cited_paper_id": cited_paper_id,
+            }))
+
+        # Create the link
+        link = PaperCitation(
+            citing_paper_id=citing_paper_id,
+            cited_paper_id=cited_paper_id,
+            source="manual"
+        )
+        session.add(link)
+        session.commit()
+
+    return _to_response(success({
+        "status": "created",
+        "message": f"Created citation link: '{citing.get('title')[:40]}' cites '{cited.get('title')[:40]}'",
+        "citing_paper_id": citing_paper_id,
+        "cited_paper_id": cited_paper_id,
+    }))
+
+
 # ============================================================================
 # Main entry point
 # ============================================================================
@@ -494,6 +842,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "get_paper_references": _get_paper_references,
         "find_common_references": _find_common_references,
         "build_citation_graph": _build_citation_graph,
+        "import_references_from_paper": _import_references_from_paper,
+        "get_local_citations": _get_local_citations,
+        "link_papers_citation": _link_papers_citation,
     }
 
     if name not in tool_map:

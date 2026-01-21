@@ -9,19 +9,20 @@ not with database queries. For database-backed citation operations,
 see the project.py module.
 """
 
-import json
 import re
+import sys
 from typing import Any
 from pathlib import Path
 
 from mcp.types import Tool, TextContent
 from loguru import logger
 
-# ManuscriptParser is in the local context module
-import sys
+# Add src directory to path for imports
 _litai_src = Path(__file__).parent.parent.parent
 if str(_litai_src) not in sys.path:
     sys.path.insert(0, str(_litai_src))
+
+from literature_core import serialize
 from context.parser import ManuscriptParser
 
 
@@ -30,10 +31,7 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="scan_manuscript",
-            description=(
-                "Scan a LaTeX or Markdown manuscript to extract citations, "
-                "sections, and document structure. Returns all \\cite{} keys found."
-            ),
+            description="Scan LaTeX/Markdown for citations, sections, structure",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -56,10 +54,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="check_citations",
-            description=(
-                "Check citations in a manuscript against papers in the library. "
-                "Reports orphan citations (not in library) and unused papers."
-            ),
+            description="Check manuscript citations vs library (orphans, unused)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -87,10 +82,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="suggest_citation_key",
-            description=(
-                "Generate a BibTeX citation key for a paper. "
-                "Uses format: firstauthorYEARfirstword"
-            ),
+            description="Generate BibTeX key (format: firstauthorYEARfirstword)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -433,7 +425,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 "all_citations": structure.all_citations,
                 "citation_count": len(structure.all_citations),
             }
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return [TextContent(type="text", text=serialize(result))]
 
         elif name == "check_citations":
             manuscript_citations = set(arguments["manuscript_citations"])
@@ -486,7 +478,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     ),
                 },
             }
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return [TextContent(type="text", text=serialize(result))]
 
         elif name == "suggest_citation_key":
             authors = arguments.get("authors", "Unknown")
@@ -500,7 +492,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 "format": "firstauthorYEARfirstword",
                 "example_usage": f"\\cite{{{key}}}",
             }
-            return [TextContent(type="text", text=json.dumps(result, indent=2))]
+            return [TextContent(type="text", text=serialize(result))]
 
         elif name == "generate_bibtex":
             papers = arguments["papers"]
@@ -564,7 +556,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 ),
                 "details": results,
             }
-            return [TextContent(type="text", text=json.dumps(summary, indent=2))]
+            return [TextContent(type="text", text=serialize(summary))]
 
         else:
             return [TextContent(type="text", text=f"Unknown citation tool: {name}")]

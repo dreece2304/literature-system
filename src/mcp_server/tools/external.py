@@ -5,12 +5,19 @@ These tools provide access to external academic APIs for
 looking up paper metadata, finding open access PDFs, etc.
 """
 
-import json
+import sys
+from pathlib import Path
 from typing import Any
 
 from mcp.types import Tool, TextContent
 from loguru import logger
 
+# Add src directory to path for imports
+_src_path = Path(__file__).parent.parent.parent
+if str(_src_path) not in sys.path:
+    sys.path.insert(0, str(_src_path))
+
+from literature_core import serialize
 from services.external_search import ExternalSearchService
 
 
@@ -19,11 +26,7 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="lookup_paper_metadata",
-            description=(
-                "Look up paper metadata from external sources (CrossRef, OpenAlex, "
-                "Semantic Scholar, arXiv). Use this to find missing DOIs, abstracts, "
-                "citation counts, etc."
-            ),
+            description="Lookup metadata from CrossRef/OpenAlex/Semantic Scholar/arXiv",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -48,10 +51,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="find_open_access_pdf",
-            description=(
-                "Find open access PDF URLs for a paper using Unpaywall, "
-                "arXiv, and publisher APIs."
-            ),
+            description="Find open access PDF via Unpaywall/arXiv/publishers",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -72,10 +72,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="enrich_paper",
-            description=(
-                "Automatically enrich a paper with missing metadata from external sources. "
-                "Fetches abstract, DOI, citation count, and PDF URL if missing."
-            ),
+            description="Enrich paper with missing metadata (abstract, DOI, citations, PDF)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -96,10 +93,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="search_external_papers",
-            description=(
-                "Search external academic databases for papers not in your library. "
-                "Useful for literature discovery."
-            ),
+            description="Search CrossRef/OpenAlex/Semantic Scholar/arXiv for new papers",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -219,7 +213,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     text="No metadata found. Try providing a DOI for better results.",
                 )]
 
-            return [TextContent(type="text", text=json.dumps(results, indent=2))]
+            return [TextContent(type="text", text=serialize(results))]
 
         elif name == "find_open_access_pdf":
             pdf_urls = []
@@ -274,7 +268,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     text="No open access PDF found. The paper may be behind a paywall.",
                 )]
 
-            return [TextContent(type="text", text=json.dumps(pdf_urls, indent=2))]
+            return [TextContent(type="text", text=serialize(pdf_urls))]
 
         elif name == "enrich_paper":
             # This would typically update the database
@@ -315,7 +309,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     text="Could not find additional metadata for this paper.",
                 )]
 
-            return [TextContent(type="text", text=json.dumps(enrichment, indent=2))]
+            return [TextContent(type="text", text=serialize(enrichment))]
 
         elif name == "search_external_papers":
             query = arguments["query"]
@@ -376,7 +370,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                     for r in results
                 ]
 
-            return [TextContent(type="text", text=json.dumps(all_results, indent=2))]
+            return [TextContent(type="text", text=serialize(all_results))]
 
         elif name == "get_citation_count":
             doi = arguments.get("doi")
@@ -408,11 +402,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                             data = response.json()
                             return [TextContent(
                                 type="text",
-                                text=json.dumps({
+                                text=serialize({
                                     "title": data.get("title"),
                                     "citation_count": data.get("citationCount"),
                                     "source": "semantic_scholar",
-                                }, indent=2),
+                                }),
                             )]
                     except Exception as e:
                         logger.debug(f"Semantic Scholar lookup failed: {e}")
@@ -423,11 +417,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 if results and results[0].citation_count is not None:
                     return [TextContent(
                         type="text",
-                        text=json.dumps({
+                        text=serialize({
                             "title": results[0].title,
                             "citation_count": results[0].citation_count,
                             "source": "semantic_scholar",
-                        }, indent=2),
+                        }),
                     )]
 
             return [TextContent(

@@ -5,13 +5,19 @@ These tools provide bidirectional synchronization between
 the literature database and Zotero reference manager.
 """
 
-import json
+import sys
+from pathlib import Path
 from typing import Any
 
 from mcp.types import Tool, TextContent
 from loguru import logger
 
-# Now that everything is consolidated in src/, we can import directly
+# Add src directory to path for imports
+_src_path = Path(__file__).parent.parent.parent
+if str(_src_path) not in sys.path:
+    sys.path.insert(0, str(_src_path))
+
+from literature_core import serialize
 from extractors.zotero_sync import ZoteroSync
 
 
@@ -32,22 +38,12 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="sync_from_zotero",
-            description=(
-                "Pull new papers and updates from Zotero into the database. "
-                "Uses the Zotero web API (requires API key configured in credentials.yml)."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
+            description="Pull papers from Zotero into database (requires API key)",
+            inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="sync_to_zotero",
-            description=(
-                "Push enriched metadata from database to Zotero. "
-                "Non-destructive: only fills empty fields in Zotero (abstracts, DOIs, etc). "
-                "Optionally creates new Zotero items for papers that only exist in the database."
-            ),
+            description="Push enriched metadata to Zotero (non-destructive, fills empty fields)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -64,10 +60,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="push_paper_to_zotero",
-            description=(
-                "Push a single paper to Zotero. Creates new item if paper doesn't exist in Zotero, "
-                "or enriches existing item with database metadata."
-            ),
+            description="Push single paper to Zotero (creates or enriches)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -86,10 +79,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="push_pdf_to_zotero",
-            description=(
-                "Upload a paper's PDF to Zotero as an attachment. "
-                "Paper must already exist in Zotero (use push_paper_to_zotero first)."
-            ),
+            description="Upload PDF to Zotero (paper must exist in Zotero first)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -103,25 +93,13 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_zotero_sync_status",
-            description=(
-                "Get sync status between database and Zotero. "
-                "Shows counts of linked papers, database-only papers, and API availability."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
+            description="Sync status (linked papers, database-only, API availability)",
+            inputSchema={"type": "object", "properties": {}},
         ),
         Tool(
             name="check_zotero_connection",
-            description=(
-                "Check Zotero connectivity. Shows if Zotero app is running locally "
-                "and if web API is configured. Web API is required for sync operations."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {},
-            },
+            description="Check Zotero local/web API connectivity",
+            inputSchema={"type": "object", "properties": {}},
         ),
     ]
 
@@ -138,12 +116,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             if not api_info.get('web_api'):
                 return [TextContent(
                     type="text",
-                    text=json.dumps({
+                    text=serialize({
                         "error": "Zotero web API not configured",
                         "details": "Web API is required for syncing items from Zotero.",
                         "help": "Configure API key in config/credentials.yml",
                         "zotero_running": api_info.get('local_api', False)
-                    }, indent=2)
+                    })
                 )]
 
             # Perform sync via web API
@@ -151,12 +129,12 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             return [TextContent(
                 type="text",
-                text=json.dumps({
+                text=serialize({
                     "success": True,
                     "papers_added": added,
                     "papers_updated": updated,
                     "api_used": "web"
-                }, indent=2)
+                })
             )]
 
         elif name == "sync_to_zotero":
@@ -166,11 +144,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             if not api_info.get('web_api'):
                 return [TextContent(
                     type="text",
-                    text=json.dumps({
+                    text=serialize({
                         "error": "Web API required for sync to Zotero",
                         "details": "Push operations require the Zotero web API with write permissions.",
                         "help": "Configure API key in config/credentials.yml"
-                    }, indent=2)
+                    })
                 )]
 
             create_new = arguments.get("create_new_items", False)
@@ -178,14 +156,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             return [TextContent(
                 type="text",
-                text=json.dumps({
+                text=serialize({
                     "success": True,
                     "created": result.get('created', 0),
                     "updated": result.get('updated', 0),
                     "skipped": result.get('skipped', 0),
                     "errors": result.get('errors', 0),
                     "mode": "full_sync" if create_new else "enrich_only"
-                }, indent=2)
+                })
             )]
 
         elif name == "push_paper_to_zotero":
@@ -195,10 +173,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             if not api_info.get('web_api'):
                 return [TextContent(
                     type="text",
-                    text=json.dumps({
+                    text=serialize({
                         "error": "Web API required",
                         "help": "Configure API key in config/credentials.yml"
-                    }, indent=2)
+                    })
                 )]
 
             paper_id = arguments["paper_id"]
@@ -208,7 +186,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             return [TextContent(
                 type="text",
-                text=json.dumps(result, indent=2)
+                text=serialize(result)
             )]
 
         elif name == "push_pdf_to_zotero":
@@ -218,10 +196,10 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             if not api_info.get('web_api'):
                 return [TextContent(
                     type="text",
-                    text=json.dumps({
+                    text=serialize({
                         "error": "Web API required",
                         "help": "Configure API key in config/credentials.yml"
-                    }, indent=2)
+                    })
                 )]
 
             paper_id = arguments["paper_id"]
@@ -229,14 +207,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             return [TextContent(
                 type="text",
-                text=json.dumps(result, indent=2)
+                text=serialize(result)
             )]
 
         elif name == "get_zotero_sync_status":
             result = zs.get_sync_status()
             return [TextContent(
                 type="text",
-                text=json.dumps(result, indent=2)
+                text=serialize(result)
             )]
 
         elif name == "check_zotero_connection":
@@ -262,7 +240,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
             return [TextContent(
                 type="text",
-                text=json.dumps(details, indent=2)
+                text=serialize(details)
             )]
 
         else:
@@ -276,8 +254,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         import traceback
         return [TextContent(
             type="text",
-            text=json.dumps({
+            text=serialize({
                 "error": str(e),
                 "traceback": traceback.format_exc()
-            }, indent=2)
+            })
         )]

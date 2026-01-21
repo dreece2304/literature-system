@@ -25,6 +25,7 @@ if str(_src_path) not in sys.path:
 from literature_core import (
     get_logger,
     error,
+    serialize,
     CollectionNotFoundError,
     ValidationError,
     LiteratureError,
@@ -157,13 +158,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="import_paper_wizard",
-            description=(
-                "Unified smart paper import. Accepts DOI, arXiv ID, or title, "
-                "automatically fetches metadata from CrossRef/OpenAlex/Semantic Scholar, "
-                "checks for duplicates, tracks metadata provenance, and optionally "
-                "triggers PDF chunking. Returns detailed result with sources used and "
-                "what enrichment is still needed."
-            ),
+            description="Smart import via DOI/arXiv/title with duplicate detection and metadata fetching",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -215,10 +210,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="get_enrichment_queue",
-            description=(
-                "Get papers needing enrichment (missing abstract, PDF, or chunks). "
-                "Useful for finding papers that need additional processing."
-            ),
+            description="Papers needing enrichment (missing abstract, PDF, or chunks)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -243,9 +235,9 @@ async def list_tools() -> list[Tool]:
 # ============================================================================
 
 
-def _to_response(data: dict) -> list[TextContent]:
+def _to_response(data: dict, tool_name: str | None = None) -> list[TextContent]:
     """Convert a response dict to TextContent list."""
-    return [TextContent(type="text", text=json.dumps(data, indent=2))]
+    return [TextContent(type="text", text=serialize(data, tool_name))]
 
 
 def _import_bibtex(arguments: dict[str, Any]) -> list[TextContent]:

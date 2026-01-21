@@ -30,11 +30,14 @@ from literature_core import (
     created,
     batch_result,
     search_result,
+    serialize,
     PaperNotFoundError,
     ValidationError,
     LiteratureError,
 )
 from services import PaperService
+from literature_core.database import get_session
+from literature_core.models import ProjectRelevance
 
 logger = get_logger(__name__)
 
@@ -164,17 +167,17 @@ async def list_tools() -> list[Tool]:
                         "type": "array",
                         "items": {"type": "string"},
                     },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Local path to PDF file to attach",
+                    },
                 },
                 "required": ["paper_id"],
             },
         ),
         Tool(
             name="get_paper_content",
-            description=(
-                "Get paper content for AI analysis (title, abstract, extraction). "
-                "By default returns only metadata and LLM extraction (~800 tokens). "
-                "Set include_full_text=true to also get full paper text (expensive)."
-            ),
+            description="Get paper content + LLM extraction. Set include_full_text=true only if extraction missing",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -200,17 +203,21 @@ async def list_tools() -> list[Tool]:
                         "description": "Start position in full text for pagination",
                         "default": 0,
                     },
+                    "include_verification": {
+                        "type": "boolean",
+                        "description": (
+                            "Include verification score for the extraction. Checks if claims "
+                            "can be found in source text. Score < 0.5 may indicate hallucinations."
+                        ),
+                        "default": False,
+                    },
                 },
                 "required": ["paper_id"],
             },
         ),
         Tool(
             name="store_extraction",
-            description=(
-                "Store AI-extracted content for a paper. Supports basic fields "
-                "(paper_type, topics, summary, findings, methodology) and comprehensive "
-                "fields (quantitative_results, citable_claims, techniques, etc.)."
-            ),
+            description="Store AI-extracted content (type, topics, summary, findings, methodology, etc.)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -282,6 +289,23 @@ async def list_tools() -> list[Tool]:
                     "citation_contexts": {
                         "type": "object",
                         "description": "{introduction, methods, results, discussion}",
+                    },
+                    # Project relevance scoring
+                    "project_relevance": {
+                        "type": "object",
+                        "description": (
+                            "Project relevance scores. Keys are project names (e.g., 'thesis', 'paper2'), "
+                            "values are objects with: relevance (high|medium|low|none), "
+                            "reason (brief explanation), primary_use (background|methods|etc)"
+                        ),
+                        "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                                "relevance": {"type": "string", "enum": ["high", "medium", "low", "none"]},
+                                "reason": {"type": "string"},
+                                "primary_use": {"type": "string"},
+                            },
+                        },
                     },
                 },
                 "required": ["paper_id"],
@@ -356,6 +380,26 @@ async def list_tools() -> list[Tool]:
                 "required": ["paper_ids", "confirm"],
             },
         ),
+        Tool(
+            name="get_papers_summary",
+            description="Batch fetch summaries (one_sentence_summary, paper_type, topics) for paper IDs",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "List of paper IDs to get summaries for",
+                    },
+                    "include_abstract": {
+                        "type": "boolean",
+                        "description": "Include paper abstracts (default: false for efficiency)",
+                        "default": False,
+                    },
+                },
+                "required": ["paper_ids"],
+            },
+        ),
     ]
 
 
@@ -364,9 +408,9 @@ async def list_tools() -> list[Tool]:
 # ============================================================================
 
 
-def _to_response(data: dict) -> list[TextContent]:
+def _to_response(data: dict, tool_name: str | None = None) -> list[TextContent]:
     """Convert a response dict to TextContent list."""
-    return [TextContent(type="text", text=json.dumps(data, indent=2))]
+    return [TextContent(type="text", text=serialize(data, tool_name))]
 
 
 def _list_papers(arguments: dict[str, Any]) -> list[TextContent]:
@@ -428,6 +472,15 @@ def _add_paper(arguments: dict[str, Any]) -> list[TextContent]:
 def _update_paper(arguments: dict[str, Any]) -> list[TextContent]:
     """Update an existing paper."""
     paper_id = arguments.pop("paper_id")
+    file_path = arguments.pop("file_path", None)
+
+    # Handle file_path separately via PDFService
+    pdf_result = None
+    if file_path:
+        from services.pdf_service import PDFService
+        pdf_result = PDFService.link_local_pdf(paper_id, file_path)
+
+    # Update other fields via PaperService
     paper = PaperService.update(
         paper_id=paper_id,
         title=arguments.get("title"),
@@ -438,15 +491,25 @@ def _update_paper(arguments: dict[str, Any]) -> list[TextContent]:
         read_status=arguments.get("read_status"),
         tags=arguments.get("tags"),
     )
+
+    # Merge PDF info into response
+    if pdf_result:
+        paper["file_path"] = pdf_result["file_path"]
+        paper["file_hash"] = pdf_result["file_hash"]
+        paper["word_count"] = pdf_result["word_count"]
+
     return _to_response(success(paper, message=f"Paper {paper_id} updated"))
 
 
 def _get_paper_content(arguments: dict[str, Any]) -> list[TextContent]:
     """Get paper content for AI analysis with optional truncation."""
+    from services import ExtractionService
+
     paper_id = arguments["paper_id"]
     include_full_text = arguments.get("include_full_text", False)  # Default False for efficiency
     max_chars = arguments.get("max_chars", 50000)
     offset = arguments.get("offset", 0)
+    include_verification = arguments.get("include_verification", False)
 
     # Pass include_full_text to service - avoids fetching chunks if not needed
     content = PaperService.get_content(paper_id, include_full_text=include_full_text)
@@ -487,6 +550,26 @@ def _get_paper_content(arguments: dict[str, Any]) -> list[TextContent]:
     if truncation_info:
         content["_truncation"] = truncation_info
 
+    # Add verification score if requested and extraction exists
+    if include_verification and content.get("extraction"):
+        verification = ExtractionService.verify_extraction(paper_id)
+        if "error" not in verification:
+            content["_verification"] = {
+                "score": verification.get("verification_score", 0),
+                "verified_count": verification.get("verified_count", 0),
+                "unverified_count": verification.get("unverified_count", 0),
+                "reliability": (
+                    "high" if verification.get("verification_score", 0) >= 0.8 else
+                    "medium" if verification.get("verification_score", 0) >= 0.5 else
+                    "low"
+                ),
+            }
+        else:
+            content["_verification"] = {
+                "error": verification.get("error"),
+                "note": "Verification requires full text to check claims",
+            }
+
     return _to_response(success(content))
 
 
@@ -515,9 +598,52 @@ def _store_extraction(arguments: dict[str, Any]) -> list[TextContent]:
         structured_data=structured_data if structured_data else None,
     )
 
+    # Store project relevance scores if provided
+    project_relevance = arguments.get("project_relevance")
+    projects_stored = []
+    if project_relevance:
+        from datetime import datetime
+        now = datetime.utcnow()
+
+        with get_session() as session:
+            for project_name, scores in project_relevance.items():
+                # Check if relevance record exists for this paper+project
+                existing = (
+                    session.query(ProjectRelevance)
+                    .filter(
+                        ProjectRelevance.paper_id == paper_id,
+                        ProjectRelevance.project_name == project_name
+                    )
+                    .first()
+                )
+
+                if existing:
+                    # Update existing record
+                    existing.relevance_level = scores.get("relevance")
+                    existing.relevance_summary = scores.get("reason")
+                    existing.primary_use = scores.get("primary_use")
+                    existing.scored_at = now
+                else:
+                    # Create new record
+                    relevance = ProjectRelevance(
+                        paper_id=paper_id,
+                        project_name=project_name,
+                        relevance_level=scores.get("relevance"),
+                        relevance_summary=scores.get("reason"),
+                        primary_use=scores.get("primary_use"),
+                        scored_at=now,
+                    )
+                    session.add(relevance)
+
+                projects_stored.append(project_name)
+
+            session.commit()
+
     response = {"paper_id": paper_id}
     if structured_data:
         response["extended_fields_stored"] = list(structured_data.keys())
+    if projects_stored:
+        response["project_relevance_stored"] = projects_stored
 
     return _to_response(
         success(response, message=f"Extraction stored for paper {paper_id}")
@@ -575,6 +701,93 @@ def _batch_delete_papers(arguments: dict[str, Any]) -> list[TextContent]:
     )
 
 
+def _get_papers_summary(arguments: dict[str, Any]) -> list[TextContent]:
+    """Batch fetch summaries for multiple papers.
+
+    Efficiently retrieves extraction summaries and optionally abstracts
+    for a list of paper IDs in minimal database queries.
+    """
+    from literature_core.models import Paper, PaperContent
+
+    paper_ids = arguments["paper_ids"]
+    include_abstract = arguments.get("include_abstract", False)
+
+    if not paper_ids:
+        return _to_response(success({"count": 0, "papers": []}))
+
+    with get_session() as session:
+        # Query papers for basic info
+        papers_query = session.query(
+            Paper.id,
+            Paper.title,
+            Paper.year,
+        )
+        if include_abstract:
+            papers_query = session.query(
+                Paper.id,
+                Paper.title,
+                Paper.year,
+                Paper.abstract,
+            )
+
+        papers = papers_query.filter(Paper.id.in_(paper_ids)).all()
+
+        # Build paper info map
+        paper_map = {}
+        for p in papers:
+            paper_map[p.id] = {
+                "id": p.id,
+                "title": p.title,
+                "year": p.year,
+            }
+            if include_abstract:
+                paper_map[p.id]["abstract"] = p.abstract
+
+        # Query extraction summaries
+        contents = session.query(
+            PaperContent.paper_id,
+            PaperContent.one_sentence_summary,
+            PaperContent.paper_type,
+            PaperContent.topics,
+            PaperContent.deep_one_sentence_summary,
+            PaperContent.deep_paper_type,
+        ).filter(PaperContent.paper_id.in_(paper_ids)).all()
+
+        # Merge extraction data (prefer deep over quick)
+        for content in contents:
+            if content.paper_id in paper_map:
+                paper_map[content.paper_id]["summary"] = (
+                    content.deep_one_sentence_summary or content.one_sentence_summary
+                )
+                paper_map[content.paper_id]["paper_type"] = (
+                    content.deep_paper_type or content.paper_type
+                )
+                paper_map[content.paper_id]["topics"] = content.topics or []
+
+        # Build result list preserving input order, fill missing with nulls
+        results = []
+        for pid in paper_ids:
+            if pid in paper_map:
+                entry = paper_map[pid]
+                # Ensure extraction fields exist even if no extraction
+                if "summary" not in entry:
+                    entry["summary"] = None
+                    entry["paper_type"] = None
+                    entry["topics"] = []
+                results.append(entry)
+            else:
+                # Paper not found
+                results.append({
+                    "id": pid,
+                    "error": "Paper not found",
+                })
+
+    return _to_response(success({
+        "count": len([r for r in results if "error" not in r]),
+        "papers": results,
+    }))
+
+
 # ============================================================================
 # Main entry point
 # ============================================================================
@@ -600,6 +813,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "get_extraction_queue": _get_extraction_queue,
         "batch_update_papers": _batch_update_papers,
         "batch_delete_papers": _batch_delete_papers,
+        "get_papers_summary": _get_papers_summary,
     }
 
     if name not in tool_map:

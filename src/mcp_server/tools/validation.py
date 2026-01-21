@@ -5,10 +5,13 @@ These tools provide paper validation against external databases
 
 Architecture:
     MCP Tool (this file) -> ValidationService -> ExternalSearchService -> External APIs
+
+Consolidated tools:
+    - get_validation_status: Coverage statistics
+    - validate_papers: Queue, validate, and reset operations via action parameter
 """
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from typing import Any
@@ -20,7 +23,7 @@ _src_path = Path(__file__).parent.parent.parent
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 
-from literature_core import get_logger, success, error, batch_result
+from literature_core import get_logger, success, error, batch_result, serialize
 from services import ValidationService
 
 logger = get_logger(__name__)
@@ -31,61 +34,15 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="get_validation_status",
-            description=(
-                "Get validation coverage statistics. Shows how many papers have been "
-                "verified against external databases (CrossRef, Semantic Scholar, etc.)"
-            ),
+            description="Get validation coverage statistics. Shows how many papers have been verified against external databases (CrossRef, Semantic Scholar, etc.)",
             inputSchema={
                 "type": "object",
                 "properties": {},
             },
         ),
         Tool(
-            name="get_validation_queue",
-            description=(
-                "Get papers that need validation. Papers with DOI are prioritized "
-                "as they're easier to verify."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum papers to return (default: 20)",
-                        "default": 20,
-                    },
-                    "prioritize_with_doi": {
-                        "type": "boolean",
-                        "description": "Show papers with DOI first (default: true)",
-                        "default": True,
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="validate_paper",
-            description=(
-                "Validate a single paper against external databases. Checks CrossRef, "
-                "Semantic Scholar, and other sources to verify the paper exists and "
-                "metadata is correct."
-            ),
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Paper ID to validate",
-                    },
-                },
-                "required": ["paper_id"],
-            },
-        ),
-        Tool(
-            name="validate_papers_batch",
-            description=(
-                "Validate multiple papers in batch. Can specify paper IDs or "
-                "process from the validation queue."
-            ),
+            name="validate_papers",
+            description="Validate papers against external databases. Can specify paper IDs or process from the validation queue.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -103,11 +60,27 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
+            name="get_validation_queue",
+            description="Get papers that need validation. Papers with DOI are prioritized as they're easier to verify.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum papers to return (default: 20)",
+                        "default": 20,
+                    },
+                    "prioritize_with_doi": {
+                        "type": "boolean",
+                        "description": "Show papers with DOI first (default: true)",
+                        "default": True,
+                    },
+                },
+            },
+        ),
+        Tool(
             name="reset_validation",
-            description=(
-                "Reset validation status for papers to allow re-validation. "
-                "Useful after fixing paper metadata or retrying failed validations."
-            ),
+            description="Reset validation status for papers to allow re-validation. Useful after fixing paper metadata or retrying failed validations.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -126,9 +99,9 @@ async def list_tools() -> list[Tool]:
     ]
 
 
-def _to_response(data: dict) -> list[TextContent]:
+def _to_response(data: dict, tool_name: str | None = None) -> list[TextContent]:
     """Convert a response dict to TextContent list."""
-    return [TextContent(type="text", text=json.dumps(data, indent=2))]
+    return [TextContent(type="text", text=serialize(data, tool_name))]
 
 
 def _get_validation_status(arguments: dict[str, Any]) -> list[TextContent]:
@@ -153,7 +126,7 @@ def _get_validation_status(arguments: dict[str, Any]) -> list[TextContent]:
             "papers_with_arxiv": status.papers_with_arxiv,
             "papers_with_title_only": status.papers_with_title_only,
         },
-    }))
+    }), "get_validation_status")
 
 
 def _get_validation_queue(arguments: dict[str, Any]) -> list[TextContent]:
@@ -166,36 +139,35 @@ def _get_validation_queue(arguments: dict[str, Any]) -> list[TextContent]:
     return _to_response(success({
         "count": len(papers),
         "papers": papers,
-    }))
+    }), "get_validation_queue")
 
 
-async def _validate_paper(arguments: dict[str, Any]) -> list[TextContent]:
-    """Validate a single paper."""
-    paper_id = arguments["paper_id"]
-    result = await ValidationService.validate_paper(paper_id)
-
-    response = {
-        "paper_id": result.paper_id,
-        "status": result.status,
-        "source": result.source,
-        "confidence": result.confidence,
-    }
-
-    if result.matched_doi:
-        response["matched_doi"] = result.matched_doi
-    if result.matched_title:
-        response["matched_title"] = result.matched_title
-    if result.message:
-        response["message"] = result.message
-
-    return _to_response(success(response))
-
-
-async def _validate_papers_batch(arguments: dict[str, Any]) -> list[TextContent]:
-    """Validate multiple papers."""
+async def _validate_papers(arguments: dict[str, Any]) -> list[TextContent]:
+    """Validate paper(s) against external databases."""
     paper_ids = arguments.get("paper_ids")
     limit = arguments.get("limit", 20)
 
+    # Single paper validation
+    if paper_ids and len(paper_ids) == 1:
+        result = await ValidationService.validate_paper(paper_ids[0])
+
+        response = {
+            "paper_id": result.paper_id,
+            "status": result.status,
+            "source": result.source,
+            "confidence": result.confidence,
+        }
+
+        if result.matched_doi:
+            response["matched_doi"] = result.matched_doi
+        if result.matched_title:
+            response["matched_title"] = result.matched_title
+        if result.message:
+            response["message"] = result.message
+
+        return _to_response(success(response), "validate_papers")
+
+    # Batch validation
     result = await ValidationService.validate_batch(
         paper_ids=paper_ids,
         limit=limit
@@ -214,7 +186,7 @@ async def _validate_papers_batch(arguments: dict[str, Any]) -> list[TextContent]
             f"{result.papers_not_found} not found, "
             f"{result.papers_error} errors"
         )
-    ))
+    ), "validate_papers")
 
 
 def _reset_validation(arguments: dict[str, Any]) -> list[TextContent]:
@@ -234,7 +206,7 @@ def _reset_validation(arguments: dict[str, Any]) -> list[TextContent]:
     return _to_response(success({
         "papers_reset": count,
         "message": f"Reset validation status for {count} papers"
-    }))
+    }), "reset_validation")
 
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
@@ -254,11 +226,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         if name == "get_validation_queue":
             return _get_validation_queue(arguments)
 
-        if name == "validate_paper":
-            return await _validate_paper(arguments)
+        if name == "validate_papers":
+            return await _validate_papers(arguments)
 
+        # Legacy single paper validation - redirect to validate_papers
+        if name == "validate_paper":
+            paper_id = arguments.get("paper_id")
+            if paper_id:
+                arguments["paper_ids"] = [paper_id]
+            return await _validate_papers(arguments)
+
+        # Legacy batch validation - redirect to validate_papers
         if name == "validate_papers_batch":
-            return await _validate_papers_batch(arguments)
+            return await _validate_papers(arguments)
 
         if name == "reset_validation":
             return _reset_validation(arguments)
