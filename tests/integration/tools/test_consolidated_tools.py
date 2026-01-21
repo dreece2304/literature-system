@@ -345,12 +345,229 @@ class TestPapersTools:
         assert len(tools) == 9
 
 
+class TestCitationNetworkTools:
+    """Tests for consolidated citation network tools."""
+
+    @pytest.mark.asyncio
+    async def test_citation_network_lists_consolidated_tools(self, db):
+        """Verify citation_network module lists 6 tools (was 7)."""
+        from mcp_server.tools import citation_network
+
+        tools = await citation_network.list_tools()
+        tool_names = [t.name for t in tools]
+
+        assert len(tools) == 6
+        assert "get_citations" in tool_names
+        assert "find_common_references" in tool_names
+        assert "build_citation_graph" in tool_names
+        assert "import_references_from_paper" in tool_names
+        assert "get_local_citations" in tool_names
+        assert "link_papers_citation" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_get_citations_direction_parameter(self, db):
+        """Test get_citations with direction parameter."""
+        from mcp_server.tools import citation_network
+
+        tools = await citation_network.list_tools()
+        citations_tool = next(t for t in tools if t.name == "get_citations")
+
+        schema = citations_tool.inputSchema
+        assert "direction" in schema["properties"]
+        assert set(schema["properties"]["direction"]["enum"]) == {"incoming", "outgoing"}
+        assert "direction" in schema.get("required", [])
+
+    @pytest.mark.asyncio
+    async def test_legacy_citation_network_tools_not_exposed(self, db):
+        """Verify legacy citation network tool names are not in the tool list."""
+        from mcp_server.tools import citation_network
+
+        tools = await citation_network.list_tools()
+        tool_names = [t.name for t in tools]
+
+        # These should NOT be in the list (consolidated into get_citations)
+        assert "get_paper_citations" not in tool_names
+        assert "get_paper_references" not in tool_names
+
+
+class TestImportExportTools:
+    """Tests for consolidated import/export tools."""
+
+    @pytest.mark.asyncio
+    async def test_import_export_lists_consolidated_tools(self, db):
+        """Verify import_export module lists 3 tools (was 6)."""
+        from mcp_server.tools import import_export
+
+        tools = await import_export.list_tools()
+        tool_names = [t.name for t in tools]
+
+        assert len(tools) == 3
+        assert "import_paper" in tool_names
+        assert "export" in tool_names
+        assert "get_enrichment_queue" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_import_paper_source_parameter(self, db):
+        """Test import_paper with source parameter."""
+        from mcp_server.tools import import_export
+
+        tools = await import_export.list_tools()
+        import_tool = next(t for t in tools if t.name == "import_paper")
+
+        schema = import_tool.inputSchema
+        assert "source" in schema["properties"]
+        assert set(schema["properties"]["source"]["enum"]) == {"wizard", "bibtex", "external"}
+
+    @pytest.mark.asyncio
+    async def test_export_source_parameter(self, db):
+        """Test export with source parameter."""
+        from mcp_server.tools import import_export
+
+        tools = await import_export.list_tools()
+        export_tool = next(t for t in tools if t.name == "export")
+
+        schema = export_tool.inputSchema
+        assert "source" in schema["properties"]
+        assert set(schema["properties"]["source"]["enum"]) == {"papers", "collection"}
+
+    @pytest.mark.asyncio
+    async def test_legacy_import_export_tools_not_exposed(self, db):
+        """Verify legacy import/export tool names are not in the tool list."""
+        from mcp_server.tools import import_export
+
+        tools = await import_export.list_tools()
+        tool_names = [t.name for t in tools]
+
+        # These should NOT be in the list (consolidated)
+        assert "import_bibtex" not in tool_names
+        assert "import_from_external" not in tool_names
+        assert "import_paper_wizard" not in tool_names
+        assert "export_papers" not in tool_names
+        assert "export_collection" not in tool_names
+
+
+class TestDiscoveryTools:
+    """Tests for consolidated discovery tools."""
+
+    @pytest.mark.asyncio
+    async def test_discovery_lists_consolidated_tools(self, db):
+        """Verify discovery module lists 4 tools (was 8)."""
+        from mcp_server.tools import discovery
+
+        tools = await discovery.list_tools()
+        tool_names = [t.name for t in tools]
+
+        assert len(tools) == 4
+        assert "semantic_find" in tool_names
+        assert "manage_embeddings" in tool_names
+        assert "get_reading_queue" in tool_names
+        assert "suggest_paper_tags" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_semantic_find_input_type_parameter(self, db):
+        """Test semantic_find with input_type parameter."""
+        from mcp_server.tools import discovery
+
+        tools = await discovery.list_tools()
+        find_tool = next(t for t in tools if t.name == "semantic_find")
+
+        schema = find_tool.inputSchema
+        assert "input_type" in schema["properties"]
+        assert set(schema["properties"]["input_type"]["enum"]) == {"paper", "text", "citation"}
+        assert "input_type" in schema.get("required", [])
+
+    @pytest.mark.asyncio
+    async def test_manage_embeddings_action_parameter(self, db):
+        """Test manage_embeddings with action parameter."""
+        from mcp_server.tools import discovery
+
+        tools = await discovery.list_tools()
+        embed_tool = next(t for t in tools if t.name == "manage_embeddings")
+
+        schema = embed_tool.inputSchema
+        assert "action" in schema["properties"]
+        assert set(schema["properties"]["action"]["enum"]) == {"status", "process", "embed"}
+
+    @pytest.mark.asyncio
+    async def test_legacy_discovery_tools_not_exposed(self, db):
+        """Verify legacy discovery tool names are not in the tool list."""
+        from mcp_server.tools import discovery
+
+        tools = await discovery.list_tools()
+        tool_names = [t.name for t in tools]
+
+        # These should NOT be in the list (consolidated)
+        assert "find_similar_papers" not in tool_names
+        assert "find_papers_like_text" not in tool_names
+        assert "suggest_citations_for_text" not in tool_names
+        assert "get_embedding_status" not in tool_names
+        assert "process_embedding_queue" not in tool_names
+        assert "embed_paper" not in tool_names
+
+
+class TestZoteroTools:
+    """Tests for consolidated Zotero tools."""
+
+    @pytest.mark.asyncio
+    async def test_zotero_lists_consolidated_tools(self, db):
+        """Verify zotero module lists 2 tools (was 6)."""
+        from mcp_server.tools import zotero
+
+        tools = await zotero.list_tools()
+        tool_names = [t.name for t in tools]
+
+        assert len(tools) == 2
+        assert "zotero_sync" in tool_names
+        assert "zotero_status" in tool_names
+
+    @pytest.mark.asyncio
+    async def test_zotero_sync_direction_parameter(self, db):
+        """Test zotero_sync with direction parameter."""
+        from mcp_server.tools import zotero
+
+        tools = await zotero.list_tools()
+        sync_tool = next(t for t in tools if t.name == "zotero_sync")
+
+        schema = sync_tool.inputSchema
+        assert "direction" in schema["properties"]
+        assert set(schema["properties"]["direction"]["enum"]) == {"pull", "push", "push_paper", "push_pdf"}
+        assert "direction" in schema.get("required", [])
+
+    @pytest.mark.asyncio
+    async def test_zotero_status_check_connection_parameter(self, db):
+        """Test zotero_status with check_connection parameter."""
+        from mcp_server.tools import zotero
+
+        tools = await zotero.list_tools()
+        status_tool = next(t for t in tools if t.name == "zotero_status")
+
+        schema = status_tool.inputSchema
+        assert "check_connection" in schema["properties"]
+        assert schema["properties"]["check_connection"]["type"] == "boolean"
+
+    @pytest.mark.asyncio
+    async def test_legacy_zotero_tools_not_exposed(self, db):
+        """Verify legacy zotero tool names are not in the tool list."""
+        from mcp_server.tools import zotero
+
+        tools = await zotero.list_tools()
+        tool_names = [t.name for t in tools]
+
+        # These should NOT be in the list (consolidated)
+        assert "sync_from_zotero" not in tool_names
+        assert "sync_to_zotero" not in tool_names
+        assert "push_paper_to_zotero" not in tool_names
+        assert "push_pdf_to_zotero" not in tool_names
+        assert "get_zotero_sync_status" not in tool_names
+        assert "check_zotero_connection" not in tool_names
+
+
 class TestTotalToolCount:
     """Tests for overall tool count."""
 
     @pytest.mark.asyncio
     async def test_total_tool_count(self, db):
-        """Verify total tool count after consolidation."""
+        """Verify total tool count after Phase 5 consolidation."""
         from mcp_server.tools import (
             papers, search, extraction, discovery, citation_network,
             citations, collections, notes, pdf, browser_pdf,
@@ -368,6 +585,7 @@ class TestTotalToolCount:
             tools = await mod.list_tools()
             total += len(tools)
 
-        # Target: reduced from 116 to ~71 tools (redundant removed)
-        assert total <= 75, f"Total tools ({total}) exceeds target of 75"
-        assert total >= 65, f"Total tools ({total}) unexpectedly low"
+        # Phase 5 consolidation target: 71 → ~63 (after import/export, discovery, citation consolidations)
+        # Remaining: zotero (6 → 2) will bring to ~59
+        assert total <= 70, f"Total tools ({total}) exceeds target of 70"
+        assert total >= 55, f"Total tools ({total}) unexpectedly low"

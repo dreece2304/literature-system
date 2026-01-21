@@ -36,14 +36,22 @@ logger = get_logger(__name__)
 
 
 async def list_tools() -> list[Tool]:
-    """List citation network tools."""
+    """List consolidated citation network tools (7 → 6)."""
     return [
+        # =================================================================
+        # CONSOLIDATED: get_paper_citations + get_paper_references
+        # =================================================================
         Tool(
-            name="get_paper_citations",
-            description="Papers citing this paper (via Semantic Scholar). Lookup by paper_id/DOI/title",
+            name="get_citations",
+            description="Get citations. direction: incoming (who cites this), outgoing (what this cites)",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["incoming", "outgoing"],
+                        "description": "incoming=papers citing this, outgoing=papers this cites (bibliography)",
+                    },
                     "paper_id": {
                         "type": "integer",
                         "description": "Database paper ID (will use DOI/title to lookup)",
@@ -58,36 +66,11 @@ async def list_tools() -> list[Tool]:
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum citations to return",
+                        "description": "Maximum results to return",
                         "default": 50,
                     },
                 },
-            },
-        ),
-        Tool(
-            name="get_paper_references",
-            description="Papers referenced by this paper (bibliography via Semantic Scholar)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Database paper ID (will use DOI/title to lookup)",
-                    },
-                    "doi": {
-                        "type": "string",
-                        "description": "Paper DOI (preferred for accuracy)",
-                    },
-                    "title": {
-                        "type": "string",
-                        "description": "Paper title (fallback if no DOI)",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum references to return",
-                        "default": 50,
-                    },
-                },
+                "required": ["direction"],
             },
         ),
         Tool(
@@ -239,73 +222,16 @@ def _paper_result_to_dict(result) -> dict:
     }
 
 
-async def _get_paper_citations(arguments: dict[str, Any]) -> list[TextContent]:
-    """Get papers that cite a given paper.
+async def _get_citations(arguments: dict[str, Any]) -> list[TextContent]:
+    """Consolidated citation tool.
 
-    Tries sources in order: OpenAlex -> Semantic Scholar.
+    direction=incoming: Papers that cite this paper (was get_paper_citations)
+    direction=outgoing: Papers this paper cites (was get_paper_references)
     """
-    paper_id = arguments.get("paper_id")
-    doi = arguments.get("doi")
-    title = arguments.get("title")
-    limit = arguments.get("limit", 50)
+    direction = arguments.get("direction")
+    if not direction:
+        return _to_response(error("direction is required", code="INVALID_INPUT"))
 
-    # If paper_id provided, get DOI/title from database
-    if paper_id and not doi and not title:
-        paper = PaperService.get(paper_id)
-        if paper:
-            doi = paper.get("doi")
-            title = paper.get("title")
-        else:
-            return _to_response(error(f"Paper {paper_id} not found", code="NOT_FOUND"))
-
-    if not doi and not title:
-        return _to_response(error("Must provide paper_id, doi, or title", code="INVALID_INPUT"))
-
-    service = ExternalSearchService()
-    results = []
-    source_used = None
-
-    # 1. Try OpenAlex first (best rate limits, good coverage)
-    results = await service.get_paper_citations_openalex(doi=doi, title=title, limit=limit)
-    if results:
-        source_used = "openalex"
-
-    # 2. Fall back to Semantic Scholar
-    if not results:
-        results = await service.get_paper_citations(doi=doi, title=title, limit=limit)
-        if results:
-            source_used = "semantic_scholar"
-
-    # Check which citing papers are in our library
-    citing_papers = []
-    for result in results:
-        paper_dict = _paper_result_to_dict(result)
-
-        # Check if in library by DOI
-        if result.doi:
-            from literature_core import get_session, Paper
-            with get_session() as session:
-                local = session.query(Paper).filter(Paper.doi == result.doi).first()
-                if local:
-                    paper_dict["in_library"] = True
-                    paper_dict["library_id"] = local.id
-
-        citing_papers.append(paper_dict)
-
-    return _to_response(success({
-        "source_doi": doi,
-        "source_title": title,
-        "citation_count": len(citing_papers),
-        "source": source_used or "none",
-        "citations": citing_papers,
-    }))
-
-
-async def _get_paper_references(arguments: dict[str, Any]) -> list[TextContent]:
-    """Get papers that a given paper references.
-
-    Tries sources in order: OpenAlex -> Semantic Scholar -> PDF extraction.
-    """
     paper_id = arguments.get("paper_id")
     doi = arguments.get("doi")
     title = arguments.get("title")
@@ -327,74 +253,114 @@ async def _get_paper_references(arguments: dict[str, Any]) -> list[TextContent]:
     results = []
     source_used = None
 
-    # 1. Try OpenAlex first (best rate limits, good coverage)
-    if doi or title:
-        results = await service.get_paper_references_openalex(doi=doi, title=title, limit=limit)
+    if direction == "incoming":
+        # Get papers that cite this paper
+        # 1. Try OpenAlex first (best rate limits, good coverage)
+        results = await service.get_paper_citations_openalex(doi=doi, title=title, limit=limit)
         if results:
             source_used = "openalex"
 
-    # 2. Fall back to Semantic Scholar
-    if not results and (doi or title):
-        results = await service.get_paper_references(doi=doi, title=title, limit=limit)
-        if results:
-            source_used = "semantic_scholar"
+        # 2. Fall back to Semantic Scholar
+        if not results:
+            results = await service.get_paper_citations(doi=doi, title=title, limit=limit)
+            if results:
+                source_used = "semantic_scholar"
 
-    # 3. Fall back to PDF extraction if we have paper_id
-    if not results and paper_id:
-        from literature_core import get_session
-        with get_session() as session:
-            refs = session.query(PaperReference).filter(
-                PaperReference.paper_id == paper_id
-            ).order_by(PaperReference.reference_order).limit(limit).all()
+        # Check which citing papers are in our library
+        papers = []
+        for result in results:
+            paper_dict = _paper_result_to_dict(result)
 
-            if refs:
-                source_used = "pdf_extraction"
-                # Return extracted references in similar format
-                return _to_response(success({
-                    "source_doi": doi,
-                    "source_title": title,
-                    "reference_count": len(refs),
-                    "source": "pdf_extraction",
-                    "references": [
-                        {
-                            "raw_text": ref.raw_text,
-                            "title": ref.parsed_title,
-                            "authors": ref.parsed_authors,
-                            "year": ref.parsed_year,
-                            "doi": ref.parsed_doi,
-                            "match_status": ref.match_status,
-                            "matched_paper_id": ref.matched_paper_id,
-                            "in_library": ref.matched_paper_id is not None,
-                            "library_id": ref.matched_paper_id,
-                            "confidence": ref.parse_confidence,
-                        }
-                        for ref in refs
-                    ],
-                }))
+            # Check if in library by DOI
+            if result.doi:
+                from literature_core import get_session, Paper
+                with get_session() as session:
+                    local = session.query(Paper).filter(Paper.doi == result.doi).first()
+                    if local:
+                        paper_dict["in_library"] = True
+                        paper_dict["library_id"] = local.id
 
-    # Check which referenced papers are in our library
-    referenced_papers = []
-    for result in results:
-        paper_dict = _paper_result_to_dict(result)
+            papers.append(paper_dict)
 
-        # Check if in library by DOI
-        if result.doi:
-            from literature_core import get_session, Paper
+        return _to_response(success({
+            "direction": "incoming",
+            "source_doi": doi,
+            "source_title": title,
+            "count": len(papers),
+            "source": source_used or "none",
+            "papers": papers,
+        }))
+
+    else:  # direction == "outgoing"
+        # Get papers this paper cites (bibliography)
+        # 1. Try OpenAlex first (best rate limits, good coverage)
+        if doi or title:
+            results = await service.get_paper_references_openalex(doi=doi, title=title, limit=limit)
+            if results:
+                source_used = "openalex"
+
+        # 2. Fall back to Semantic Scholar
+        if not results and (doi or title):
+            results = await service.get_paper_references(doi=doi, title=title, limit=limit)
+            if results:
+                source_used = "semantic_scholar"
+
+        # 3. Fall back to PDF extraction if we have paper_id
+        if not results and paper_id:
+            from literature_core import get_session
             with get_session() as session:
-                local = session.query(Paper).filter(Paper.doi == result.doi).first()
-                if local:
-                    paper_dict["in_library"] = True
-                    paper_dict["library_id"] = local.id
+                refs = session.query(PaperReference).filter(
+                    PaperReference.paper_id == paper_id
+                ).order_by(PaperReference.reference_order).limit(limit).all()
 
-        referenced_papers.append(paper_dict)
+                if refs:
+                    return _to_response(success({
+                        "direction": "outgoing",
+                        "source_doi": doi,
+                        "source_title": title,
+                        "count": len(refs),
+                        "source": "pdf_extraction",
+                        "papers": [
+                            {
+                                "raw_text": ref.raw_text,
+                                "title": ref.parsed_title,
+                                "authors": ref.parsed_authors,
+                                "year": ref.parsed_year,
+                                "doi": ref.parsed_doi,
+                                "match_status": ref.match_status,
+                                "matched_paper_id": ref.matched_paper_id,
+                                "in_library": ref.matched_paper_id is not None,
+                                "library_id": ref.matched_paper_id,
+                                "confidence": ref.parse_confidence,
+                            }
+                            for ref in refs
+                        ],
+                    }))
 
-    return _to_response(success({
-        "source_doi": doi,
-        "source_title": title,
-        "reference_count": len(referenced_papers),
-        "source": source_used or "none",
-        "references": referenced_papers,
-    }))
+        # Check which referenced papers are in our library
+        papers = []
+        for result in results:
+            paper_dict = _paper_result_to_dict(result)
+
+            # Check if in library by DOI
+            if result.doi:
+                from literature_core import get_session, Paper
+                with get_session() as session:
+                    local = session.query(Paper).filter(Paper.doi == result.doi).first()
+                    if local:
+                        paper_dict["in_library"] = True
+                        paper_dict["library_id"] = local.id
+
+            papers.append(paper_dict)
+
+        return _to_response(success({
+            "direction": "outgoing",
+            "source_doi": doi,
+            "source_title": title,
+            "count": len(papers),
+            "source": source_used or "none",
+            "papers": papers,
+        }))
 
 
 async def _find_common_references(arguments: dict[str, Any]) -> list[TextContent]:
@@ -838,8 +804,9 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         List of TextContent with the result
     """
     tool_map = {
-        "get_paper_citations": _get_paper_citations,
-        "get_paper_references": _get_paper_references,
+        # Consolidated tool
+        "get_citations": _get_citations,
+        # Kept as-is
         "find_common_references": _find_common_references,
         "build_citation_graph": _build_citation_graph,
         "import_references_from_paper": _import_references_from_paper,

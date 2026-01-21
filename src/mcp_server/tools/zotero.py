@@ -1,9 +1,13 @@
-"""
-Zotero Sync Tools for MCP Server.
+"""Zotero Sync Tools for MCP Server.
 
-These tools provide bidirectional synchronization between
-the literature database and Zotero reference manager.
+Consolidated tools (6 → 2):
+    - zotero_sync: Sync operations (pull, push, push_paper, push_pdf)
+    - zotero_status: Status and connection check
+
+Architecture:
+    MCP Tool (this file) -> ZoteroSync -> Zotero API
 """
+from __future__ import annotations
 
 import sys
 from pathlib import Path
@@ -34,220 +38,78 @@ def get_zotero_sync() -> ZoteroSync:
 
 
 async def list_tools() -> list[Tool]:
-    """List Zotero sync tools."""
+    """List consolidated Zotero tools (6 → 2)."""
     return [
+        # =================================================================
+        # CONSOLIDATED: sync_from/to_zotero + push_paper/pdf_to_zotero
+        # =================================================================
         Tool(
-            name="sync_from_zotero",
-            description="Pull papers from Zotero into database (requires API key)",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="sync_to_zotero",
-            description="Push enriched metadata to Zotero (non-destructive, fills empty fields)",
+            name="zotero_sync",
+            description="Zotero sync. direction: pull, push, push_paper, push_pdf",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "direction": {
+                        "type": "string",
+                        "enum": ["pull", "push", "push_paper", "push_pdf"],
+                        "description": (
+                            "pull=from Zotero to DB, push=DB to Zotero, "
+                            "push_paper=single paper, push_pdf=upload PDF"
+                        ),
+                    },
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "Paper ID (for push_paper/push_pdf)",
+                    },
                     "create_new_items": {
                         "type": "boolean",
-                        "description": (
-                            "If true, create new Zotero items for papers not in Zotero. "
-                            "If false (default), only enrich existing Zotero items."
-                        ),
+                        "description": "Create new Zotero items for papers not in Zotero (for push)",
+                        "default": False,
+                    },
+                    "create_if_missing": {
+                        "type": "boolean",
+                        "description": "Create new Zotero item if missing (for push_paper)",
+                        "default": True,
+                    },
+                },
+                "required": ["direction"],
+            },
+        ),
+        # =================================================================
+        # CONSOLIDATED: get_zotero_sync_status + check_zotero_connection
+        # =================================================================
+        Tool(
+            name="zotero_status",
+            description="Zotero status and connection check",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "check_connection": {
+                        "type": "boolean",
+                        "description": "Include detailed connection diagnostics",
                         "default": False,
                     },
                 },
             },
         ),
-        Tool(
-            name="push_paper_to_zotero",
-            description="Push single paper to Zotero (creates or enriches)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Database paper ID to push to Zotero",
-                    },
-                    "create_if_missing": {
-                        "type": "boolean",
-                        "description": "Create new Zotero item if paper doesn't exist there (default: true)",
-                        "default": True,
-                    },
-                },
-                "required": ["paper_id"],
-            },
-        ),
-        Tool(
-            name="push_pdf_to_zotero",
-            description="Upload PDF to Zotero (paper must exist in Zotero first)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Database paper ID whose PDF to upload",
-                    },
-                },
-                "required": ["paper_id"],
-            },
-        ),
-        Tool(
-            name="get_zotero_sync_status",
-            description="Sync status (linked papers, database-only, API availability)",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="check_zotero_connection",
-            description="Check Zotero local/web API connectivity",
-            inputSchema={"type": "object", "properties": {}},
-        ),
     ]
 
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    """Execute a Zotero sync tool."""
+    """Execute a Zotero tool."""
     try:
         zs = get_zotero_sync()
 
-        if name == "sync_from_zotero":
-            # Check if web API is configured (required for sync)
-            api_info = zs.get_api_info()
+        if name == "zotero_sync":
+            return await _zotero_sync_handler(zs, arguments)
 
-            if not api_info.get('web_api'):
-                return [TextContent(
-                    type="text",
-                    text=serialize({
-                        "error": "Zotero web API not configured",
-                        "details": "Web API is required for syncing items from Zotero.",
-                        "help": "Configure API key in config/credentials.yml",
-                        "zotero_running": api_info.get('local_api', False)
-                    })
-                )]
+        if name == "zotero_status":
+            return _zotero_status_handler(zs, arguments)
 
-            # Perform sync via web API
-            added, updated = zs.sync_from_api()
-
-            return [TextContent(
-                type="text",
-                text=serialize({
-                    "success": True,
-                    "papers_added": added,
-                    "papers_updated": updated,
-                    "api_used": "web"
-                })
-            )]
-
-        elif name == "sync_to_zotero":
-            # Check web API first
-            api_info = zs.get_api_info()
-
-            if not api_info.get('web_api'):
-                return [TextContent(
-                    type="text",
-                    text=serialize({
-                        "error": "Web API required for sync to Zotero",
-                        "details": "Push operations require the Zotero web API with write permissions.",
-                        "help": "Configure API key in config/credentials.yml"
-                    })
-                )]
-
-            create_new = arguments.get("create_new_items", False)
-            result = zs.sync_to_zotero(enrich_only=not create_new)
-
-            return [TextContent(
-                type="text",
-                text=serialize({
-                    "success": True,
-                    "created": result.get('created', 0),
-                    "updated": result.get('updated', 0),
-                    "skipped": result.get('skipped', 0),
-                    "errors": result.get('errors', 0),
-                    "mode": "full_sync" if create_new else "enrich_only"
-                })
-            )]
-
-        elif name == "push_paper_to_zotero":
-            # Check web API first
-            api_info = zs.get_api_info()
-
-            if not api_info.get('web_api'):
-                return [TextContent(
-                    type="text",
-                    text=serialize({
-                        "error": "Web API required",
-                        "help": "Configure API key in config/credentials.yml"
-                    })
-                )]
-
-            paper_id = arguments["paper_id"]
-            create_if_missing = arguments.get("create_if_missing", True)
-
-            result = zs.push_paper_to_zotero(paper_id, create_if_missing=create_if_missing)
-
-            return [TextContent(
-                type="text",
-                text=serialize(result)
-            )]
-
-        elif name == "push_pdf_to_zotero":
-            # Check web API first
-            api_info = zs.get_api_info()
-
-            if not api_info.get('web_api'):
-                return [TextContent(
-                    type="text",
-                    text=serialize({
-                        "error": "Web API required",
-                        "help": "Configure API key in config/credentials.yml"
-                    })
-                )]
-
-            paper_id = arguments["paper_id"]
-            result = zs.push_pdf_to_zotero(paper_id)
-
-            return [TextContent(
-                type="text",
-                text=serialize(result)
-            )]
-
-        elif name == "get_zotero_sync_status":
-            result = zs.get_sync_status()
-            return [TextContent(
-                type="text",
-                text=serialize(result)
-            )]
-
-        elif name == "check_zotero_connection":
-            api_info = zs.get_api_info()
-
-            # Build details response
-            local_available = api_info.get('local_api', False)
-            web_available = api_info.get('web_api', False)
-
-            details = {
-                "zotero_app": {
-                    "running": local_available,
-                    "note": api_info.get('local_api_note', 'Unknown'),
-                },
-                "web_api": {
-                    "configured": web_available,
-                    "note": "Required for sync operations",
-                },
-                "can_sync": web_available,
-                "can_push": web_available,
-                "help": None if web_available else "Configure API key in config/credentials.yml"
-            }
-
-            return [TextContent(
-                type="text",
-                text=serialize(details)
-            )]
-
-        else:
-            return [TextContent(
-                type="text",
-                text=f"Unknown Zotero tool: {name}"
-            )]
+        return [TextContent(
+            type="text",
+            text=serialize({"error": f"Unknown Zotero tool: {name}"})
+        )]
 
     except Exception as e:
         logger.error(f"Zotero tool error: {e}")
@@ -259,3 +121,129 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 "traceback": traceback.format_exc()
             })
         )]
+
+
+async def _zotero_sync_handler(zs: ZoteroSync, arguments: dict[str, Any]) -> list[TextContent]:
+    """Consolidated sync handler."""
+    direction = arguments.get("direction")
+    if not direction:
+        return [TextContent(
+            type="text",
+            text=serialize({"error": "direction is required"})
+        )]
+
+    # Check web API availability (required for all sync operations)
+    api_info = zs.get_api_info()
+    if not api_info.get('web_api'):
+        return [TextContent(
+            type="text",
+            text=serialize({
+                "error": "Zotero web API not configured",
+                "details": "Web API is required for sync operations.",
+                "help": "Configure API key in config/credentials.yml",
+                "zotero_running": api_info.get('local_api', False)
+            })
+        )]
+
+    if direction == "pull":
+        # Pull from Zotero to database
+        added, updated = zs.sync_from_api()
+        return [TextContent(
+            type="text",
+            text=serialize({
+                "success": True,
+                "direction": "pull",
+                "papers_added": added,
+                "papers_updated": updated,
+                "api_used": "web"
+            })
+        )]
+
+    elif direction == "push":
+        # Push from database to Zotero
+        create_new = arguments.get("create_new_items", False)
+        result = zs.sync_to_zotero(enrich_only=not create_new)
+        return [TextContent(
+            type="text",
+            text=serialize({
+                "success": True,
+                "direction": "push",
+                "created": result.get('created', 0),
+                "updated": result.get('updated', 0),
+                "skipped": result.get('skipped', 0),
+                "errors": result.get('errors', 0),
+                "mode": "full_sync" if create_new else "enrich_only"
+            })
+        )]
+
+    elif direction == "push_paper":
+        # Push single paper to Zotero
+        paper_id = arguments.get("paper_id")
+        if not paper_id:
+            return [TextContent(
+                type="text",
+                text=serialize({"error": "paper_id required for push_paper"})
+            )]
+
+        create_if_missing = arguments.get("create_if_missing", True)
+        result = zs.push_paper_to_zotero(paper_id, create_if_missing=create_if_missing)
+        result["direction"] = "push_paper"
+        return [TextContent(
+            type="text",
+            text=serialize(result)
+        )]
+
+    elif direction == "push_pdf":
+        # Push PDF to Zotero
+        paper_id = arguments.get("paper_id")
+        if not paper_id:
+            return [TextContent(
+                type="text",
+                text=serialize({"error": "paper_id required for push_pdf"})
+            )]
+
+        result = zs.push_pdf_to_zotero(paper_id)
+        result["direction"] = "push_pdf"
+        return [TextContent(
+            type="text",
+            text=serialize(result)
+        )]
+
+    else:
+        return [TextContent(
+            type="text",
+            text=serialize({"error": f"Unknown direction: {direction}"})
+        )]
+
+
+def _zotero_status_handler(zs: ZoteroSync, arguments: dict[str, Any]) -> list[TextContent]:
+    """Consolidated status handler."""
+    check_connection = arguments.get("check_connection", False)
+
+    if check_connection:
+        # Detailed connection check
+        api_info = zs.get_api_info()
+        local_available = api_info.get('local_api', False)
+        web_available = api_info.get('web_api', False)
+
+        result = {
+            "zotero_app": {
+                "running": local_available,
+                "note": api_info.get('local_api_note', 'Unknown'),
+            },
+            "web_api": {
+                "configured": web_available,
+                "note": "Required for sync operations",
+            },
+            "can_sync": web_available,
+            "can_push": web_available,
+            "help": None if web_available else "Configure API key in config/credentials.yml"
+        }
+    else:
+        # Basic sync status
+        result = zs.get_sync_status()
+
+    return [TextContent(
+        type="text",
+        text=serialize(result)
+    )]
