@@ -257,20 +257,36 @@ print(f'Total: {asyncio.run(count())} tools')
     "input_type": "citation",
     "text": "ALD enables conformal coatings with atomic-level precision, making it ideal for high-aspect-ratio structures",
     "limit": 3,
-    "include_bibtex": true
+    "include_bibtex": true,
+    "prefer_type": "review"
   }
 }
 ```
 
 **Expected behavior:**
 1. Finds papers relevant to the claim
-2. Returns papers suitable as citations
-3. Includes BibTeX for easy insertion
+2. Enriches results with extraction data (summary, paper_type, key_findings)
+3. Prioritizes reviews when `prefer_type="review"` (good for background citations)
+4. Includes BibTeX for easy insertion
+
+**Response fields:**
+- `summary`: One-sentence summary explaining paper relevance
+- `paper_type`: review, research_article, conference, etc.
+- `topics`: Key topics covered
+- `key_findings`: Specific findings that support the claim
+- `citation_hint`: Flags like "Good for background/overview citations"
+- `bibtex`, `citation_key`: When include_bibtex=true
 
 **Verify:**
 - Papers support the claim being made
+- Reviews appear first when prefer_type="review"
 - BibTeX entries are valid and complete
-- Suggested citation keys are unique
+- Summaries help understand why each paper is suggested
+
+**Type preference options:**
+- `"any"` (default): Best semantic matches regardless of type
+- `"review"`: Prioritize reviews/meta-analyses (good for background/intro)
+- `"primary"`: Prioritize research articles (good for specific claims)
 
 ---
 
