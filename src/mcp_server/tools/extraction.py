@@ -1130,44 +1130,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         if name == "flag_for_deep_extraction":
             return _flag_for_deep_extraction(arguments)
 
-        # =================================================================
-        # LEGACY TOOL NAMES (redirect to consolidated tools)
-        # =================================================================
-        if name == "extract_paper_quick":
-            return await _extract_paper_quick(arguments)
-        if name == "extract_paper_deep":
-            return await _extract_paper_deep(arguments)
-        if name == "get_llm_status":
-            return _get_llm_status(arguments)
-        if name == "get_reextraction_queue":
-            return _get_reextraction_queue(arguments)
-        if name == "delete_extraction":
-            return _delete_extraction(arguments)
-        if name == "get_pdf_processing_status":
-            return _get_pdf_processing_status(arguments)
-        if name == "get_pdf_processing_queue":
-            return _get_pdf_processing_queue(arguments)
-        if name == "queue_pdf_processing":
-            return _queue_pdf_processing(arguments)
-        if name == "process_pdf_queue":
-            return _process_pdf_queue(arguments)
-        if name == "retry_pdf_processing":
-            return _retry_pdf_processing(arguments)
-        if name == "get_extracted_references":
-            return _get_extracted_references(arguments)
-        if name == "match_reference_to_library":
-            return _match_reference_to_library(arguments)
-        if name == "import_reference":
-            return await _import_reference(arguments)
-        if name == "get_unmatched_references":
-            return _get_unmatched_references(arguments)
-        if name == "verify_paper_extraction":
-            return _verify_paper_extraction(arguments)
-        if name == "batch_verify_extractions":
-            return _batch_verify_extractions(arguments)
-        if name == "get_quality_report":
-            return _get_quality_report(arguments)
-
         return _to_response(error(f"Unknown extraction tool: {name}", code="UNKNOWN_TOOL"))
 
     except Exception as e:

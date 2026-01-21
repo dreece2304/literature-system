@@ -1,14 +1,16 @@
 """PDF Management Tools for MCP Server.
 
-These tools provide PDF acquisition, status tracking, and duplicate detection.
-This module is a thin wrapper over PDFService.
+Consolidated tools:
+    - acquire_pdf: Download via open access OR queue for browser download
+    - manage_pdf: PDF status checking AND browser queue management
+    - find_duplicates: Find duplicate papers by hash or title
 
 Architecture:
-    MCP Tool (this file) -> PDFService -> SQLAlchemy -> Database
+    MCP Tool (this file) -> PDFService -> Database
+                        -> browser_pdf helpers -> Windows queue files
 """
 from __future__ import annotations
 
-import json
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -17,7 +19,6 @@ from typing import Any
 from mcp.types import Tool, TextContent
 
 # Add src directory to path for imports
-# pdf.py is at src/mcp_server/tools/pdf.py, so parent.parent.parent = src/
 _src_path = Path(__file__).parent.parent.parent
 if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
@@ -32,15 +33,19 @@ from literature_core import (
 )
 from services import PDFService
 
+# Import browser PDF helper functions
+from mcp_server.tools import browser_pdf as _browser
+
 logger = get_logger(__name__)
 
 
 async def list_tools() -> list[Tool]:
-    """List PDF management tools."""
+    """List PDF management tools (consolidated from 5 to 3)."""
     return [
+        # Consolidated: acquire_paper_pdf + queue_pdf_download
         Tool(
-            name="acquire_paper_pdf",
-            description="Download PDF via open access, VPN, OpenURL, or EZProxy",
+            name="acquire_pdf",
+            description="Get PDF. method: open_access (try download), browser_queue (queue for Windows)",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -48,35 +53,55 @@ async def list_tools() -> list[Tool]:
                         "type": "integer",
                         "description": "Paper ID to acquire PDF for",
                     },
+                    "paper_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "For browser_queue: batch paper IDs",
+                    },
+                    "method": {
+                        "type": "string",
+                        "enum": ["open_access", "browser_queue"],
+                        "description": "Method: open_access (try download now) or browser_queue (queue for Windows browser)",
+                        "default": "open_access",
+                    },
+                    # open_access options
                     "use_vpn": {
                         "type": "boolean",
-                        "description": "Try direct publisher URLs (use when connected to UW VPN)",
+                        "description": "For open_access: try direct publisher URLs (UW VPN)",
                         "default": False,
                     },
                     "use_openurl": {
                         "type": "boolean",
-                        "description": "Use UW Primo OpenURL resolver to find full-text links",
+                        "description": "For open_access: use UW Primo OpenURL resolver",
                         "default": False,
                     },
                     "use_proxy": {
                         "type": "boolean",
-                        "description": "Use UW EZProxy URLs (requires browser cookies)",
+                        "description": "For open_access: use UW EZProxy URLs",
                         "default": False,
                     },
                 },
                 "required": ["paper_id"],
             },
         ),
+        # Consolidated: get_pdf_status + manage_pdf_queue
         Tool(
-            name="get_pdf_status",
-            description="Get PDF status for papers - which have PDFs downloaded, which need PDFs",
+            name="manage_pdf",
+            description="PDF management. action: status (papers with/without PDFs), queue_status, process, clear",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "queue_status", "process", "clear"],
+                        "description": "Action: status (PDF coverage), queue_status (browser queue), process (import downloaded), clear (clear queue)",
+                        "default": "status",
+                    },
+                    # For status action
                     "filter": {
                         "type": "string",
                         "enum": ["all", "has_pdf", "needs_pdf"],
-                        "description": "Filter papers by PDF status",
+                        "description": "For status: filter papers by PDF availability",
                         "default": "all",
                     },
                     "limit": {
@@ -84,9 +109,27 @@ async def list_tools() -> list[Tool]:
                         "description": "Maximum papers to return",
                         "default": 50,
                     },
+                    # For queue_status action
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "For queue_status: check specific paper",
+                    },
+                    # For process action
+                    "auto_match": {
+                        "type": "boolean",
+                        "description": "For process: match PDFs by DOI in filename",
+                        "default": True,
+                    },
+                    # For clear action
+                    "clear_all": {
+                        "type": "boolean",
+                        "description": "For clear: remove all including pending",
+                        "default": False,
+                    },
                 },
             },
         ),
+        # Keep as-is
         Tool(
             name="find_duplicates",
             description="Find duplicate papers by file hash or title similarity",
@@ -113,7 +156,7 @@ async def list_tools() -> list[Tool]:
 
 
 # ============================================================================
-# Tool Implementations - Thin wrappers over PDFService
+# Tool Implementations
 # ============================================================================
 
 
@@ -122,40 +165,61 @@ def _to_response(data: dict, tool_name: str | None = None) -> list[TextContent]:
     return [TextContent(type="text", text=serialize(data, tool_name))]
 
 
-async def _acquire_paper_pdf(arguments: dict[str, Any]) -> list[TextContent]:
-    """Acquire PDF for a paper."""
-    result = await PDFService.acquire(
-        paper_id=arguments["paper_id"],
-        use_vpn=arguments.get("use_vpn", False),
-        use_openurl=arguments.get("use_openurl", False),
-        use_proxy=arguments.get("use_proxy", False),
-    )
+async def _acquire_pdf(arguments: dict[str, Any]) -> list[TextContent]:
+    """Acquire PDF via open access or queue for browser download."""
+    method = arguments.get("method", "open_access")
 
-    # Convert dataclass to dict for JSON serialization
-    result_dict = asdict(result)
-    # Remove None values for cleaner output
-    result_dict = {k: v for k, v in result_dict.items() if v is not None}
+    if method == "browser_queue":
+        # Use browser queue (batch supported)
+        return _browser._queue_pdf_download(arguments)
+    else:
+        # Use open access download
+        result = await PDFService.acquire(
+            paper_id=arguments["paper_id"],
+            use_vpn=arguments.get("use_vpn", False),
+            use_openurl=arguments.get("use_openurl", False),
+            use_proxy=arguments.get("use_proxy", False),
+        )
+        result_dict = asdict(result)
+        result_dict = {k: v for k, v in result_dict.items() if v is not None}
+        return _to_response(result_dict)
 
-    return _to_response(result_dict)
 
+def _manage_pdf(arguments: dict[str, Any]) -> list[TextContent]:
+    """Manage PDFs - status checking and queue management."""
+    action = arguments.get("action", "status")
 
-def _get_pdf_status(arguments: dict[str, Any]) -> list[TextContent]:
-    """Get PDF status for papers."""
-    result = PDFService.get_status(
-        filter_type=arguments.get("filter", "all"),
-        limit=arguments.get("limit", 50),
-    )
+    if action == "status":
+        # PDF status for papers in database
+        result = PDFService.get_status(
+            filter_type=arguments.get("filter", "all"),
+            limit=arguments.get("limit", 50),
+        )
+        return _to_response({
+            "summary": {
+                "total_papers": result.total_papers,
+                "has_pdf": result.has_pdf,
+                "needs_pdf": result.needs_pdf,
+                "no_identifier": result.no_identifier,
+            },
+            "filter": result.filter_type,
+            "papers": result.papers,
+        })
 
-    return _to_response({
-        "summary": {
-            "total_papers": result.total_papers,
-            "has_pdf": result.has_pdf,
-            "needs_pdf": result.needs_pdf,
-            "no_identifier": result.no_identifier,
-        },
-        "filter": result.filter_type,
-        "papers": result.papers,
-    })
+    elif action == "queue_status":
+        # Browser download queue status
+        return _browser._get_download_queue_status(arguments)
+
+    elif action == "process":
+        # Process downloaded PDFs
+        return _browser._process_downloaded_pdfs(arguments)
+
+    elif action == "clear":
+        # Clear download queue
+        return _browser._clear_download_queue(arguments)
+
+    else:
+        return _to_response(error(f"Unknown action: {action}", code="UNKNOWN_ACTION"))
 
 
 def _find_duplicates(arguments: dict[str, Any]) -> list[TextContent]:
@@ -188,27 +252,18 @@ def _find_duplicates(arguments: dict[str, Any]) -> list[TextContent]:
 
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    """Execute a PDF tool.
-
-    Args:
-        name: Tool name
-        arguments: Tool arguments
-
-    Returns:
-        List of TextContent with the result
-    """
-    tool_map = {
-        "get_pdf_status": _get_pdf_status,
-        "find_duplicates": _find_duplicates,
-    }
-
-    if name not in tool_map and name != "acquire_paper_pdf":
-        return _to_response(error(f"Unknown PDF tool: {name}", code="UNKNOWN_TOOL"))
-
+    """Execute a PDF tool."""
     try:
-        if name == "acquire_paper_pdf":
-            return await _acquire_paper_pdf(arguments)
-        return tool_map[name](arguments)
+        if name == "acquire_pdf":
+            return await _acquire_pdf(arguments)
+
+        if name == "manage_pdf":
+            return _manage_pdf(arguments)
+
+        if name == "find_duplicates":
+            return _find_duplicates(arguments)
+
+        return _to_response(error(f"Unknown PDF tool: {name}", code="UNKNOWN_TOOL"))
 
     except PaperNotFoundError as e:
         logger.warning(f"Paper not found: {e.paper_id}")

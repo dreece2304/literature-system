@@ -517,26 +517,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             else:
                 return _to_response(error(f"Unknown action: {action}", code="UNKNOWN_ACTION"))
 
-        # Legacy tool names - redirect to consolidated tools
-        legacy_map = {
-            "parse_bib_file": _parse_bib_file,
-            "link_bib_to_database": _link_bib_to_database,
-            "scan_tex_citations": _scan_tex_citations,
-            "get_citation_locations": _get_citation_locations,
-            "find_orphan_citations": _find_orphan_citations,
-            "find_missing_citations": _find_missing_citations,
-            "find_incomplete_bib_entries": _find_incomplete_bib_entries,
-            "find_duplicate_bib_entries": _find_duplicate_bib_entries,
-            "sync_bib_from_database": _sync_bib_from_database,
-            "import_bib_to_database": _import_bib_to_database,
-            "export_database_to_bib": _export_database_to_bib,
-            "get_project_config": _get_project_config,
-            "set_project_config": _set_project_config,
-        }
-
-        if name in legacy_map:
-            return legacy_map[name](arguments)
-
         return _to_response(error(f"Unknown project tool: {name}", code="UNKNOWN_TOOL"))
 
     except ValidationError as e:

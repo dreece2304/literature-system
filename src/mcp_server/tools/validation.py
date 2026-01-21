@@ -211,19 +211,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             else:  # validate (default)
                 return await _validate_papers(arguments)
 
-        # Legacy tool names - redirect to consolidated tool
-        if name == "get_validation_queue":
-            return _get_validation_queue(arguments)
-        if name == "validate_paper":
-            paper_id = arguments.get("paper_id")
-            if paper_id:
-                arguments["paper_ids"] = [paper_id]
-            return await _validate_papers(arguments)
-        if name == "validate_papers_batch":
-            return await _validate_papers(arguments)
-        if name == "reset_validation":
-            return _reset_validation(arguments)
-
         return _to_response(error(f"Unknown validation tool: {name}", code="UNKNOWN_TOOL"))
 
     except Exception as e:

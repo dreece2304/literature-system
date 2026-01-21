@@ -312,20 +312,6 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="get_extraction_queue",
-            description="Get papers that need AI extraction (missing summaries/analysis)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum papers to return",
-                        "default": 20,
-                    },
-                },
-            },
-        ),
-        Tool(
             name="batch_update_papers",
             description="Bulk update tags, read_status, or rating for multiple papers",
             inputSchema={
@@ -650,15 +636,6 @@ def _store_extraction(arguments: dict[str, Any]) -> list[TextContent]:
     )
 
 
-def _get_extraction_queue(arguments: dict[str, Any]) -> list[TextContent]:
-    """Get papers that need AI extraction."""
-    limit = arguments.get("limit", 20)
-    papers = PaperService.get_extraction_queue(limit=limit)
-    return _to_response(
-        success({"count": len(papers), "papers": papers})
-    )
-
-
 def _batch_update_papers(arguments: dict[str, Any]) -> list[TextContent]:
     """Bulk update multiple papers."""
     result = PaperService.batch_update(
@@ -810,7 +787,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "update_paper": _update_paper,
         "get_paper_content": _get_paper_content,
         "store_extraction": _store_extraction,
-        "get_extraction_queue": _get_extraction_queue,
         "batch_update_papers": _batch_update_papers,
         "batch_delete_papers": _batch_delete_papers,
         "get_papers_summary": _get_papers_summary,

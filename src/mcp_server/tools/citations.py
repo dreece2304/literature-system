@@ -478,21 +478,7 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
             else:
                 return [TextContent(type="text", text=serialize({"error": f"Unknown action: {action}"}))]
 
-        # Legacy tool names - redirect to implementations
-        if name == "scan_manuscript":
-            return _do_scan_manuscript(arguments, parser)
-        elif name == "check_citations":
-            return _do_check_citations(arguments)
-        elif name == "suggest_citation_key":
-            return _do_suggest_key(arguments)
-        elif name == "generate_bibtex":
-            return _do_generate_bibtex(arguments)
-        elif name == "format_bibliography":
-            return _do_format_bibliography(arguments)
-        elif name == "validate_citations":
-            return _do_validate_citations(arguments)
-        else:
-            return [TextContent(type="text", text=f"Unknown citation tool: {name}")]
+        return [TextContent(type="text", text=f"Unknown citation tool: {name}")]
 
     except Exception as e:
         logger.error(f"Citation tool error: {e}")

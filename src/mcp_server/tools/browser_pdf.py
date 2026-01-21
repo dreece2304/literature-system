@@ -48,86 +48,23 @@ PDF_STORAGE_PATH = Path(os.getenv("PDF_STORAGE_PATH", str(DATA_DIR / "pdfs")))
 
 
 async def list_tools() -> list[Tool]:
-    """List browser-based PDF tools."""
-    return [
-        Tool(
-            name="queue_pdf_download",
-            description="Queue paper(s) for Windows browser PDF download. Single paper_id or batch paper_ids",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Single paper ID to download",
-                    },
-                    "paper_ids": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "List of paper IDs for batch download",
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="manage_pdf_queue",
-            description="Manage browser PDF queue. Actions: status (default), process, clear",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["status", "process", "clear"],
-                        "description": "Action: status (view queue), process (import downloaded PDFs), clear (remove completed/failed)",
-                        "default": "status",
-                    },
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "For status: check specific paper",
-                    },
-                    "auto_match": {
-                        "type": "boolean",
-                        "description": "For process: match PDFs by DOI in filename",
-                        "default": True,
-                    },
-                    "clear_all": {
-                        "type": "boolean",
-                        "description": "For clear: remove all including pending",
-                        "default": False,
-                    },
-                },
-            },
-        ),
-    ]
+    """Browser PDF tools are now consolidated into pdf.py.
+
+    This module is kept as internal helpers for pdf.py.
+    Use pdf.py's acquire_pdf(method="browser_queue") and manage_pdf() instead.
+    """
+    return []  # No tools exposed - consolidated into pdf.py
 
 
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
-    """Execute a browser PDF tool."""
-    if name == "queue_pdf_download":
-        return _queue_pdf_download(arguments)
+    """Browser PDF tools are consolidated into pdf.py.
 
-    if name == "manage_pdf_queue":
-        action = arguments.get("action", "status")
-        if action == "status":
-            return _get_download_queue_status(arguments)
-        elif action == "process":
-            return _process_downloaded_pdfs(arguments)
-        elif action == "clear":
-            return _clear_download_queue(arguments)
-        else:
-            return [TextContent(type="text", text=serialize({"error": f"Unknown action: {action}"}))]
-
-    # Legacy tool names - redirect to consolidated tools
-    if name == "queue_batch_pdf_download":
-        arguments["paper_ids"] = arguments.get("paper_ids", [])
-        return _queue_pdf_download(arguments)
-    if name == "get_download_queue_status":
-        return _get_download_queue_status(arguments)
-    if name == "process_downloaded_pdfs":
-        return _process_downloaded_pdfs(arguments)
-    if name == "clear_download_queue":
-        return _clear_download_queue(arguments)
-
-    return [TextContent(type="text", text=serialize({"error": f"Unknown tool: {name}"}))]
+    This call_tool is kept for backwards compatibility but tools
+    should be accessed through pdf.py's acquire_pdf and manage_pdf.
+    """
+    return [TextContent(type="text", text=serialize({
+        "error": "Browser PDF tools consolidated into pdf.py. Use acquire_pdf or manage_pdf."
+    }))]
 
 
 def _queue_pdf_download(arguments: dict[str, Any]) -> list[TextContent]:
