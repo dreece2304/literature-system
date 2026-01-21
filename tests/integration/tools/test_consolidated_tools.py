@@ -293,6 +293,42 @@ class TestValidationTools:
         assert "get_validation_queue" not in tool_names
 
 
+class TestSearchTools:
+    """Tests for search tools after redundant removal."""
+
+    @pytest.mark.asyncio
+    async def test_search_redundant_tools_removed(self, db):
+        """Verify search_by_author and search_by_tag removed."""
+        from mcp_server.tools import search
+
+        tools = await search.list_tools()
+        tool_names = [t.name for t in tools]
+
+        # These were redundant with list_papers(author=X) and list_papers(tag=X)
+        assert "search_by_author" not in tool_names
+        assert "search_by_tag" not in tool_names
+        assert len(tools) == 2
+        assert "search" in tool_names
+        assert "get_search_status" in tool_names
+
+
+class TestNotesTools:
+    """Tests for notes tools after redundant removal."""
+
+    @pytest.mark.asyncio
+    async def test_notes_redundant_tools_removed(self, db):
+        """Verify get_paper_notes removed (use list_notes with paper_id)."""
+        from mcp_server.tools import notes
+
+        tools = await notes.list_tools()
+        tool_names = [t.name for t in tools]
+
+        # get_paper_notes was redundant with list_notes(paper_id=X)
+        assert "get_paper_notes" not in tool_names
+        assert len(tools) == 6
+        assert "list_notes" in tool_names
+
+
 class TestPapersTools:
     """Tests for papers tools."""
 
@@ -332,6 +368,6 @@ class TestTotalToolCount:
             tools = await mod.list_tools()
             total += len(tools)
 
-        # Target: reduced from 116 to ~74 tools
-        assert total <= 80, f"Total tools ({total}) exceeds target of 80"
-        assert total >= 70, f"Total tools ({total}) unexpectedly low"
+        # Target: reduced from 116 to ~71 tools (redundant removed)
+        assert total <= 75, f"Total tools ({total}) exceeds target of 75"
+        assert total >= 65, f"Total tools ({total}) unexpectedly low"

@@ -162,25 +162,6 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="get_paper_notes",
-            description="Get all notes for a specific paper",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "The paper ID",
-                    },
-                    "note_type": {
-                        "type": "string",
-                        "enum": ["highlight", "comment", "summary"],
-                        "description": "Filter by note type",
-                    },
-                },
-                "required": ["paper_id"],
-            },
-        ),
-        Tool(
             name="delete_paper_notes",
             description="Delete all notes for a paper (optionally filtered by type)",
             inputSchema={
@@ -274,22 +255,6 @@ def _delete_note(arguments: dict[str, Any]) -> list[TextContent]:
     )
 
 
-def _get_paper_notes(arguments: dict[str, Any]) -> list[TextContent]:
-    """Get all notes for a paper."""
-    paper_id = arguments["paper_id"]
-    notes = NoteService.get_for_paper(
-        paper_id=paper_id,
-        note_type=arguments.get("note_type"),
-    )
-    return _to_response(
-        success({
-            "paper_id": paper_id,
-            "count": len(notes),
-            "notes": notes,
-        })
-    )
-
-
 def _delete_paper_notes(arguments: dict[str, Any]) -> list[TextContent]:
     """Delete all notes for a paper."""
     paper_id = arguments["paper_id"]
@@ -328,7 +293,6 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "create_note": _create_note,
         "update_note": _update_note,
         "delete_note": _delete_note,
-        "get_paper_notes": _get_paper_notes,
         "delete_paper_notes": _delete_paper_notes,
     }
 

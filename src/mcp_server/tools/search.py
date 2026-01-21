@@ -7,12 +7,9 @@ Architecture:
 
 Tools:
     - search: Unified search with modes (smart, keyword, semantic, hybrid)
-    - search_by_author: Find papers by author name
-    - search_by_tag: Find papers by tag
     - get_search_status: Search system diagnostics
 
-Deprecated (still work but redirect to 'search' internally):
-    - smart_search, hybrid_search, keyword_search, semantic_search
+Note: search_by_author and search_by_tag removed - use list_papers(author=X) or list_papers(tag=X)
 """
 from __future__ import annotations
 
@@ -36,7 +33,6 @@ from literature_core import (
     SearchError,
     LiteratureError,
 )
-from services import SearchService
 from services.unified_search_service import UnifiedSearchService
 from services.search_diagnostics_service import SearchDiagnosticsService
 
@@ -140,52 +136,6 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["query"],
-            },
-        ),
-        # =================================================================
-        # ENTITY SEARCH TOOLS (kept separate - different input types)
-        # =================================================================
-        Tool(
-            name="search_by_author",
-            description="Find all papers by a specific author",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "author_name": {
-                        "type": "string",
-                        "description": "Author name (partial match supported)",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum results to return",
-                        "default": 20,
-                    },
-                },
-                "required": ["author_name"],
-            },
-        ),
-        Tool(
-            name="search_by_tag",
-            description="Find papers by tag (partial match by default)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "tag": {
-                        "type": "string",
-                        "description": "Tag name to search for (partial match by default)",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum results to return",
-                        "default": 20,
-                    },
-                    "exact_match": {
-                        "type": "boolean",
-                        "description": "If true, require exact tag match",
-                        "default": False,
-                    },
-                },
-                "required": ["tag"],
             },
         ),
         # =================================================================
@@ -334,37 +284,6 @@ async def _search(arguments: dict[str, Any]) -> list[TextContent]:
     return _to_response(response_data)
 
 
-def _search_by_author(arguments: dict[str, Any]) -> list[TextContent]:
-    """Search papers by author name."""
-    result = SearchService.search_by_author(
-        author_name=arguments["author_name"],
-        limit=arguments.get("limit", 20),
-    )
-    return _to_response(
-        search_result(
-            results=result.results,
-            query=result.query,
-            search_type=result.search_type,
-        )
-    )
-
-
-def _search_by_tag(arguments: dict[str, Any]) -> list[TextContent]:
-    """Search papers by tag."""
-    result = SearchService.search_by_tag(
-        tag_name=arguments["tag"],
-        limit=arguments.get("limit", 20),
-        exact_match=arguments.get("exact_match", False),
-    )
-    return _to_response(
-        search_result(
-            results=result.results,
-            query=result.query,
-            search_type=result.search_type,
-        )
-    )
-
-
 def _get_search_status(arguments: dict[str, Any]) -> list[TextContent]:
     """Get search system health status and diagnostics."""
     detailed = arguments.get("detailed", False)
@@ -420,25 +339,19 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     Returns:
         List of TextContent with the result
     """
-    sync_tool_map = {
-        "search_by_author": _search_by_author,
-        "search_by_tag": _search_by_tag,
+    tool_map = {
+        "search": _search,
         "get_search_status": _get_search_status,
     }
 
-    async_tool_map = {
-        "search": _search,
-    }
-
-    all_tools = set(sync_tool_map.keys()) | set(async_tool_map.keys())
-
-    if name not in all_tools:
+    if name not in tool_map:
         return _to_response(error(f"Unknown search tool: {name}", code="UNKNOWN_TOOL"))
 
     try:
-        if name in async_tool_map:
-            return await async_tool_map[name](arguments)
-        return sync_tool_map[name](arguments)
+        handler = tool_map[name]
+        if name == "search":
+            return await handler(arguments)
+        return handler(arguments)
 
     except SearchError as e:
         logger.error(f"Search error: {e.message}")
