@@ -30,424 +30,254 @@ logger = get_logger(__name__)
 
 
 async def list_tools() -> list[Tool]:
-    """List extraction tools."""
+    """List extraction tools (consolidated from 22 to 8)."""
     return [
+        # =================================================================
+        # CONSOLIDATED: extract_paper (merges quick/deep/legacy)
+        # =================================================================
         Tool(
-            name="get_extraction_status",
-            description="Extraction coverage stats (papers with summaries, findings, methodology)",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="get_llm_status",
-            description="Check LLM backend availability (Ollama, Claude API)",
-            inputSchema={"type": "object", "properties": {}},
-        ),
-        Tool(
-            name="get_reextraction_queue",
-            description="Papers with extractions available for re-extraction. Filter by age/version/model",
+            name="extract_paper",
+            description="AI extraction. tier: quick (abstract→type,topics,summary) or deep (full-text→findings,methods,claims)",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "Paper ID to extract",
+                    },
+                    "tier": {
+                        "type": "string",
+                        "enum": ["quick", "deep"],
+                        "description": "Extraction tier: quick (abstract-only) or deep (full-text, requires PDF)",
+                        "default": "quick",
+                    },
+                    "backend": {
+                        "type": "string",
+                        "enum": ["ollama", "auto"],
+                        "description": "LLM backend",
+                        "default": "auto",
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Re-extract even if exists",
+                        "default": False,
+                    },
+                },
+                "required": ["paper_id"],
+            },
+        ),
+        # =================================================================
+        # CONSOLIDATED: get_extraction_status (merges status/llm/queue views)
+        # =================================================================
+        Tool(
+            name="get_extraction_status",
+            description="Extraction info. view: status (coverage), llm (backend), queue (needs extraction), reextraction (has extraction)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "view": {
+                        "type": "string",
+                        "enum": ["status", "llm", "queue", "reextraction"],
+                        "description": "View: status (coverage stats), llm (backend availability), queue (needs extraction), reextraction (existing extractions)",
+                        "default": "status",
+                    },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum papers to return (default: 50)",
+                        "description": "For queue/reextraction: max papers",
                         "default": 50,
                     },
                     "older_than_days": {
                         "type": "integer",
-                        "description": "Only include extractions older than N days",
-                    },
-                    "schema_version": {
-                        "type": "string",
-                        "description": "Only include extractions with this schema version",
-                    },
-                    "extractor_model": {
-                        "type": "string",
-                        "description": "Only include extractions from this model (partial match)",
+                        "description": "For reextraction: filter by age",
                     },
                 },
             },
         ),
+        # =================================================================
+        # CONSOLIDATED: manage_pdf_processing (merges 5 tools)
+        # =================================================================
         Tool(
-            name="extract_paper",
-            description="Legacy single-pass AI extraction. Prefer extract_paper_quick or extract_paper_deep",
+            name="manage_pdf_processing",
+            description="PDF text chunking. action: status, queue_status, add, process, retry",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "queue_status", "add", "process", "retry"],
+                        "description": "Action: status (single paper), queue_status (queue list), add (queue paper), process (run queue), retry (failed papers)",
+                        "default": "queue_status",
+                    },
                     "paper_id": {
                         "type": "integer",
-                        "description": "Paper ID to extract",
+                        "description": "For status/add/retry: paper ID",
                     },
-                    "backend": {
-                        "type": "string",
-                        "enum": ["ollama", "auto"],
-                        "description": "LLM backend: ollama or auto (local only)",
-                        "default": "auto",
+                    "limit": {
+                        "type": "integer",
+                        "description": "For queue_status/process/retry: max papers",
+                        "default": 20,
                     },
                     "force": {
                         "type": "boolean",
-                        "description": "Re-extract even if extraction exists (default: false)",
+                        "description": "For add/process: re-process even if exists",
                         "default": False,
                     },
+                    "status_filter": {
+                        "type": "string",
+                        "enum": ["pending", "processing", "failed", "needs_processing"],
+                        "description": "For queue_status: filter by status",
+                    },
                 },
-                "required": ["paper_id"],
             },
         ),
+        # =================================================================
+        # CONSOLIDATED: manage_references (merges 4 tools)
+        # =================================================================
         Tool(
-            name="extract_paper_quick",
-            description="Quick extraction (abstract-only): paper_type, topics, one_sentence_summary",
+            name="manage_references",
+            description="PDF-extracted references. action: list, unmatched, match, import",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["list", "unmatched", "match", "import"],
+                        "description": "Action: list (paper refs), unmatched (all unmatched), match (find library match), import (create paper)",
+                        "default": "list",
+                    },
                     "paper_id": {
                         "type": "integer",
-                        "description": "Paper ID to extract",
+                        "description": "For list: paper ID to get references for",
                     },
-                    "backend": {
+                    "reference_id": {
+                        "type": "integer",
+                        "description": "For match/import: reference ID",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "For unmatched: max references",
+                        "default": 50,
+                    },
+                    "status_filter": {
                         "type": "string",
-                        "enum": ["ollama", "auto"],
-                        "description": "LLM backend: ollama or auto (local only)",
-                        "default": "auto",
+                        "enum": ["all", "unmatched", "matched", "imported"],
+                        "description": "For list: filter by match status",
+                        "default": "all",
                     },
-                    "force": {
+                    "with_doi_only": {
                         "type": "boolean",
-                        "description": "Re-extract even if extraction exists (default: false)",
+                        "description": "For unmatched: only refs with DOI",
                         "default": False,
                     },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "For import: tags to apply",
+                    },
+                    "collection_id": {
+                        "type": "integer",
+                        "description": "For import: collection to add to",
+                    },
                 },
-                "required": ["paper_id"],
             },
         ),
+        # =================================================================
+        # CONSOLIDATED: verify_extraction (merges 3 tools)
+        # =================================================================
         Tool(
-            name="extract_paper_deep",
-            description="Deep extraction (full-text): findings, methodology, claims, techniques. Requires PDF chunks",
+            name="verify_extraction",
+            description="Verify extractions. scope: single, batch, report (quality check)",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "scope": {
+                        "type": "string",
+                        "enum": ["single", "batch", "report"],
+                        "description": "Scope: single (one paper), batch (multiple), report (quality summary)",
+                        "default": "single",
+                    },
                     "paper_id": {
                         "type": "integer",
-                        "description": "Paper ID to extract",
+                        "description": "For single: paper ID to verify",
                     },
-                    "backend": {
-                        "type": "string",
-                        "enum": ["ollama", "auto"],
-                        "description": "LLM backend: ollama or auto (local only)",
-                        "default": "auto",
+                    "paper_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "For batch: paper IDs (omit for all)",
                     },
-                    "force": {
-                        "type": "boolean",
-                        "description": "Re-extract even if deep extraction exists (default: false)",
-                        "default": False,
+                    "limit": {
+                        "type": "integer",
+                        "description": "For batch/report: max papers",
+                        "default": 50,
                     },
                 },
-                "required": ["paper_id"],
             },
         ),
+        # =================================================================
+        # KEPT SEPARATE: Batch, prepare, flag, delete
+        # =================================================================
         Tool(
             name="extract_papers_batch",
-            description="Batch extraction with rate limiting. Uses queue if no paper_ids specified",
+            description="Batch extraction with rate limiting. Uses queue if no paper_ids",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "paper_ids": {
                         "type": "array",
                         "items": {"type": "integer"},
-                        "description": "List of paper IDs to extract (omit to use queue)",
+                        "description": "Paper IDs to extract (omit to use queue)",
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Max papers from queue if no IDs specified (default: 10)",
+                        "description": "Max papers from queue",
                         "default": 10,
-                    },
-                    "backend": {
-                        "type": "string",
-                        "enum": ["ollama", "auto"],
-                        "description": "LLM backend to use (local only, default: auto)",
-                        "default": "auto",
                     },
                     "delay": {
                         "type": "number",
-                        "description": "Seconds between extractions (rate limiting)",
+                        "description": "Seconds between extractions",
                         "default": 1.0,
                     },
                     "force": {
                         "type": "boolean",
-                        "description": "Re-extract papers that already have extractions (default: false)",
+                        "description": "Re-extract existing",
                         "default": False,
                     },
                 },
             },
         ),
         Tool(
-            name="delete_extraction",
-            description="Delete extraction to allow re-extraction",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Paper ID to delete extraction for",
-                    },
-                },
-                "required": ["paper_id"],
-            },
-        ),
-        Tool(
             name="prepare_extraction",
-            description="Get paper content for Claude extraction. tier: quick (abstract) or deep (full text)",
+            description="Get paper content for Claude extraction. tier: quick or deep",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "paper_id": {
                         "type": "integer",
-                        "description": "Paper ID to prepare for extraction",
+                        "description": "Paper ID",
                     },
                     "tier": {
                         "type": "string",
                         "enum": ["quick", "deep"],
-                        "description": "Extraction tier: 'quick' (abstract-only) or 'deep' (full text)",
+                        "description": "Extraction tier",
                         "default": "quick",
                     },
                     "max_chars": {
                         "type": "integer",
-                        "description": "Max characters for full text (deep tier only, default 80000)",
+                        "description": "Max chars for deep tier",
                         "default": 80000,
                     },
                 },
                 "required": ["paper_id"],
             },
         ),
-        # PDF Processing tools
-        Tool(
-            name="get_pdf_processing_status",
-            description="PDF chunk extraction status for a paper",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Paper ID to check status for",
-                    },
-                },
-                "required": ["paper_id"],
-            },
-        ),
-        Tool(
-            name="get_pdf_processing_queue",
-            description="Papers in PDF processing queue. Filter by status",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "status": {
-                        "type": "string",
-                        "enum": ["pending", "processing", "failed", "needs_processing"],
-                        "description": "Filter by processing status",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "default": 20,
-                        "description": "Maximum papers to return",
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="queue_pdf_processing",
-            description="Queue paper for PDF text chunking",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Paper ID to queue for processing",
-                    },
-                    "force": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": "Re-queue even if already processed",
-                    },
-                },
-                "required": ["paper_id"],
-            },
-        ),
-        Tool(
-            name="process_pdf_queue",
-            description="Extract text from queued PDFs into searchable chunks",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "default": 10,
-                        "description": "Maximum papers to process",
-                    },
-                    "force": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": "Re-extract even if chunks exist (use when chunk_count is 0)",
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="retry_pdf_processing",
-            description="Retry PDF processing for a specific paper or all failed papers.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Specific paper to retry (omit for all failed)",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "default": 10,
-                        "description": "Max papers to retry if retrying all failed",
-                    },
-                },
-            },
-        ),
-        # Reference tools
-        Tool(
-            name="get_extracted_references",
-            description="References from paper's PDF bibliography. For API lookup use get_paper_references",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Paper ID to get references for",
-                    },
-                    "status": {
-                        "type": "string",
-                        "enum": ["all", "unmatched", "matched", "imported"],
-                        "default": "all",
-                        "description": "Filter by match status",
-                    },
-                },
-                "required": ["paper_id"],
-            },
-        ),
-        Tool(
-            name="match_reference_to_library",
-            description="Match extracted reference to library papers via DOI/title",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "reference_id": {
-                        "type": "integer",
-                        "description": "Reference ID to match",
-                    },
-                },
-                "required": ["reference_id"],
-            },
-        ),
-        Tool(
-            name="import_reference",
-            description="Import extracted reference as new paper via DOI/arXiv/title",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "reference_id": {
-                        "type": "integer",
-                        "description": "Reference ID to import",
-                    },
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Tags to apply to imported paper",
-                    },
-                    "collection_id": {
-                        "type": "integer",
-                        "description": "Collection to add imported paper to",
-                    },
-                },
-                "required": ["reference_id"],
-            },
-        ),
-        Tool(
-            name="get_unmatched_references",
-            description="Unmatched references across papers (import candidates)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "default": 50,
-                        "description": "Maximum references to return",
-                    },
-                    "with_doi_only": {
-                        "type": "boolean",
-                        "default": False,
-                        "description": "Only return references that have a parsed DOI",
-                    },
-                },
-            },
-        ),
-        # Verification tools
-        Tool(
-            name="verify_paper_extraction",
-            description="Verify extraction against source text. Detects hallucinations",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Paper ID to verify extraction for",
-                    },
-                },
-                "required": ["paper_id"],
-            },
-        ),
-        Tool(
-            name="batch_verify_extractions",
-            description="Batch verify extractions, sorted by verification score (lowest first)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_ids": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Paper IDs to verify (omit for all with extractions)",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "default": 20,
-                        "description": "Maximum papers to verify",
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="get_quality_report",
-            description="Extraction quality report (structural checks, not hallucination)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "default": 50,
-                        "description": "Maximum papers to check",
-                    },
-                },
-            },
-        ),
-        # Deep extraction workflow
         Tool(
             name="flag_for_deep_extraction",
-            description="Flag papers for deep extraction (sets NEEDS_DEEP_EXTRACTION status)",
+            description="Flag paper(s) for deep extraction",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Single paper ID to flag",
-                    },
-                    "paper_ids": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Multiple paper IDs to flag (batch)",
-                    },
+                    "paper_id": {"type": "integer", "description": "Single paper ID"},
+                    "paper_ids": {"type": "array", "items": {"type": "integer"}, "description": "Batch paper IDs"},
                 },
             },
         ),
@@ -1215,74 +1045,128 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         List of TextContent with the result
     """
     try:
-        if name == "get_extraction_status":
-            return _get_extraction_status(arguments)
-
-        if name == "get_llm_status":
-            return _get_llm_status(arguments)
-
-        if name == "get_reextraction_queue":
-            return _get_reextraction_queue(arguments)
-
+        # =================================================================
+        # CONSOLIDATED: extract_paper (with tier parameter)
+        # =================================================================
         if name == "extract_paper":
-            return await _extract_paper(arguments)
+            tier = arguments.get("tier", "quick")
+            if tier == "deep":
+                return await _extract_paper_deep(arguments)
+            else:
+                return await _extract_paper_quick(arguments)
 
-        if name == "extract_paper_quick":
-            return await _extract_paper_quick(arguments)
+        # =================================================================
+        # CONSOLIDATED: get_extraction_status (with view parameter)
+        # =================================================================
+        if name == "get_extraction_status":
+            view = arguments.get("view", "status")
+            if view == "llm":
+                return _get_llm_status(arguments)
+            elif view == "queue":
+                # Use existing queue function - papers needing extraction
+                return _get_pdf_processing_queue(arguments)
+            elif view == "reextraction":
+                return _get_reextraction_queue(arguments)
+            else:  # status
+                return _get_extraction_status(arguments)
 
-        if name == "extract_paper_deep":
-            return await _extract_paper_deep(arguments)
+        # =================================================================
+        # CONSOLIDATED: manage_pdf_processing (with action parameter)
+        # =================================================================
+        if name == "manage_pdf_processing":
+            action = arguments.get("action", "queue_status")
+            if action == "status":
+                return _get_pdf_processing_status(arguments)
+            elif action == "queue_status":
+                return _get_pdf_processing_queue(arguments)
+            elif action == "add":
+                return _queue_pdf_processing(arguments)
+            elif action == "process":
+                return _process_pdf_queue(arguments)
+            elif action == "retry":
+                return _retry_pdf_processing(arguments)
+            else:
+                return _to_response(error(f"Unknown action: {action}"))
 
+        # =================================================================
+        # CONSOLIDATED: manage_references (with action parameter)
+        # =================================================================
+        if name == "manage_references":
+            action = arguments.get("action", "list")
+            if action == "list":
+                return _get_extracted_references(arguments)
+            elif action == "unmatched":
+                return _get_unmatched_references(arguments)
+            elif action == "match":
+                return _match_reference_to_library(arguments)
+            elif action == "import":
+                return await _import_reference(arguments)
+            else:
+                return _to_response(error(f"Unknown action: {action}"))
+
+        # =================================================================
+        # CONSOLIDATED: verify_extraction (with scope parameter)
+        # =================================================================
+        if name == "verify_extraction":
+            scope = arguments.get("scope", "single")
+            if scope == "single":
+                return _verify_paper_extraction(arguments)
+            elif scope == "batch":
+                return _batch_verify_extractions(arguments)
+            elif scope == "report":
+                return _get_quality_report(arguments)
+            else:
+                return _to_response(error(f"Unknown scope: {scope}"))
+
+        # =================================================================
+        # KEPT SEPARATE
+        # =================================================================
         if name == "extract_papers_batch":
             return await _extract_papers_batch(arguments)
-
-        if name == "delete_extraction":
-            return _delete_extraction(arguments)
 
         if name == "prepare_extraction":
             return _prepare_extraction(arguments)
 
-        # PDF Processing tools (renamed from Chunking)
-        if name == "get_pdf_processing_status":
-            return _get_pdf_processing_status(arguments)
-
-        if name == "get_pdf_processing_queue":
-            return _get_pdf_processing_queue(arguments)
-
-        if name == "queue_pdf_processing":
-            return _queue_pdf_processing(arguments)
-
-        if name == "process_pdf_queue":
-            return _process_pdf_queue(arguments)
-
-        if name == "retry_pdf_processing":
-            return _retry_pdf_processing(arguments)
-
-        # Reference tools
-        if name == "get_extracted_references":
-            return _get_extracted_references(arguments)
-
-        if name == "match_reference_to_library":
-            return _match_reference_to_library(arguments)
-
-        if name == "import_reference":
-            return await _import_reference(arguments)
-
-        if name == "get_unmatched_references":
-            return _get_unmatched_references(arguments)
-
-        # Verification tools
-        if name == "verify_paper_extraction":
-            return _verify_paper_extraction(arguments)
-
-        if name == "batch_verify_extractions":
-            return _batch_verify_extractions(arguments)
-
-        if name == "get_quality_report":
-            return _get_quality_report(arguments)
-
         if name == "flag_for_deep_extraction":
             return _flag_for_deep_extraction(arguments)
+
+        # =================================================================
+        # LEGACY TOOL NAMES (redirect to consolidated tools)
+        # =================================================================
+        if name == "extract_paper_quick":
+            return await _extract_paper_quick(arguments)
+        if name == "extract_paper_deep":
+            return await _extract_paper_deep(arguments)
+        if name == "get_llm_status":
+            return _get_llm_status(arguments)
+        if name == "get_reextraction_queue":
+            return _get_reextraction_queue(arguments)
+        if name == "delete_extraction":
+            return _delete_extraction(arguments)
+        if name == "get_pdf_processing_status":
+            return _get_pdf_processing_status(arguments)
+        if name == "get_pdf_processing_queue":
+            return _get_pdf_processing_queue(arguments)
+        if name == "queue_pdf_processing":
+            return _queue_pdf_processing(arguments)
+        if name == "process_pdf_queue":
+            return _process_pdf_queue(arguments)
+        if name == "retry_pdf_processing":
+            return _retry_pdf_processing(arguments)
+        if name == "get_extracted_references":
+            return _get_extracted_references(arguments)
+        if name == "match_reference_to_library":
+            return _match_reference_to_library(arguments)
+        if name == "import_reference":
+            return await _import_reference(arguments)
+        if name == "get_unmatched_references":
+            return _get_unmatched_references(arguments)
+        if name == "verify_paper_extraction":
+            return _verify_paper_extraction(arguments)
+        if name == "batch_verify_extractions":
+            return _batch_verify_extractions(arguments)
+        if name == "get_quality_report":
+            return _get_quality_report(arguments)
 
         return _to_response(error(f"Unknown extraction tool: {name}", code="UNKNOWN_TOOL"))
 

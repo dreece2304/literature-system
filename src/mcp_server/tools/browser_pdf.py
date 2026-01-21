@@ -52,7 +52,7 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="queue_pdf_download",
-            description="Queue paper(s) for PDF download via Windows browser automation. Pass paper_id for single or paper_ids array for batch.",
+            description="Queue paper(s) for Windows browser PDF download. Single paper_id or batch paper_ids",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -69,41 +69,29 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="get_download_queue_status",
-            description="Get status of the PDF download queue. Shows pending, completed, and failed downloads.",
+            name="manage_pdf_queue",
+            description="Manage browser PDF queue. Actions: status (default), process, clear",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "process", "clear"],
+                        "description": "Action: status (view queue), process (import downloaded PDFs), clear (remove completed/failed)",
+                        "default": "status",
+                    },
                     "paper_id": {
                         "type": "integer",
-                        "description": "Optional: check status of specific paper",
+                        "description": "For status: check specific paper",
                     },
-                },
-            },
-        ),
-        Tool(
-            name="process_downloaded_pdfs",
-            description="Process PDFs downloaded by the browser fetcher. Extracts text, computes hash, and updates database.",
-            inputSchema={
-                "type": "object",
-                "properties": {
                     "auto_match": {
                         "type": "boolean",
-                        "description": "Match PDFs to papers by DOI in filename (default: true)",
+                        "description": "For process: match PDFs by DOI in filename",
                         "default": True,
                     },
-                },
-            },
-        ),
-        Tool(
-            name="clear_download_queue",
-            description="Clear completed/failed items from the download queue.",
-            inputSchema={
-                "type": "object",
-                "properties": {
                     "clear_all": {
                         "type": "boolean",
-                        "description": "Clear all items including pending (default: only completed/failed)",
+                        "description": "For clear: remove all including pending",
                         "default": False,
                     },
                 },
@@ -116,18 +104,30 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Execute a browser PDF tool."""
     if name == "queue_pdf_download":
         return _queue_pdf_download(arguments)
-    elif name == "queue_batch_pdf_download":
-        # Legacy - redirect to queue_pdf_download
+
+    if name == "manage_pdf_queue":
+        action = arguments.get("action", "status")
+        if action == "status":
+            return _get_download_queue_status(arguments)
+        elif action == "process":
+            return _process_downloaded_pdfs(arguments)
+        elif action == "clear":
+            return _clear_download_queue(arguments)
+        else:
+            return [TextContent(type="text", text=serialize({"error": f"Unknown action: {action}"}))]
+
+    # Legacy tool names - redirect to consolidated tools
+    if name == "queue_batch_pdf_download":
         arguments["paper_ids"] = arguments.get("paper_ids", [])
         return _queue_pdf_download(arguments)
-    elif name == "get_download_queue_status":
+    if name == "get_download_queue_status":
         return _get_download_queue_status(arguments)
-    elif name == "process_downloaded_pdfs":
+    if name == "process_downloaded_pdfs":
         return _process_downloaded_pdfs(arguments)
-    elif name == "clear_download_queue":
+    if name == "clear_download_queue":
         return _clear_download_queue(arguments)
-    else:
-        return [TextContent(type="text", text=serialize({"error": f"Unknown tool: {name}"}))]
+
+    return [TextContent(type="text", text=serialize({"error": f"Unknown tool: {name}"}))]
 
 
 def _queue_pdf_download(arguments: dict[str, Any]) -> list[TextContent]:

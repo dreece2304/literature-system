@@ -38,33 +38,22 @@ logger = get_logger(__name__)
 async def list_tools() -> list[Tool]:
     """Return available project management tools."""
     return [
-        # BibTeX File Tools
+        # Consolidated BibTeX management tool
         Tool(
-            name="parse_bib_file",
-            description="Parse a BibTeX file and return structured entries with keys and fields",
+            name="manage_bibtex",
+            description="BibTeX operations. Actions: parse, link, import, export, sync",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["parse", "link", "import", "export", "sync"],
+                        "description": "Action: parse (parse .bib), link (match to DB), import (add to DB), export (from DB), sync (update .bib from DB)",
+                        "default": "parse",
+                    },
                     "file_path": {
                         "type": "string",
-                        "description": "Path to the .bib file",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "BibTeX content (alternative to file_path)",
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="link_bib_to_database",
-            description="Match BibTeX entries to papers in database by DOI, title, or author+year",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "Path to the .bib file to link",
+                        "description": "Path to .bib file (for parse/link/import/sync)",
                     },
                     "content": {
                         "type": "string",
@@ -73,224 +62,112 @@ async def list_tools() -> list[Tool]:
                     "min_similarity": {
                         "type": "number",
                         "default": 0.8,
-                        "description": "Minimum title similarity for matching (0-1)",
+                        "description": "For link: minimum title similarity (0-1)",
+                    },
+                    "skip_existing": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "For import: skip entries already in DB",
+                    },
+                    "tags": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "For import: tags to apply",
+                    },
+                    "paper_ids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "For export: paper IDs (omit for all)",
+                    },
+                    "output_path": {
+                        "type": "string",
+                        "description": "For export: output .bib path",
+                    },
+                    "tag": {
+                        "type": "string",
+                        "description": "For export: filter by tag",
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "default": True,
+                        "description": "For sync: preview changes without writing",
                     },
                 },
             },
         ),
-        # Citation Scanning Tools
+        # Consolidated citation health check tool
         Tool(
-            name="scan_tex_citations",
-            description="Scan TeX files for all \\cite{} commands and extract keys with locations",
+            name="citation_health_check",
+            description="Check citation health. Checks: all (default), orphans, missing, incomplete, duplicates",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "check": {
+                        "type": "string",
+                        "enum": ["all", "orphans", "missing", "incomplete", "duplicates"],
+                        "description": "Check type: all (comprehensive), orphans (uncited bib), missing (cited but not in bib), incomplete (missing fields), duplicates",
+                        "default": "all",
+                    },
+                    "bib_path": {
+                        "type": "string",
+                        "description": "Path to .bib file",
+                    },
+                    "tex_path": {
+                        "type": "string",
+                        "description": "Path to .tex file or directory (for all/orphans/missing)",
+                    },
+                    "similarity_threshold": {
+                        "type": "number",
+                        "default": 0.9,
+                        "description": "For duplicates: title similarity threshold",
+                    },
+                },
+                "required": ["bib_path"],
+            },
+        ),
+        # Consolidated citation scanning tool
+        Tool(
+            name="scan_citations",
+            description="Scan TeX files for citations. Mode: scan (all keys), locate (specific key)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["scan", "locate"],
+                        "description": "Mode: scan (find all \\cite{}), locate (find specific key)",
+                        "default": "scan",
+                    },
                     "file_path": {
                         "type": "string",
-                        "description": "Path to .tex file or directory to scan",
+                        "description": "Path to .tex file or directory",
+                    },
+                    "citation_key": {
+                        "type": "string",
+                        "description": "For locate: the citation key to find",
                     },
                     "recursive": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Recursively scan directories",
+                        "description": "For scan: recursively scan directories",
                     },
                 },
                 "required": ["file_path"],
             },
         ),
+        # Consolidated project config tool
         Tool(
-            name="get_citation_locations",
-            description="Get all locations where a specific citation key is used",
+            name="manage_project",
+            description="Project citation config. Actions: get, set",
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "file_path": {
+                    "action": {
                         "type": "string",
-                        "description": "Path to .tex file or directory to scan",
+                        "enum": ["get", "set"],
+                        "description": "Action: get (read config), set (update config)",
+                        "default": "get",
                     },
-                    "citation_key": {
-                        "type": "string",
-                        "description": "The citation key to find",
-                    },
-                },
-                "required": ["file_path", "citation_key"],
-            },
-        ),
-        # Health Check Tools
-        Tool(
-            name="citation_health_check",
-            description="Comprehensive check: orphan bib entries, missing citations, incomplete entries, duplicates",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "bib_path": {
-                        "type": "string",
-                        "description": "Path to .bib file",
-                    },
-                    "tex_path": {
-                        "type": "string",
-                        "description": "Path to .tex file or directory",
-                    },
-                },
-                "required": ["bib_path", "tex_path"],
-            },
-        ),
-        Tool(
-            name="find_orphan_citations",
-            description="Find bib entries that are never cited in any .tex file",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "bib_path": {
-                        "type": "string",
-                        "description": "Path to .bib file",
-                    },
-                    "tex_path": {
-                        "type": "string",
-                        "description": "Path to .tex file or directory",
-                    },
-                },
-                "required": ["bib_path", "tex_path"],
-            },
-        ),
-        Tool(
-            name="find_missing_citations",
-            description="Find citation keys used in .tex files but not in .bib file",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "bib_path": {
-                        "type": "string",
-                        "description": "Path to .bib file",
-                    },
-                    "tex_path": {
-                        "type": "string",
-                        "description": "Path to .tex file or directory",
-                    },
-                },
-                "required": ["bib_path", "tex_path"],
-            },
-        ),
-        Tool(
-            name="find_incomplete_bib_entries",
-            description="Find bib entries missing required fields (author, title, year)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "bib_path": {
-                        "type": "string",
-                        "description": "Path to .bib file",
-                    },
-                },
-                "required": ["bib_path"],
-            },
-        ),
-        Tool(
-            name="find_duplicate_bib_entries",
-            description="Find duplicate bib entries (same DOI or very similar titles)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "bib_path": {
-                        "type": "string",
-                        "description": "Path to .bib file",
-                    },
-                    "similarity_threshold": {
-                        "type": "number",
-                        "default": 0.9,
-                        "description": "Title similarity threshold for duplicates (0-1)",
-                    },
-                },
-                "required": ["bib_path"],
-            },
-        ),
-        # Sync Tools
-        Tool(
-            name="sync_bib_from_database",
-            description="Update bib entries with latest metadata from database (by DOI match)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "bib_path": {
-                        "type": "string",
-                        "description": "Path to .bib file to update",
-                    },
-                    "dry_run": {
-                        "type": "boolean",
-                        "default": True,
-                        "description": "If true, show changes without writing",
-                    },
-                },
-                "required": ["bib_path"],
-            },
-        ),
-        Tool(
-            name="import_bib_to_database",
-            description="Import papers from .bib file into the database",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "bib_path": {
-                        "type": "string",
-                        "description": "Path to .bib file",
-                    },
-                    "skip_existing": {
-                        "type": "boolean",
-                        "default": True,
-                        "description": "Skip entries already in database (by DOI)",
-                    },
-                    "tags": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Tags to apply to imported papers",
-                    },
-                },
-                "required": ["bib_path"],
-            },
-        ),
-        Tool(
-            name="export_database_to_bib",
-            description="Export papers from database to BibTeX format",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_ids": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Paper IDs to export (omit for all)",
-                    },
-                    "output_path": {
-                        "type": "string",
-                        "description": "Path to write .bib file (omit to return content)",
-                    },
-                    "tag": {
-                        "type": "string",
-                        "description": "Export only papers with this tag",
-                    },
-                },
-            },
-        ),
-        # Project Config Tools
-        Tool(
-            name="get_project_config",
-            description="Get project citation configuration (bib files, tex paths, settings)",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "project_path": {
-                        "type": "string",
-                        "description": "Path to project root",
-                    },
-                },
-                "required": ["project_path"],
-            },
-        ),
-        Tool(
-            name="set_project_config",
-            description="Set project citation configuration",
-            inputSchema={
-                "type": "object",
-                "properties": {
                     "project_path": {
                         "type": "string",
                         "description": "Path to project root",
@@ -298,12 +175,12 @@ async def list_tools() -> list[Tool]:
                     "bib_files": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of .bib file paths (relative to project)",
+                        "description": "For set: .bib file paths",
                     },
                     "tex_paths": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of .tex file/directory paths",
+                        "description": "For set: .tex paths",
                     },
                 },
                 "required": ["project_path"],
@@ -587,28 +464,80 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     Returns:
         List of TextContent with the result
     """
-    tool_map = {
-        "parse_bib_file": _parse_bib_file,
-        "link_bib_to_database": _link_bib_to_database,
-        "scan_tex_citations": _scan_tex_citations,
-        "get_citation_locations": _get_citation_locations,
-        "citation_health_check": _citation_health_check,
-        "find_orphan_citations": _find_orphan_citations,
-        "find_missing_citations": _find_missing_citations,
-        "find_incomplete_bib_entries": _find_incomplete_bib_entries,
-        "find_duplicate_bib_entries": _find_duplicate_bib_entries,
-        "sync_bib_from_database": _sync_bib_from_database,
-        "import_bib_to_database": _import_bib_to_database,
-        "export_database_to_bib": _export_database_to_bib,
-        "get_project_config": _get_project_config,
-        "set_project_config": _set_project_config,
-    }
-
-    if name not in tool_map:
-        return _to_response(error(f"Unknown project tool: {name}", code="UNKNOWN_TOOL"))
-
     try:
-        return tool_map[name](arguments)
+        # Consolidated manage_bibtex tool
+        if name == "manage_bibtex":
+            action = arguments.get("action", "parse")
+            if action == "parse":
+                return _parse_bib_file(arguments)
+            elif action == "link":
+                return _link_bib_to_database(arguments)
+            elif action == "import":
+                return _import_bib_to_database(arguments)
+            elif action == "export":
+                return _export_database_to_bib(arguments)
+            elif action == "sync":
+                return _sync_bib_from_database(arguments)
+            else:
+                return _to_response(error(f"Unknown action: {action}", code="UNKNOWN_ACTION"))
+
+        # Consolidated citation_health_check tool
+        if name == "citation_health_check":
+            check = arguments.get("check", "all")
+            if check == "all":
+                return _citation_health_check(arguments)
+            elif check == "orphans":
+                return _find_orphan_citations(arguments)
+            elif check == "missing":
+                return _find_missing_citations(arguments)
+            elif check == "incomplete":
+                return _find_incomplete_bib_entries(arguments)
+            elif check == "duplicates":
+                return _find_duplicate_bib_entries(arguments)
+            else:
+                return _to_response(error(f"Unknown check: {check}", code="UNKNOWN_CHECK"))
+
+        # Consolidated scan_citations tool
+        if name == "scan_citations":
+            mode = arguments.get("mode", "scan")
+            if mode == "scan":
+                return _scan_tex_citations(arguments)
+            elif mode == "locate":
+                return _get_citation_locations(arguments)
+            else:
+                return _to_response(error(f"Unknown mode: {mode}", code="UNKNOWN_MODE"))
+
+        # Consolidated manage_project tool
+        if name == "manage_project":
+            action = arguments.get("action", "get")
+            if action == "get":
+                return _get_project_config(arguments)
+            elif action == "set":
+                return _set_project_config(arguments)
+            else:
+                return _to_response(error(f"Unknown action: {action}", code="UNKNOWN_ACTION"))
+
+        # Legacy tool names - redirect to consolidated tools
+        legacy_map = {
+            "parse_bib_file": _parse_bib_file,
+            "link_bib_to_database": _link_bib_to_database,
+            "scan_tex_citations": _scan_tex_citations,
+            "get_citation_locations": _get_citation_locations,
+            "find_orphan_citations": _find_orphan_citations,
+            "find_missing_citations": _find_missing_citations,
+            "find_incomplete_bib_entries": _find_incomplete_bib_entries,
+            "find_duplicate_bib_entries": _find_duplicate_bib_entries,
+            "sync_bib_from_database": _sync_bib_from_database,
+            "import_bib_to_database": _import_bib_to_database,
+            "export_database_to_bib": _export_database_to_bib,
+            "get_project_config": _get_project_config,
+            "set_project_config": _set_project_config,
+        }
+
+        if name in legacy_map:
+            return legacy_map[name](arguments)
+
+        return _to_response(error(f"Unknown project tool: {name}", code="UNKNOWN_TOOL"))
 
     except ValidationError as e:
         logger.warning(f"Validation error: {e.message}")

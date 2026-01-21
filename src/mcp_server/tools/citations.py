@@ -29,153 +29,94 @@ from context.parser import ManuscriptParser
 async def list_tools() -> list[Tool]:
     """List citation management tools."""
     return [
+        # Consolidated manuscript tool
         Tool(
-            name="scan_manuscript",
-            description="Scan LaTeX/Markdown for citations, sections, structure",
+            name="manuscript_tools",
+            description="Manuscript analysis. Actions: scan (parse structure), check (citations vs library)",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["scan", "check"],
+                        "description": "Action: scan (parse manuscript), check (compare citations to library)",
+                        "default": "scan",
+                    },
                     "file_path": {
                         "type": "string",
-                        "description": "Path to the manuscript file (.tex, .md)",
+                        "description": "For scan: path to .tex/.md file",
                     },
                     "content": {
                         "type": "string",
-                        "description": "Manuscript content (if file_path not provided)",
+                        "description": "For scan: manuscript content (if no file_path)",
                     },
                     "format": {
                         "type": "string",
                         "enum": ["latex", "markdown"],
-                        "description": "Document format (required if using content)",
+                        "description": "For scan: document format",
                         "default": "latex",
                     },
-                },
-            },
-        ),
-        Tool(
-            name="check_citations",
-            description="Check manuscript citations vs library (orphans, unused)",
-            inputSchema={
-                "type": "object",
-                "properties": {
                     "manuscript_citations": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of citation keys from manuscript",
+                        "description": "For check: citation keys from manuscript",
                     },
                     "library_papers": {
                         "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": {"type": "integer"},
-                                "title": {"type": "string"},
-                                "authors": {"type": "string"},
-                                "year": {"type": "integer"},
-                            },
-                        },
-                        "description": "Papers from the literature library",
+                        "items": {"type": "object"},
+                        "description": "For check: papers from library",
                     },
                 },
-                "required": ["manuscript_citations"],
             },
         ),
+        # Consolidated citation formatting tool
         Tool(
-            name="suggest_citation_key",
-            description="Generate BibTeX key (format: firstauthorYEARfirstword)",
+            name="format_citation",
+            description="Citation formatting. Actions: bibtex, suggest_key, validate, bibliography",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["bibtex", "suggest_key", "validate", "bibliography"],
+                        "description": "Action: bibtex (generate entries), suggest_key (generate key), validate (check data), bibliography (format list)",
+                        "default": "bibtex",
+                    },
+                    "papers": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                        "description": "For bibtex/validate/bibliography: papers to process",
+                    },
                     "title": {
                         "type": "string",
-                        "description": "Paper title",
+                        "description": "For suggest_key: paper title",
                     },
                     "authors": {
                         "type": "string",
-                        "description": "Author names (comma or 'and' separated)",
+                        "description": "For suggest_key: author names",
                     },
                     "year": {
                         "type": "integer",
-                        "description": "Publication year",
-                    },
-                },
-                "required": ["title", "authors"],
-            },
-        ),
-        Tool(
-            name="generate_bibtex",
-            description="Generate BibTeX entries for papers",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "papers": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "title": {"type": "string"},
-                                "authors": {"type": "string"},
-                                "year": {"type": "integer"},
-                                "doi": {"type": "string"},
-                                "journal": {"type": "string"},
-                                "volume": {"type": "string"},
-                                "pages": {"type": "string"},
-                            },
-                            "required": ["title", "authors"],
-                        },
-                        "description": "Papers to generate BibTeX for",
+                        "description": "For suggest_key: publication year",
                     },
                     "entry_type": {
                         "type": "string",
                         "enum": ["article", "inproceedings", "book", "misc"],
-                        "description": "BibTeX entry type",
+                        "description": "For bibtex: entry type",
                         "default": "article",
-                    },
-                },
-                "required": ["papers"],
-            },
-        ),
-        Tool(
-            name="format_bibliography",
-            description="Generate formatted bibliography in various styles",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "papers": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                        },
-                        "description": "Papers to include in bibliography",
                     },
                     "style": {
                         "type": "string",
                         "enum": ["apa", "mla", "chicago", "bibtex"],
-                        "description": "Citation style",
+                        "description": "For bibliography: citation style",
                         "default": "apa",
                     },
                     "sort": {
                         "type": "boolean",
-                        "description": "Sort alphabetically by author",
+                        "description": "For bibliography: sort by author",
                         "default": True,
                     },
                 },
-                "required": ["papers"],
-            },
-        ),
-        Tool(
-            name="validate_citations",
-            description="Validate citation data for completeness",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "papers": {
-                        "type": "array",
-                        "items": {"type": "object"},
-                        "description": "Papers to validate",
-                    },
-                },
-                "required": ["papers"],
             },
         ),
     ]
@@ -369,195 +310,187 @@ def _validate_paper(paper: dict[str, Any]) -> dict[str, Any]:
 # ============================================================================
 
 
+def _do_scan_manuscript(arguments: dict[str, Any], parser: ManuscriptParser) -> list[TextContent]:
+    """Scan manuscript for structure and citations."""
+    if arguments.get("file_path"):
+        file_path = Path(arguments["file_path"])
+        if not file_path.exists():
+            return [TextContent(type="text", text=f"File not found: {file_path}")]
+        structure = parser.parse_file(file_path)
+    elif arguments.get("content"):
+        content = arguments["content"]
+        fmt = arguments.get("format", "latex")
+        if fmt == "latex":
+            structure = parser.parse_latex(content)
+        else:
+            structure = parser.parse_markdown(content)
+    else:
+        return [TextContent(type="text", text="Please provide either file_path or content.")]
+
+    if not structure:
+        return [TextContent(type="text", text="Failed to parse manuscript.")]
+
+    result = {
+        "title": structure.title,
+        "abstract_preview": (
+            structure.abstract[:300] + "..." if len(structure.abstract) > 300 else structure.abstract
+        ),
+        "document_type": structure.document_type,
+        "total_words": structure.total_words,
+        "sections": [
+            {
+                "level": s.level,
+                "title": s.title,
+                "word_count": s.word_count,
+                "citations": s.citations,
+                "line_range": f"{s.start_line}-{s.end_line}",
+            }
+            for s in structure.sections
+        ],
+        "all_citations": structure.all_citations,
+        "citation_count": len(structure.all_citations),
+    }
+    return [TextContent(type="text", text=serialize(result))]
+
+
+def _do_check_citations(arguments: dict[str, Any]) -> list[TextContent]:
+    """Check manuscript citations vs library."""
+    manuscript_citations = set(arguments["manuscript_citations"])
+    library_papers = arguments.get("library_papers", [])
+
+    library_keys = {}
+    for paper in library_papers:
+        authors = paper.get("authors", "Unknown")
+        if isinstance(authors, list):
+            authors = ", ".join(authors)
+        key = _generate_citation_key(paper.get("title", ""), authors, paper.get("year"))
+        library_keys[key] = paper
+
+    library_key_set = set(library_keys.keys())
+    orphan_citations = manuscript_citations - library_key_set
+    unused_papers = library_key_set - manuscript_citations
+    matched = manuscript_citations & library_key_set
+
+    result = {
+        "total_manuscript_citations": len(manuscript_citations),
+        "total_library_papers": len(library_papers),
+        "matched_citations": len(matched),
+        "orphan_citations": {
+            "count": len(orphan_citations),
+            "keys": list(orphan_citations),
+            "message": "Citations in manuscript but not in library" if orphan_citations else "All citations found",
+        },
+        "unused_papers": {
+            "count": len(unused_papers),
+            "keys": list(unused_papers)[:20],
+            "message": "Papers in library but not cited" if unused_papers else "All papers cited",
+        },
+    }
+    return [TextContent(type="text", text=serialize(result))]
+
+
+def _do_suggest_key(arguments: dict[str, Any]) -> list[TextContent]:
+    """Suggest a citation key."""
+    key = _generate_citation_key(
+        arguments.get("title", ""),
+        arguments.get("authors", "Unknown"),
+        arguments.get("year"),
+    )
+    result = {
+        "suggested_key": key,
+        "format": "firstauthorYEARfirstword",
+        "example_usage": f"\\cite{{{key}}}",
+    }
+    return [TextContent(type="text", text=serialize(result))]
+
+
+def _do_generate_bibtex(arguments: dict[str, Any]) -> list[TextContent]:
+    """Generate BibTeX entries."""
+    papers = arguments["papers"]
+    entry_type = arguments.get("entry_type", "article")
+    bibtex_entries = [_to_bibtex(paper, entry_type) for paper in papers]
+    return [TextContent(type="text", text="\n\n".join(bibtex_entries))]
+
+
+def _do_format_bibliography(arguments: dict[str, Any]) -> list[TextContent]:
+    """Format bibliography in various styles."""
+    papers = arguments["papers"]
+    style = arguments.get("style", "apa")
+    sort = arguments.get("sort", True)
+
+    if sort:
+        papers = sorted(papers, key=lambda p: str(p.get("authors", "")).lower())
+
+    formatters = {"apa": _format_apa, "mla": _format_mla, "chicago": _format_chicago, "bibtex": _to_bibtex}
+    formatter = formatters.get(style, _format_apa)
+    formatted = [formatter(paper) for paper in papers]
+    return [TextContent(type="text", text="\n\n".join(formatted))]
+
+
+def _do_validate_citations(arguments: dict[str, Any]) -> list[TextContent]:
+    """Validate citation data."""
+    papers = arguments["papers"]
+    results = []
+    for paper in papers:
+        validation = _validate_paper(paper)
+        results.append({
+            "title": str(paper.get("title", "Unknown"))[:50],
+            "valid": validation["valid"],
+            "errors": validation["errors"],
+            "warnings": validation["warnings"],
+        })
+
+    summary = {
+        "total_papers": len(papers),
+        "valid_papers": sum(1 for r in results if r["valid"]),
+        "papers_with_warnings": sum(1 for r in results if r["warnings"]),
+        "details": results,
+    }
+    return [TextContent(type="text", text=serialize(summary))]
+
+
 async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
     """Execute a citation tool."""
     parser = ManuscriptParser()
 
     try:
-        if name == "scan_manuscript":
-            # Parse manuscript from file or content
-            if arguments.get("file_path"):
-                file_path = Path(arguments["file_path"])
-                if not file_path.exists():
-                    return [TextContent(
-                        type="text",
-                        text=f"File not found: {file_path}",
-                    )]
-                structure = parser.parse_file(file_path)
-            elif arguments.get("content"):
-                content = arguments["content"]
-                fmt = arguments.get("format", "latex")
-                if fmt == "latex":
-                    structure = parser.parse_latex(content)
-                else:
-                    structure = parser.parse_markdown(content)
+        # Consolidated manuscript_tools
+        if name == "manuscript_tools":
+            action = arguments.get("action", "scan")
+            if action == "scan":
+                return _do_scan_manuscript(arguments, parser)
+            elif action == "check":
+                return _do_check_citations(arguments)
             else:
-                return [TextContent(
-                    type="text",
-                    text="Please provide either file_path or content.",
-                )]
+                return [TextContent(type="text", text=serialize({"error": f"Unknown action: {action}"}))]
 
-            if not structure:
-                return [TextContent(
-                    type="text",
-                    text="Failed to parse manuscript.",
-                )]
+        # Consolidated format_citation
+        if name == "format_citation":
+            action = arguments.get("action", "bibtex")
+            if action == "bibtex":
+                return _do_generate_bibtex(arguments)
+            elif action == "suggest_key":
+                return _do_suggest_key(arguments)
+            elif action == "validate":
+                return _do_validate_citations(arguments)
+            elif action == "bibliography":
+                return _do_format_bibliography(arguments)
+            else:
+                return [TextContent(type="text", text=serialize({"error": f"Unknown action: {action}"}))]
 
-            result = {
-                "title": structure.title,
-                "abstract_preview": (
-                    structure.abstract[:300] + "..."
-                    if len(structure.abstract) > 300
-                    else structure.abstract
-                ),
-                "document_type": structure.document_type,
-                "total_words": structure.total_words,
-                "sections": [
-                    {
-                        "level": s.level,
-                        "title": s.title,
-                        "word_count": s.word_count,
-                        "citations": s.citations,
-                        "line_range": f"{s.start_line}-{s.end_line}",
-                    }
-                    for s in structure.sections
-                ],
-                "all_citations": structure.all_citations,
-                "citation_count": len(structure.all_citations),
-            }
-            return [TextContent(type="text", text=serialize(result))]
-
+        # Legacy tool names - redirect to implementations
+        if name == "scan_manuscript":
+            return _do_scan_manuscript(arguments, parser)
         elif name == "check_citations":
-            manuscript_citations = set(arguments["manuscript_citations"])
-            library_papers = arguments.get("library_papers", [])
-
-            # Generate citation keys for library papers
-            library_keys = {}
-            for paper in library_papers:
-                # Handle authors format
-                authors = paper.get("authors", "Unknown")
-                if isinstance(authors, list):
-                    authors = ", ".join(authors)
-
-                key = _generate_citation_key(
-                    paper.get("title", ""),
-                    authors,
-                    paper.get("year"),
-                )
-                library_keys[key] = paper
-
-            library_key_set = set(library_keys.keys())
-
-            # Find orphan citations (in manuscript but not in library)
-            orphan_citations = manuscript_citations - library_key_set
-
-            # Find unused papers (in library but not cited)
-            unused_papers = library_key_set - manuscript_citations
-
-            # Find matched citations
-            matched = manuscript_citations & library_key_set
-
-            result = {
-                "total_manuscript_citations": len(manuscript_citations),
-                "total_library_papers": len(library_papers),
-                "matched_citations": len(matched),
-                "orphan_citations": {
-                    "count": len(orphan_citations),
-                    "keys": list(orphan_citations),
-                    "message": (
-                        "These citations are in your manuscript but not in your library"
-                        if orphan_citations else "All citations found in library"
-                    ),
-                },
-                "unused_papers": {
-                    "count": len(unused_papers),
-                    "keys": list(unused_papers)[:20],  # Limit output
-                    "message": (
-                        "These papers are in your library but not cited"
-                        if unused_papers else "All library papers are cited"
-                    ),
-                },
-            }
-            return [TextContent(type="text", text=serialize(result))]
-
+            return _do_check_citations(arguments)
         elif name == "suggest_citation_key":
-            authors = arguments.get("authors", "Unknown")
-            title = arguments.get("title", "")
-            year = arguments.get("year")
-
-            key = _generate_citation_key(title, authors, year)
-
-            result = {
-                "suggested_key": key,
-                "format": "firstauthorYEARfirstword",
-                "example_usage": f"\\cite{{{key}}}",
-            }
-            return [TextContent(type="text", text=serialize(result))]
-
+            return _do_suggest_key(arguments)
         elif name == "generate_bibtex":
-            papers = arguments["papers"]
-            entry_type = arguments.get("entry_type", "article")
-
-            bibtex_entries = []
-            for paper in papers:
-                bibtex_entries.append(_to_bibtex(paper, entry_type))
-
-            return [TextContent(
-                type="text",
-                text="\n\n".join(bibtex_entries),
-            )]
-
+            return _do_generate_bibtex(arguments)
         elif name == "format_bibliography":
-            papers = arguments["papers"]
-            style = arguments.get("style", "apa")
-            sort = arguments.get("sort", True)
-
-            # Sort by author if requested
-            if sort:
-                papers = sorted(
-                    papers,
-                    key=lambda p: str(p.get("authors", "")).lower()
-                )
-
-            # Format each paper
-            formatted = []
-            for paper in papers:
-                if style == "apa":
-                    formatted.append(_format_apa(paper))
-                elif style == "mla":
-                    formatted.append(_format_mla(paper))
-                elif style == "chicago":
-                    formatted.append(_format_chicago(paper))
-                elif style == "bibtex":
-                    formatted.append(_to_bibtex(paper))
-                else:
-                    formatted.append(_format_apa(paper))  # Default to APA
-
-            return [TextContent(type="text", text="\n\n".join(formatted))]
-
+            return _do_format_bibliography(arguments)
         elif name == "validate_citations":
-            papers = arguments["papers"]
-
-            results = []
-            for paper in papers:
-                validation = _validate_paper(paper)
-                results.append({
-                    "title": str(paper.get("title", "Unknown"))[:50],
-                    "valid": validation["valid"],
-                    "errors": validation["errors"],
-                    "warnings": validation["warnings"],
-                })
-
-            summary = {
-                "total_papers": len(papers),
-                "valid_papers": sum(1 for r in results if r["valid"]),
-                "papers_with_warnings": sum(
-                    1 for r in results if r["warnings"]
-                ),
-                "details": results,
-            }
-            return [TextContent(type="text", text=serialize(summary))]
-
+            return _do_validate_citations(arguments)
         else:
             return [TextContent(type="text", text=f"Unknown citation tool: {name}")]
 

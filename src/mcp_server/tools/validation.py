@@ -34,7 +34,7 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="get_validation_status",
-            description="Get validation coverage statistics. Shows how many papers have been verified against external databases (CrossRef, Semantic Scholar, etc.)",
+            description="Validation coverage stats (verified, not found, errors)",
             inputSchema={
                 "type": "object",
                 "properties": {},
@@ -42,56 +42,34 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="validate_papers",
-            description="Validate papers against external databases. Can specify paper IDs or process from the validation queue.",
+            description="Validate, queue, or reset paper validation. Actions: validate (default), queue, reset",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["validate", "queue", "reset"],
+                        "description": "Action: validate (run validation), queue (get papers needing validation), reset (clear validation status)",
+                        "default": "validate",
+                    },
                     "paper_ids": {
                         "type": "array",
                         "items": {"type": "integer"},
-                        "description": "List of paper IDs to validate (omit to use queue)",
+                        "description": "Paper IDs (omit to use queue for validate, or reset ALL for reset)",
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Max papers from queue if no IDs specified (default: 20)",
-                        "default": 20,
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="get_validation_queue",
-            description="Get papers that need validation. Papers with DOI are prioritized as they're easier to verify.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum papers to return (default: 20)",
+                        "description": "Max papers for validate/queue (default: 20)",
                         "default": 20,
                     },
                     "prioritize_with_doi": {
                         "type": "boolean",
-                        "description": "Show papers with DOI first (default: true)",
+                        "description": "For queue: show papers with DOI first",
                         "default": True,
-                    },
-                },
-            },
-        ),
-        Tool(
-            name="reset_validation",
-            description="Reset validation status for papers to allow re-validation. Useful after fixing paper metadata or retrying failed validations.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "paper_ids": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                        "description": "Paper IDs to reset (omit to reset ALL papers)",
                     },
                     "confirm": {
                         "type": "boolean",
-                        "description": "Must be true to reset all papers",
+                        "description": "For reset without paper_ids: must be true to reset ALL",
                     },
                 },
             },
@@ -223,23 +201,26 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         if name == "get_validation_status":
             return _get_validation_status(arguments)
 
+        if name == "validate_papers":
+            action = arguments.get("action", "validate")
+
+            if action == "queue":
+                return _get_validation_queue(arguments)
+            elif action == "reset":
+                return _reset_validation(arguments)
+            else:  # validate (default)
+                return await _validate_papers(arguments)
+
+        # Legacy tool names - redirect to consolidated tool
         if name == "get_validation_queue":
             return _get_validation_queue(arguments)
-
-        if name == "validate_papers":
-            return await _validate_papers(arguments)
-
-        # Legacy single paper validation - redirect to validate_papers
         if name == "validate_paper":
             paper_id = arguments.get("paper_id")
             if paper_id:
                 arguments["paper_ids"] = [paper_id]
             return await _validate_papers(arguments)
-
-        # Legacy batch validation - redirect to validate_papers
         if name == "validate_papers_batch":
             return await _validate_papers(arguments)
-
         if name == "reset_validation":
             return _reset_validation(arguments)
 
