@@ -51,89 +51,19 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query (natural language, keywords, or acronyms)",
-                    },
-                    "limit": {
-                        "type": "integer",
-                        "description": "Maximum results to return",
-                        "default": 20,
-                    },
-                    "mode": {
-                        "type": "string",
-                        "enum": ["smart", "keyword", "semantic", "hybrid", "exact"],
-                        "description": (
-                            "Search mode: 'smart' (default, recommended), 'keyword' (FTS5), "
-                            "'semantic' (embeddings), 'hybrid' (balanced), 'exact' (fast known-paper lookup)"
-                        ),
-                        "default": "smart",
-                    },
-                    # Smart mode options
-                    "correct_spelling": {
-                        "type": "boolean",
-                        "description": "Auto-correct typos (smart mode)",
-                        "default": True,
-                    },
-                    "expand_acronyms": {
-                        "type": "boolean",
-                        "description": "Expand acronyms like ALD, EUV (smart mode)",
-                        "default": True,
-                    },
-                    "add_synonyms": {
-                        "type": "boolean",
-                        "description": "Add synonyms (can increase noise)",
-                        "default": False,
-                    },
-                    # Hybrid options
-                    "alpha": {
-                        "type": "number",
-                        "description": (
-                            "Semantic weight for hybrid mode (0-1). "
-                            "0=keyword only, 1=semantic only, 0.65=balanced"
-                        ),
-                        "default": 0.65,
-                    },
-                    # Semantic options
-                    "search_level": {
-                        "type": "string",
-                        "enum": ["chunk", "paper"],
-                        "description": (
-                            "Semantic search level: 'chunk' (full-text), 'paper' (title+abstract)"
-                        ),
-                        "default": "chunk",
-                    },
-                    "min_similarity": {
-                        "type": "number",
-                        "description": "Minimum similarity score (0-1)",
-                        "default": 0.35,
-                    },
-                    # Re-ranking options
-                    "rerank": {
-                        "type": "boolean",
-                        "description": (
-                            "Enable cross-encoder re-ranking for better precision. "
-                            "If not specified, uses the setting default (RERANKER_ENABLED)."
-                        ),
-                    },
-                    # Filters
-                    "year_min": {
-                        "type": "integer",
-                        "description": "Minimum publication year",
-                    },
-                    "year_max": {
-                        "type": "integer",
-                        "description": "Maximum publication year",
-                    },
-                    # Summary enrichment
-                    "include_summary": {
-                        "type": "boolean",
-                        "description": (
-                            "Include one_sentence_summary and paper_type from extractions. "
-                            "Useful for browsing results without separate get_paper_content calls."
-                        ),
-                        "default": False,
-                    },
+                    "query": {"type": "string", "description": "Search query (natural language, keywords, or acronyms)"},
+                    "limit": {"type": "integer", "default": 20, "description": "Maximum results to return"},
+                    "mode": {"type": "string", "enum": ["smart", "keyword", "semantic", "hybrid", "exact"], "default": "smart", "description": "Search mode: 'smart' (default, recommended), 'keyword' (FTS5), 'semantic' (embeddings), 'hybrid' (balanced), 'exact' (fast known-paper lookup)"},
+                    "correct_spelling": {"type": "boolean", "default": True, "description": "Auto-correct typos (smart mode)"},
+                    "expand_acronyms": {"type": "boolean", "default": True, "description": "Expand acronyms like ALD, EUV (smart mode)"},
+                    "add_synonyms": {"type": "boolean", "default": False, "description": "Add synonyms (can increase noise)"},
+                    "alpha": {"type": "number", "default": 0.65, "description": "Semantic weight for hybrid mode (0-1). 0=keyword only, 1=semantic only, 0.65=balanced"},
+                    "search_level": {"type": "string", "enum": ["chunk", "paper"], "default": "chunk", "description": "Semantic search level: 'chunk' (full-text), 'paper' (title+abstract)"},
+                    "min_similarity": {"type": "number", "default": 0.35, "description": "Minimum similarity score (0-1)"},
+                    "rerank": {"type": "boolean", "description": "Enable cross-encoder re-ranking for better precision. If not specified, uses the setting default (RERANKER_ENABLED)."},
+                    "year_min": {"type": "integer", "description": "Minimum publication year"},
+                    "year_max": {"type": "integer", "description": "Maximum publication year"},
+                    "include_summary": {"type": "boolean", "default": False, "description": "Include one_sentence_summary and paper_type from extractions. Useful for browsing results without separate get_paper_content calls."},
                 },
                 "required": ["query"],
             },

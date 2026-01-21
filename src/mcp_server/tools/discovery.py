@@ -82,6 +82,12 @@ async def list_tools() -> list[Tool]:
                         "default": False,
                         "description": "Include BibTeX (citation mode)",
                     },
+                    "prefer_type": {
+                        "type": "string",
+                        "enum": ["any", "review", "primary"],
+                        "default": "any",
+                        "description": "Citation mode: prefer reviews (background) or primary sources (specific claims)",
+                    },
                 },
                 "required": ["input_type"],
             },
@@ -292,34 +298,115 @@ async def _semantic_find(arguments: dict[str, Any]) -> list[TextContent]:
     elif input_type == "citation":
         # Suggest citations for text
         from services.citation_service import CitationService
+        from literature_core import get_session, Paper
+        from literature_core.models import PaperContent
+        from sqlalchemy.orm import joinedload
 
         text = arguments.get("text")
         if not text:
             return _to_response(error("text required for input_type=citation", code="MISSING_PARAM"))
 
         include_bibtex = arguments.get("include_bibtex", False)
+        prefer_type = arguments.get("prefer_type", "any")
+
+        # Fetch more results if filtering by type (to ensure enough results after filtering)
+        fetch_limit = limit * 3 if prefer_type != "any" else limit
 
         result = await SearchService.suggest_citations_for_text(
             text=text,
-            limit=limit,
+            limit=fetch_limit,
         )
 
         suggestions = result.results
 
-        # Add BibTeX if requested
-        if include_bibtex and suggestions:
-            paper_ids = [s["id"] for s in suggestions]
-            papers_data = [PaperService.get(pid) for pid in paper_ids if pid]
-            valid_papers = [p for p in papers_data if p]
+        # Always enrich with extraction data for citation suggestions
+        if suggestions:
+            paper_ids = [s["id"] for s in suggestions if s.get("id")]
 
-            if valid_papers:
-                bibtex_entries = CitationService.generate_bibtex(valid_papers)
+            with get_session() as session:
+                # Fetch Paper ORM objects with authors
+                papers = (
+                    session.query(Paper)
+                    .options(joinedload(Paper.authors))
+                    .filter(Paper.id.in_(paper_ids))
+                    .all()
+                )
+                paper_map = {p.id: p for p in papers}
+
+                # Fetch extraction data
+                extractions = (
+                    session.query(PaperContent)
+                    .filter(PaperContent.paper_id.in_(paper_ids))
+                    .all()
+                )
+                extraction_map = {e.paper_id: e for e in extractions}
+
+                # Enrich suggestions with extraction data
                 for suggestion in suggestions:
-                    for entry in bibtex_entries:
-                        if entry.get("paper_id") == suggestion["id"]:
+                    pid = suggestion.get("id")
+                    extraction = extraction_map.get(pid)
+
+                    if extraction:
+                        # Prefer deep extraction if available
+                        suggestion["summary"] = (
+                            extraction.deep_one_sentence_summary
+                            or extraction.one_sentence_summary
+                        )
+                        suggestion["paper_type"] = (
+                            extraction.deep_paper_type
+                            or extraction.paper_type
+                        )
+                        suggestion["topics"] = (
+                            extraction.deep_topics
+                            or extraction.topics
+                            or []
+                        )
+                        # Key findings help identify what claims the paper supports
+                        suggestion["key_findings"] = extraction.key_findings or []
+
+                        # Flag reviews as good for general/background citations
+                        if suggestion["paper_type"] in ("review", "meta-analysis"):
+                            suggestion["citation_hint"] = "Good for background/overview citations"
+                    else:
+                        suggestion["summary"] = None
+                        suggestion["paper_type"] = None
+                        suggestion["topics"] = []
+                        suggestion["key_findings"] = []
+
+                # Apply type preference filtering/sorting
+                review_types = {"review", "meta-analysis", "survey"}
+                primary_types = {"research_article", "letter", "communication", "conference"}
+
+                if prefer_type == "review":
+                    # Filter to reviews first, then fill with others if needed
+                    reviews = [s for s in suggestions if s.get("paper_type") in review_types]
+                    others = [s for s in suggestions if s.get("paper_type") not in review_types]
+                    suggestions = (reviews + others)[:limit]
+                    for s in suggestions:
+                        if s.get("paper_type") in review_types:
+                            s["citation_hint"] = "✓ Review paper (preferred)"
+                elif prefer_type == "primary":
+                    # Filter to primary sources first, then fill with others
+                    primary = [s for s in suggestions if s.get("paper_type") in primary_types]
+                    others = [s for s in suggestions if s.get("paper_type") not in primary_types]
+                    suggestions = (primary + others)[:limit]
+                    for s in suggestions:
+                        if s.get("paper_type") in primary_types:
+                            s["citation_hint"] = "✓ Primary source (preferred)"
+                else:
+                    # "any" - just take top results by score
+                    suggestions = suggestions[:limit]
+
+                # Add BibTeX if requested
+                if include_bibtex and papers:
+                    bibtex_entries = CitationService.generate_bibtex(papers)
+                    bibtex_map = {e["paper_id"]: e for e in bibtex_entries}
+
+                    for suggestion in suggestions:
+                        entry = bibtex_map.get(suggestion["id"])
+                        if entry:
                             suggestion["bibtex"] = entry.get("bibtex", "")
                             suggestion["citation_key"] = entry.get("key", "")
-                            break
 
         return _to_response(
             search_result(

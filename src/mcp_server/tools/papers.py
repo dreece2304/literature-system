@@ -221,83 +221,23 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "paper_id": {
-                        "type": "integer",
-                        "description": "Paper ID",
-                    },
-                    # Basic fields
-                    "paper_type": {
-                        "type": "string",
-                        "description": "Type: research_article, review, conference, etc.",
-                    },
-                    "topics": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Identified topics/themes",
-                    },
-                    "one_sentence_summary": {
-                        "type": "string",
-                        "description": "One sentence summary of the paper",
-                    },
-                    "key_findings": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Key findings from the paper",
-                    },
-                    "methodology_summary": {
-                        "type": "string",
-                        "description": "Summary of methodology used",
-                    },
-                    # Extended fields
-                    "discussion_summary": {
-                        "type": "string",
-                        "description": "Summary of discussion section",
-                    },
-                    "future_directions": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Future research directions mentioned",
-                    },
-                    "quantitative_results": {
-                        "type": "array",
-                        "items": {"type": "object"},
-                        "description": "List of {metric, value, unit, conditions}",
-                    },
-                    "citable_claims": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "Specific quotable assertions",
-                    },
-                    "techniques_used": {
-                        "type": "array",
-                        "items": {"type": "object"},
-                        "description": "List of {technique, purpose, specifics}",
-                    },
-                    "experimental_conditions": {
-                        "type": "object",
-                        "description": "{materials, temperature_range, pressure, key_parameters}",
-                    },
-                    "prior_work_comparison": {
-                        "type": "array",
-                        "items": {"type": "object"},
-                        "description": "List of {reference_claim, this_work, improvement}",
-                    },
-                    "research_context": {
-                        "type": "object",
-                        "description": "{problem_addressed, novelty, limitations, significance}",
-                    },
-                    "citation_contexts": {
-                        "type": "object",
-                        "description": "{introduction, methods, results, discussion}",
-                    },
-                    # Project relevance scoring
+                    "paper_id": {"type": "integer", "description": "Paper ID"},
+                    "paper_type": {"type": "string", "description": "Type: research_article, review, conference, etc."},
+                    "topics": {"type": "array", "items": {"type": "string"}, "description": "Identified topics/themes"},
+                    "one_sentence_summary": {"type": "string", "description": "One sentence summary of the paper"},
+                    "key_findings": {"type": "array", "items": {"type": "string"}, "description": "Key findings from the paper"},
+                    "methodology_summary": {"type": "string", "description": "Summary of methodology used"},
+                    "discussion_summary": {"type": "string", "description": "Summary of discussion section"},
+                    "future_directions": {"type": "array", "items": {"type": "string"}, "description": "Future research directions mentioned"},
+                    "quantitative_results": {"type": "array", "items": {"type": "object"}, "description": "List of {metric, value, unit, conditions}"},
+                    "citable_claims": {"type": "array", "items": {"type": "string"}, "description": "Specific quotable assertions"},
+                    "techniques_used": {"type": "array", "items": {"type": "object"}, "description": "List of {technique, purpose, specifics}"},
+                    "experimental_conditions": {"type": "object", "description": "{materials, temperature_range, pressure, key_parameters}"},
+                    "prior_work_comparison": {"type": "array", "items": {"type": "object"}, "description": "List of {reference_claim, this_work, improvement}"},
+                    "research_context": {"type": "object", "description": "{problem_addressed, novelty, limitations, significance}"},
+                    "citation_contexts": {"type": "object", "description": "{introduction, methods, results, discussion}"},
                     "project_relevance": {
                         "type": "object",
-                        "description": (
-                            "Project relevance scores. Keys are project names (e.g., 'thesis', 'paper2'), "
-                            "values are objects with: relevance (high|medium|low|none), "
-                            "reason (brief explanation), primary_use (background|methods|etc)"
-                        ),
                         "additionalProperties": {
                             "type": "object",
                             "properties": {
@@ -306,6 +246,7 @@ async def list_tools() -> list[Tool]:
                                 "primary_use": {"type": "string"},
                             },
                         },
+                        "description": "Project relevance scores. Keys are project names (e.g., 'thesis', 'paper2'), values are objects with: relevance (high|medium|low|none), reason (brief explanation), primary_use (background|methods|etc)",
                     },
                 },
                 "required": ["paper_id"],
