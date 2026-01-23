@@ -9,7 +9,6 @@ not with database queries. For database-backed citation operations,
 see the project.py module.
 """
 
-import re
 import sys
 from typing import Any
 from pathlib import Path
@@ -22,7 +21,7 @@ _litai_src = Path(__file__).parent.parent.parent
 if str(_litai_src) not in sys.path:
     sys.path.insert(0, str(_litai_src))
 
-from literature_core import serialize
+from literature_core import serialize, generate_citation_key
 from context.parser import ManuscriptParser
 
 
@@ -127,49 +126,6 @@ async def list_tools() -> list[Tool]:
 # ============================================================================
 
 
-def _generate_citation_key(title: str, authors: str, year: int | None = None) -> str:
-    """Generate a BibTeX citation key from paper metadata.
-
-    Format: firstauthorYEARfirstword
-    Example: smith2023machine
-
-    Args:
-        title: Paper title
-        authors: Author names (comma or 'and' separated)
-        year: Publication year
-
-    Returns:
-        Citation key string
-    """
-    # Extract first author's last name
-    first_author = "unknown"
-    if authors:
-        # Handle "Smith, John" or "John Smith" or "Smith, J. and Doe, J."
-        authors_clean = authors.replace(" and ", ", ").replace(";", ",")
-        first_author_part = authors_clean.split(",")[0].strip()
-        # If "Smith, John" format, use Smith
-        # If "John Smith" format, use last word
-        words = first_author_part.split()
-        if len(words) > 0:
-            first_author = words[-1] if len(words) > 1 else words[0]
-        first_author = re.sub(r'[^a-zA-Z]', '', first_author).lower()
-
-    # Extract first meaningful word from title
-    title_word = ""
-    if title:
-        # Skip common articles
-        skip_words = {"a", "an", "the", "on", "of", "for", "in", "to"}
-        for word in title.split():
-            clean = re.sub(r'[^a-zA-Z]', '', word).lower()
-            if clean and clean not in skip_words:
-                title_word = clean
-                break
-
-    year_str = str(year) if year else ""
-
-    return f"{first_author}{year_str}{title_word}"
-
-
 def _to_bibtex(
     paper: dict[str, Any],
     entry_type: str = "article",
@@ -192,7 +148,7 @@ def _to_bibtex(
 
     # Generate key if not provided
     if not key:
-        key = _generate_citation_key(
+        key = generate_citation_key(
             paper.get("title", ""),
             authors,
             paper.get("year"),
@@ -363,7 +319,7 @@ def _do_check_citations(arguments: dict[str, Any]) -> list[TextContent]:
         authors = paper.get("authors", "Unknown")
         if isinstance(authors, list):
             authors = ", ".join(authors)
-        key = _generate_citation_key(paper.get("title", ""), authors, paper.get("year"))
+        key = generate_citation_key(paper.get("title", ""), authors, paper.get("year"))
         library_keys[key] = paper
 
     library_key_set = set(library_keys.keys())
@@ -391,7 +347,7 @@ def _do_check_citations(arguments: dict[str, Any]) -> list[TextContent]:
 
 def _do_suggest_key(arguments: dict[str, Any]) -> list[TextContent]:
     """Suggest a citation key."""
-    key = _generate_citation_key(
+    key = generate_citation_key(
         arguments.get("title", ""),
         arguments.get("authors", "Unknown"),
         arguments.get("year"),

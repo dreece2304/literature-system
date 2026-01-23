@@ -115,6 +115,10 @@ from .response import (
     batch_result,
     search_result,
     status_response,
+    serialize,
+    get_tool_usage,
+    save_tool_usage,
+    load_tool_usage,
 )
 
 # Logging
@@ -148,8 +152,9 @@ from .models import (
     PaperTable,
     PaperFigure,
     PaperReference,
+    PaperCitation,
+    ClaimCitation,
     ExtractionMetadata,
-    CitedClaim,
     # Association tables
     paper_authors,
     paper_tags,
@@ -161,6 +166,12 @@ from .chunks import (
     TextChunk,
     ChunkEmbedding,
     ChunkSearchResult,
+)
+
+# Utilities
+from .utils import (
+    extract_first_author_surname,
+    generate_citation_key,
 )
 
 __all__ = [
@@ -280,8 +291,9 @@ __all__ = [
     "PaperTable",
     "PaperFigure",
     "PaperReference",
+    "PaperCitation",
+    "ClaimCitation",
     "ExtractionMetadata",
-    "CitedClaim",
     # Association tables
     "paper_authors",
     "paper_tags",
@@ -290,6 +302,9 @@ __all__ = [
     "TextChunk",
     "ChunkEmbedding",
     "ChunkSearchResult",
+    # Utilities
+    "extract_first_author_surname",
+    "generate_citation_key",
 ]
 
 __version__ = "0.1.0"

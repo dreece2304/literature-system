@@ -46,6 +46,7 @@ from literature_core import (
     Tag,
     ValidationError,
     MAX_SEARCH_LIMIT,
+    generate_citation_key,
 )
 
 logger = get_logger(__name__)
@@ -223,18 +224,8 @@ class CitationService:
         results = []
 
         for paper in papers:
-            # Generate citation key
-            first_author = ""
-            if paper.authors:
-                first_author = paper.authors[0].name.split()[-1].lower()
-                first_author = re.sub(r'[^a-z]', '', first_author)
-            year = paper.year or ""
-            title = paper.title or ""
-            title_word = (
-                re.sub(r'[^a-z]', '', title.split()[0].lower())
-                if title else ""
-            )
-            key = f"{first_author}{year}{title_word}"
+            # Generate citation key using shared utility
+            key = generate_citation_key(paper.title, paper.authors, paper.year)
 
             # Build BibTeX fields
             fields = []
@@ -761,15 +752,8 @@ class CitationService:
 
             bibtex_entries = []
             for paper in papers:
-                # Generate key
-                first_author = ""
-                if paper.authors:
-                    first_author = paper.authors[0].name.split()[-1].lower()
-                    first_author = re.sub(r'[^a-z]', '', first_author)
-                year = paper.year or ""
-                title = paper.title or ""
-                title_word = re.sub(r'[^a-z]', '', title.split()[0].lower()) if title else ""
-                key = f"{first_author}{year}{title_word}"
+                # Generate key using shared utility
+                key = generate_citation_key(paper.title, paper.authors, paper.year)
 
                 fields = []
                 if paper.title:

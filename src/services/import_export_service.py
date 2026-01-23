@@ -52,6 +52,7 @@ from literature_core import (
     CollectionNotFoundError,
     ValidationError,
     MAX_SEARCH_LIMIT,
+    generate_citation_key,
 )
 
 logger = get_logger(__name__)
@@ -191,17 +192,11 @@ class ImportExportService:
         # Generate citation key if not present
         key = paper.get("citation_key") or ""
         if not key:
-            first_author = ""
-            if paper.get("authors"):
-                author = paper["authors"][0]
-                if isinstance(author, dict):
-                    first_author = author.get("name", "").split()[-1].lower()
-                else:
-                    first_author = str(author).split()[-1].lower()
-            year = paper.get("year", "")
-            title_word = (paper.get("title", "").split()[0] if paper.get("title") else "").lower()
-            # Clean special characters from key
-            key = re.sub(r'[^a-z0-9]', '', f"{first_author}{year}{title_word}")
+            key = generate_citation_key(
+                paper.get("title"),
+                paper.get("authors"),
+                paper.get("year"),
+            )
 
         entry_type = "article"
 
