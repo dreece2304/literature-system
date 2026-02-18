@@ -564,8 +564,6 @@ def _store_extraction(arguments: dict[str, Any]) -> list[TextContent]:
 
                 projects_stored.append(project_name)
 
-            session.commit()
-
     response = {"paper_id": paper_id}
     if structured_data:
         response["extended_fields_stored"] = list(structured_data.keys())

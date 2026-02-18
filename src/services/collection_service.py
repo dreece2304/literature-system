@@ -18,6 +18,8 @@ Usage:
 from __future__ import annotations
 
 from dataclasses import dataclass
+from sqlalchemy.orm import joinedload
+
 from literature_core import (
     get_session,
     get_logger,
@@ -93,7 +95,10 @@ class CollectionService:
             CollectionNotFoundError: If collection doesn't exist
         """
         with get_session() as session:
-            collection = session.query(Collection).filter(
+            # Eager load papers to avoid N+1 query
+            collection = session.query(Collection).options(
+                joinedload(Collection.papers)
+            ).filter(
                 Collection.id == collection_id
             ).first()
             if not collection:
@@ -116,7 +121,10 @@ class CollectionService:
             CollectionListResult with collections and count
         """
         with get_session() as session:
-            query = session.query(Collection)
+            # Eager load papers to avoid N+1 queries for paper_count
+            query = session.query(Collection).options(
+                joinedload(Collection.papers)
+            )
 
             if not list_all:
                 if parent_id is not None:
@@ -265,7 +273,10 @@ class CollectionService:
             CollectionListResult with child collections
         """
         with get_session() as session:
-            children = session.query(Collection).filter(
+            # Eager load papers for paper_count
+            children = session.query(Collection).options(
+                joinedload(Collection.papers)
+            ).filter(
                 Collection.parent_id == collection_id
             ).order_by(Collection.name).all()
 
@@ -379,8 +390,13 @@ class CollectionService:
         Raises:
             CollectionNotFoundError: If collection doesn't exist
         """
+        from literature_core import Author
+
         with get_session() as session:
-            collection = session.query(Collection).filter(
+            # Eager load papers and their authors to avoid N+1 queries
+            collection = session.query(Collection).options(
+                joinedload(Collection.papers).joinedload(Paper.authors)
+            ).filter(
                 Collection.id == collection_id
             ).first()
             if not collection:

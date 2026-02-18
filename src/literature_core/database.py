@@ -3,7 +3,7 @@ import logging
 from contextlib import contextmanager
 from typing import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker, Session
 
@@ -24,8 +24,18 @@ def get_engine() -> Engine:
         _engine = create_engine(
             settings.database_url,
             echo=False,
-            connect_args={"check_same_thread": False}  # SQLite specific
+            connect_args={"check_same_thread": False, "timeout": 15},  # SQLite specific
+            pool_pre_ping=True,
+            pool_recycle=3600,
         )
+
+        # Enable foreign key enforcement for SQLite
+        @event.listens_for(_engine, "connect")
+        def set_sqlite_pragma(dbapi_conn, connection_record):
+            cursor = dbapi_conn.cursor()
+            cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.close()
+
     return _engine
 
 

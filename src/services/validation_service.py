@@ -370,7 +370,6 @@ class ValidationService:
                 },
                 synchronize_session=False
             )
-            session.commit()
 
             logger.info(f"Reset validation for {count} papers")
             return count

@@ -849,7 +849,6 @@ def _match_reference_to_library(arguments: dict[str, Any]) -> list[TextContent]:
         if matches and matches[0]["confidence"] >= 0.95:
             ref.match_status = "matched"
             ref.matched_paper_id = matches[0]["paper_id"]
-            session.commit()
 
         return _to_response(success({
             "reference_id": reference_id,
@@ -898,7 +897,6 @@ async def _import_reference(arguments: dict[str, Any]) -> list[TextContent]:
         if result.status == "success" and result.paper_id:
             ref.match_status = "imported"
             ref.matched_paper_id = result.paper_id
-            session.commit()
 
         response = {
             "reference_id": reference_id,

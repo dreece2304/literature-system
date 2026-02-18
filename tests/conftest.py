@@ -6,13 +6,219 @@ This file provides:
 - Database override for production database isolation
 - Sample data fixtures
 - Mock fixtures for expensive operations
+- Rich-based test output formatting
 """
 import pytest
 import sys
+import time
+import os
+import logging
 from pathlib import Path
 from typing import Generator
 
 from sqlalchemy.orm import Session
+
+# Suppress loguru and other verbose logging during tests
+try:
+    from loguru import logger
+    logger.remove()  # Remove default handler
+    logger.add(lambda _: None, level="CRITICAL")  # Suppress all output
+except ImportError:
+    pass
+
+# Suppress standard logging
+logging.getLogger().setLevel(logging.CRITICAL)
+logging.getLogger("httpx").setLevel(logging.CRITICAL)
+logging.getLogger("chromadb").setLevel(logging.CRITICAL)
+logging.getLogger("sqlalchemy").setLevel(logging.CRITICAL)
+
+# Rich test output
+from rich.console import Console
+from rich.live import Live
+from rich.text import Text
+from rich.table import Table
+from rich.panel import Panel
+
+
+class RichTerminalReporter:
+    """Custom pytest terminal reporter using Rich Live display.
+
+    Uses Rich's Live display for interactive terminals, falls back to
+    periodic progress updates for non-tty environments (pipes, mamba run, etc).
+    """
+
+    def __init__(self, config):
+        self.config = config
+        # Check if we have a real terminal
+        self.is_tty = sys.stderr.isatty() or sys.stdout.isatty()
+        # Use stderr for Rich output
+        self.console = Console(stderr=True, force_terminal=self.is_tty)
+        self.start_time = None
+        self.test_start_time = None
+        self.passed = 0
+        self.failed = 0
+        self.skipped = 0
+        self.errors = []
+        self.total_tests = 0
+        self.current = 0
+        self.current_test = ""
+        self.live = None
+        self.last_progress_report = 0
+
+    def _build_display(self, running=False):
+        """Build the Rich renderable for current state."""
+        elapsed = time.time() - self.start_time if self.start_time else 0
+        pct = self.current / self.total_tests if self.total_tests else 0
+
+        # Progress bar
+        bar_width = 40
+        filled = int(bar_width * pct)
+        bar = "█" * filled + "░" * (bar_width - filled)
+
+        # Status counts
+        status_parts = []
+        if self.passed:
+            status_parts.append(f"[green]{self.passed}✓[/green]")
+        if self.failed:
+            status_parts.append(f"[red]{self.failed}✗[/red]")
+        if self.skipped:
+            status_parts.append(f"[yellow]{self.skipped}○[/yellow]")
+        status_str = " ".join(status_parts) if status_parts else "[dim]starting...[/dim]"
+
+        # Current test
+        if self.current_test:
+            parts = self.current_test.split("::")
+            test_name = parts[-1][:40] if len(parts) > 1 else self.current_test[-40:]
+        else:
+            test_name = ""
+
+        # Build display
+        icon = "[cyan]▶[/cyan]" if running else "[dim]•[/dim]"
+        test_duration = time.time() - self.test_start_time if self.test_start_time and running else 0
+        dur_str = f" [yellow]({test_duration:.1f}s)[/yellow]" if test_duration > 2.0 else ""
+
+        line = f"{icon} [dim]{bar}[/dim] {self.current}/{self.total_tests} • {elapsed:.0f}s • {status_str}"
+        if test_name:
+            line += f"\n   [dim]{test_name}[/dim]{dur_str}"
+
+        return Text.from_markup(line)
+
+    def _print_progress(self):
+        """Print periodic progress update for non-tty mode."""
+        elapsed = time.time() - self.start_time if self.start_time else 0
+        pct = int(100 * self.current / self.total_tests) if self.total_tests else 0
+        self.console.print(f"[dim]Progress:[/dim] {self.current}/{self.total_tests} ({pct}%) • {elapsed:.0f}s • {self.passed}✓ {self.failed}✗ {self.skipped}○")
+
+    def pytest_collection_finish(self, session):
+        """Called after collection."""
+        self.total_tests = len(session.items)
+        self.start_time = time.time()
+
+        # Print header
+        self.console.print()
+        self.console.print("[bold blue]━━━ Literature MCP Tests ━━━[/bold blue]", justify="center")
+        self.console.print(f"[dim]{self.total_tests} tests[/dim]", justify="center")
+        self.console.print()
+
+        # Start live display only in tty mode
+        if self.is_tty:
+            self.live = Live(self._build_display(), console=self.console, refresh_per_second=4, transient=True)
+            self.live.start()
+
+    def pytest_runtest_logstart(self, nodeid, location):
+        """Called when a test starts."""
+        self.test_start_time = time.time()
+        self.current_test = nodeid
+        if self.live:
+            self.live.update(self._build_display(running=True))
+
+    def pytest_runtest_logreport(self, report):
+        """Called for each test phase."""
+        if report.when == "call":
+            self._handle_test_result(report)
+        elif report.when == "setup" and report.skipped:
+            # Handle setup-phase skips
+            self.current += 1
+            self.skipped += 1
+            if self.live:
+                self.live.update(self._build_display())
+
+    def _handle_test_result(self, report):
+        """Handle test completion."""
+        self.current += 1
+
+        # Track outcomes
+        if report.passed:
+            self.passed += 1
+        elif report.failed:
+            self.failed += 1
+            self.errors.append(report.nodeid)
+        elif report.skipped:
+            self.skipped += 1
+
+        self.test_start_time = None
+
+        if self.live:
+            self.live.update(self._build_display())
+        elif not self.is_tty:
+            # Non-tty: print progress every 50 tests or 10%
+            interval = max(50, self.total_tests // 10)
+            if self.current - self.last_progress_report >= interval:
+                self._print_progress()
+                self.last_progress_report = self.current
+
+    def pytest_sessionfinish(self, session, exitstatus):
+        """Called at end of session."""
+        elapsed = time.time() - self.start_time
+
+        # Stop live display
+        if self.live:
+            self.live.stop()
+
+        # Summary
+        parts = []
+        if self.passed:
+            parts.append(f"[green]{self.passed} passed[/green]")
+        if self.failed:
+            parts.append(f"[red]{self.failed} failed[/red]")
+        if self.skipped:
+            parts.append(f"[yellow]{self.skipped} skipped[/yellow]")
+
+        status = "[bold green]✓[/bold green]" if self.failed == 0 else "[bold red]✗[/bold red]"
+        self.console.print(f"{status} {', '.join(parts)} in {elapsed:.1f}s")
+
+        # Show failures
+        if self.errors:
+            self.console.print()
+            self.console.print("[bold red]Failed:[/bold red]")
+            for err in self.errors[:10]:
+                self.console.print(f"  [dim]•[/dim] {err}")
+            if len(self.errors) > 10:
+                self.console.print(f"  [dim]... +{len(self.errors) - 10} more[/dim]")
+
+    def pytest_terminal_summary(self, terminalreporter, exitstatus, config):
+        """Suppress default terminal summary."""
+        pass
+
+
+# Plugin registration
+_rich_reporter = None
+
+
+def pytest_configure(config):
+    """Register Rich reporter and suppress default output."""
+    global _rich_reporter
+    # Always register for verbose < 2, let Rich handle tty detection
+    if config.option.verbose < 2:
+        _rich_reporter = RichTerminalReporter(config)
+        config.pluginmanager.register(_rich_reporter, "rich_reporter")
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_report_teststatus(report, config):
+    """Suppress default test status output."""
+    if _rich_reporter:
+        return "", "", ""
 
 # Add src to path for imports
 src_path = Path(__file__).parent.parent / "src"
@@ -405,12 +611,36 @@ def mock_external_apis():
     # Create a mock service that uses our configurable mocks
     def create_patched_service():
         mock_service = MagicMock()
+        # Search methods (return lists)
         mock_service._search_crossref_multi = mock_apis["crossref"]
         mock_service._search_openalex = mock_apis["openalex"]
         mock_service._search_semantic_scholar_query = mock_apis["semantic_scholar"]
         mock_service._search_arxiv = mock_apis["arxiv"]
         mock_service._search_unpaywall = mock_apis["unpaywall"]
         mock_service._title_similarity = MagicMock(return_value=0.9)
+
+        # Direct DOI lookup methods (async, return single result or None)
+        # These use the crossref mock's first result if available
+        async def lookup_by_doi_mock(doi):
+            results = mock_apis["crossref"].return_value
+            return results[0] if results else None
+
+        async def lookup_openalex_doi_mock(doi):
+            results = mock_apis["openalex"].return_value
+            return results[0] if results else None
+
+        async def lookup_semantic_scholar_doi_mock(doi):
+            results = mock_apis["semantic_scholar"].return_value
+            return results[0] if results else None
+
+        async def resolve_ss_id_mock(paper_id=None, doi=None, title=None):
+            return "mock-ss-id" if doi or title else None
+
+        mock_service.lookup_by_doi = lookup_by_doi_mock
+        mock_service.lookup_crossref_doi = lookup_by_doi_mock  # Alias
+        mock_service.lookup_openalex_doi = lookup_openalex_doi_mock
+        mock_service.lookup_semantic_scholar_doi = lookup_semantic_scholar_doi_mock
+        mock_service._resolve_semantic_scholar_id = resolve_ss_id_mock
         return mock_service
 
     # Patch where ExternalSearchService is USED (in external.py), not where it's defined

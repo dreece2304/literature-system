@@ -19,8 +19,11 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Literal
+from typing import Optional, Literal, Callable, Any
 from abc import ABC, abstractmethod
+
+# Progress callback type: (pass_num, current, total, message)
+ProgressCallback = Callable[[int, int, int, str], Any]
 
 import httpx
 import pdfplumber
@@ -28,11 +31,19 @@ import pdfplumber
 from literature_core import (
     get_session, get_logger, Paper, PaperContent, PaperChunk,
     PaperTable, PaperFigure, PaperReference, ExtractionMetadata,
-    ChunkingStatus, EnrichmentStatus, CitedClaim,
+    ChunkingStatus, EnrichmentStatus,
 )
 from sqlalchemy import func
 from config.ai_settings import settings
 from .paper_service import PaperService
+from .extraction_prompts import (
+    get_extraction_prompt,
+    get_chunk_extraction_prompt,
+    get_consolidation_prompt,
+    parse_extraction_response,
+    validate_extraction,
+    EXTRACTION_SCHEMA,
+)
 
 logger = get_logger(__name__)
 
@@ -41,7 +52,13 @@ logger = get_logger(__name__)
 # =============================================================================
 
 # Target chunk size in words (roughly ~4000 tokens)
-DEFAULT_CHUNK_SIZE = 4000
+DEFAULT_CHUNK_SIZE = 2000
+
+# Progress callback type: (phase, detail, progress_pct) -> None
+# phase: "text", "ocr", "tables", "figures", "references", "chunking"
+# detail: human-readable status like "Page 3/10"
+# progress_pct: 0-100 or None if indeterminate
+ProgressCallback = Callable[[str, str, Optional[int]], None]
 
 
 # =============================================================================
@@ -246,6 +263,8 @@ class PaperExtraction:
     # LLM cannot reliably map claims to reference numbers without the actual reference list.
     # Kept for backwards compatibility with existing extractions.
     cited_references: Optional[list[dict]] = None  # DEPRECATED - do not use
+    # Chunk extractions for claim citation processing
+    chunk_extractions: Optional[list[dict]] = None  # Raw chunk extraction data
     # Verbose output for debugging
     raw_response: Optional[str] = None
     prompt_used: Optional[str] = None
@@ -473,7 +492,8 @@ class OllamaClient(LLMClient):
             "\n\n[...]\n\n" + conclusion
         )
 
-    EXTRACTION_PROMPT = """You are an expert research paper analyst specializing in scientific literature extraction for citation matching.
+    # Legacy prompt kept for backward compatibility - use extraction_prompts.py for new extractions
+    _LEGACY_EXTRACTION_PROMPT = """You are an expert research paper analyst specializing in scientific literature extraction for citation matching.
 
 Analyze this paper carefully and extract structured information optimized for finding relevant citations.
 
@@ -576,6 +596,8 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
     def __init__(self):
         self.host = settings.ollama.host
         self.model = settings.ollama.reader_model
+        self.quick_model = settings.ollama.quick_extractor_model
+        self.deep_model = settings.ollama.deep_extractor_model
         self.timeout = settings.ollama.timeout
         self.temperature = settings.ollama.reader_temperature
 
@@ -632,7 +654,7 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
             coverage = (chars_used / total_chars * 100) if total_chars > 0 else 100
             full_text_section = f"FULL TEXT ({chars_used:,} of {total_chars:,} chars, {coverage:.0f}% - {strategy}):\n{extracted}\n"
 
-        prompt = self.EXTRACTION_PROMPT.format(
+        prompt = self._LEGACY_EXTRACTION_PROMPT.format(
             title=title,
             abstract=abstract or "Not available",
             full_text_section=full_text_section
@@ -649,8 +671,7 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
                         "options": {
                             "temperature": self.temperature,
                             "num_predict": 2048,  # Tokens for response
-                            "num_ctx": 32768,  # Default safe context (32K tokens)
-                            # Note: 128K requires YaRN config in model
+                            "num_ctx": 8192,  # Reduced from 32K for speed
                         }
                     }
                 )
@@ -751,6 +772,337 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
                 paper_id=paper_id,
                 success=False,
                 error=f"JSON parse error: {e}"
+            )
+
+    async def extract_quick(
+        self,
+        title: str,
+        abstract: str,
+        journal: Optional[str] = None,
+        paper_id: int = 0,
+        verbose: bool = False
+    ) -> PaperExtraction:
+        """Extract quick tier (abstract-only) using unified prompts.
+
+        Args:
+            title: Paper title
+            abstract: Paper abstract
+            journal: Journal name (helps with paper_type inference)
+            paper_id: Paper ID for the result
+            verbose: If True, include raw_response and prompt_used in result
+
+        Returns:
+            PaperExtraction with paper_type, topics, one_sentence_summary
+        """
+        import time
+        start_time = time.time()
+
+        # Generate prompt using unified prompts module
+        prompt = get_extraction_prompt(
+            title=title,
+            abstract=abstract or "",
+            tier="quick",
+            journal=journal,
+        )
+
+        try:
+            # Use quick model for fast extraction
+            model = self.quick_model or self.model
+
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.host}/api/generate",
+                    json={
+                        "model": model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": self.temperature,
+                            "num_predict": 1024,  # Quick tier needs less output
+                            "num_ctx": 8192,  # Quick tier uses less context
+                        }
+                    }
+                )
+
+                elapsed = time.time() - start_time
+
+                if response.status_code != 200:
+                    return PaperExtraction(
+                        paper_id=paper_id,
+                        success=False,
+                        error=f"Ollama error: {response.status_code}",
+                        elapsed_seconds=elapsed,
+                        prompt_used=prompt if verbose else None
+                    )
+
+                data = response.json()
+                response_text = data.get("response", "")
+
+                # Parse using unified parser
+                parsed = parse_extraction_response(response_text)
+
+                # Validate quick tier schema
+                is_valid, missing = validate_extraction(parsed, "quick")
+
+                if not is_valid:
+                    return PaperExtraction(
+                        paper_id=paper_id,
+                        success=False,
+                        error=f"Missing required fields: {missing}",
+                        elapsed_seconds=elapsed,
+                        raw_response=response_text if verbose else None,
+                        prompt_used=prompt if verbose else None
+                    )
+
+                extraction = PaperExtraction(
+                    paper_id=paper_id,
+                    paper_type=parsed.get("paper_type"),
+                    topics=parsed.get("topics", []),
+                    one_sentence_summary=parsed.get("one_sentence_summary"),
+                    extractor_model=f"ollama/{model}",
+                    elapsed_seconds=elapsed,
+                    success=True
+                )
+
+                if verbose:
+                    extraction.raw_response = response_text
+                    extraction.prompt_used = prompt
+
+                return extraction
+
+        except httpx.TimeoutException:
+            elapsed = time.time() - start_time
+            return PaperExtraction(
+                paper_id=paper_id,
+                success=False,
+                error="Ollama timeout",
+                elapsed_seconds=elapsed,
+                prompt_used=prompt if verbose else None
+            )
+        except Exception as e:
+            elapsed = time.time() - start_time
+            return PaperExtraction(
+                paper_id=paper_id,
+                success=False,
+                error=str(e),
+                elapsed_seconds=elapsed,
+                prompt_used=prompt if verbose else None
+            )
+
+    async def extract_chunk(
+        self,
+        title: str,
+        chunk_text: str,
+        chunk_number: int,
+        total_chunks: int,
+    ) -> dict:
+        """Extract information from a single chunk (deep extraction pass 1).
+
+        Args:
+            title: Paper title
+            chunk_text: Text content of this chunk
+            chunk_number: 1-indexed chunk number
+            total_chunks: Total number of chunks
+
+        Returns:
+            Parsed chunk extraction dict or empty dict on failure
+        """
+        prompt = get_chunk_extraction_prompt(
+            title=title,
+            chunk_text=chunk_text,
+            chunk_number=chunk_number,
+            total_chunks=total_chunks,
+        )
+
+        # Use deep model for chunk extraction (part of deep pipeline)
+        model = self.deep_model or self.model
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.host}/api/generate",
+                    json={
+                        "model": model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": self.temperature,
+                            "num_predict": 1024,
+                            "num_ctx": 4096,  # Reduced from 16K for speed
+                        }
+                    }
+                )
+
+                if response.status_code != 200:
+                    logger.warning(f"Chunk {chunk_number} extraction failed: {response.status_code}")
+                    return {}
+
+                data = response.json()
+                response_text = data.get("response", "")
+                return parse_extraction_response(response_text)
+
+        except Exception as e:
+            logger.warning(f"Chunk {chunk_number} extraction error: {e}")
+            return {}
+
+    async def extract_deep(
+        self,
+        title: str,
+        abstract: str,
+        chunks: list[str],
+        quick_extraction: dict,
+        journal: Optional[str] = None,
+        authors: Optional[str] = None,
+        year: Optional[int] = None,
+        paper_id: int = 0,
+        verbose: bool = False,
+        progress_callback: Optional[ProgressCallback] = None
+    ) -> PaperExtraction:
+        """Extract deep tier using 2-pass approach (chunks → consolidation).
+
+        Args:
+            title: Paper title
+            abstract: Paper abstract
+            chunks: List of text chunks from PDF
+            quick_extraction: Dict from quick extraction for verification
+            journal: Journal name
+            authors: Author names
+            year: Publication year
+            paper_id: Paper ID for the result
+            verbose: If True, include detailed extraction info
+            progress_callback: Optional callback (pass_num, current, total, message)
+                pass 1 = chunk extraction, pass 2 = consolidation
+
+        Returns:
+            PaperExtraction with full deep schema
+        """
+        import time
+        start_time = time.time()
+
+        # Pass 1: Extract from each chunk
+        logger.info(f"Deep extraction pass 1: processing {len(chunks)} chunks")
+        if progress_callback:
+            progress_callback(1, 0, len(chunks), "Starting chunk extraction")
+
+        chunk_extractions = []
+        for i, chunk_text in enumerate(chunks, 1):
+            if progress_callback:
+                progress_callback(1, i, len(chunks), f"Extracting chunk {i}/{len(chunks)}")
+
+            chunk_result = await self.extract_chunk(
+                title=title,
+                chunk_text=chunk_text,
+                chunk_number=i,
+                total_chunks=len(chunks),
+            )
+            chunk_extractions.append(chunk_result)
+            # Log progress for long extractions
+            if i % 5 == 0:
+                logger.info(f"Processed {i}/{len(chunks)} chunks")
+
+        # Pass 2: Consolidate all chunk extractions
+        logger.info("Deep extraction pass 2: consolidating chunks")
+        if progress_callback:
+            progress_callback(2, 0, 1, "Consolidating chunk extractions")
+
+        prompt = get_consolidation_prompt(
+            title=title,
+            abstract=abstract or "",
+            quick_extraction=quick_extraction,
+            chunk_extractions=chunk_extractions,
+            journal=journal,
+            authors=authors,
+            year=year,
+        )
+
+        # Use deep model for full extraction
+        model = self.deep_model or self.model
+
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
+                    f"{self.host}/api/generate",
+                    json={
+                        "model": model,
+                        "prompt": prompt,
+                        "stream": False,
+                        "options": {
+                            "temperature": self.temperature,
+                            "num_predict": 2048,  # Deep tier output
+                            "num_ctx": 8192,  # Reduced from 32K for speed
+                        }
+                    }
+                )
+
+                elapsed = time.time() - start_time
+
+                if response.status_code != 200:
+                    return PaperExtraction(
+                        paper_id=paper_id,
+                        success=False,
+                        error=f"Ollama consolidation error: {response.status_code}",
+                        elapsed_seconds=elapsed,
+                        prompt_used=prompt if verbose else None
+                    )
+
+                data = response.json()
+                response_text = data.get("response", "")
+
+                # Parse using unified parser
+                parsed = parse_extraction_response(response_text)
+
+                # Validate deep tier schema
+                is_valid, missing = validate_extraction(parsed, "deep")
+
+                if not is_valid:
+                    logger.warning(f"Deep extraction missing fields: {missing}")
+                    # Continue anyway - partial extraction is still useful
+
+                extraction = PaperExtraction(
+                    paper_id=paper_id,
+                    paper_type=parsed.get("paper_type"),
+                    topics=parsed.get("topics", []),
+                    one_sentence_summary=parsed.get("one_sentence_summary"),
+                    key_findings=parsed.get("key_findings", []),
+                    methodology_summary=parsed.get("methodology_summary"),
+                    research_context=parsed.get("research_context"),
+                    discussion_summary=parsed.get("discussion_summary"),
+                    future_directions=parsed.get("future_directions", []),
+                    quantitative_results=parsed.get("quantitative_results", []),
+                    citable_claims=parsed.get("citable_claims", []),
+                    techniques_used=parsed.get("techniques_used", []),
+                    experimental_conditions=parsed.get("experimental_conditions"),
+                    prior_work_comparison=parsed.get("prior_work_comparison", []),
+                    citation_contexts=parsed.get("citation_contexts"),
+                    chunk_extractions=chunk_extractions,  # For claim citation processing
+                    extractor_model=f"ollama/{model}",
+                    elapsed_seconds=elapsed,
+                    success=True
+                )
+
+                if verbose:
+                    extraction.raw_response = response_text
+                    extraction.prompt_used = prompt
+
+                return extraction
+
+        except httpx.TimeoutException:
+            elapsed = time.time() - start_time
+            return PaperExtraction(
+                paper_id=paper_id,
+                success=False,
+                error="Ollama consolidation timeout",
+                elapsed_seconds=elapsed,
+                prompt_used=prompt if verbose else None
+            )
+        except Exception as e:
+            elapsed = time.time() - start_time
+            return PaperExtraction(
+                paper_id=paper_id,
+                success=False,
+                error=str(e),
+                elapsed_seconds=elapsed,
+                prompt_used=prompt if verbose else None
             )
 
 
@@ -1030,6 +1382,218 @@ class ExtractionService:
             return extraction
 
     @classmethod
+    async def extract_paper_quick(
+        cls,
+        paper_id: int,
+        backend: Literal["ollama", "auto"] = "auto",
+        force: bool = False,
+        verbose: bool = False
+    ) -> PaperExtraction:
+        """Extract quick tier (abstract-only) for fast categorization.
+
+        Quick extraction provides paper_type, topics, and one_sentence_summary.
+        Use this for all papers when first added to enable search and filtering.
+
+        Args:
+            paper_id: Paper ID to extract
+            backend: LLM backend (ollama or auto)
+            force: If True, re-extract even if extraction exists
+            verbose: If True, include raw_response and prompt_used
+
+        Returns:
+            PaperExtraction with quick tier fields
+        """
+        with get_session() as session:
+            paper = session.query(Paper).filter(Paper.id == paper_id).first()
+            if not paper:
+                return PaperExtraction(
+                    paper_id=paper_id,
+                    success=False,
+                    error="Paper not found"
+                )
+
+            # Check if extraction exists
+            if not force:
+                existing = session.query(PaperContent).filter(
+                    PaperContent.paper_id == paper_id
+                ).first()
+                if existing and existing.paper_type:
+                    return PaperExtraction(
+                        paper_id=paper_id,
+                        paper_type=existing.paper_type,
+                        topics=existing.topics,
+                        one_sentence_summary=existing.one_sentence_summary,
+                        extractor_model=existing.extractor_model,
+                        success=True,
+                        error="Already extracted (use force=true to re-extract)"
+                    )
+
+            # Quick extraction only needs abstract
+            if not paper.abstract:
+                return PaperExtraction(
+                    paper_id=paper_id,
+                    success=False,
+                    error="Paper has no abstract for quick extraction"
+                )
+
+            # Get LLM client
+            client = cls._get_client(backend)
+            if not client:
+                return PaperExtraction(
+                    paper_id=paper_id,
+                    success=False,
+                    error="No LLM backend available"
+                )
+
+            # Extract using quick tier
+            extraction = await client.extract_quick(
+                title=paper.title,
+                abstract=paper.abstract,
+                journal=paper.journal,
+                paper_id=paper_id,
+                verbose=verbose
+            )
+
+            # Store if successful (quick tier)
+            if extraction.success:
+                cls._store_extraction(session, paper_id, extraction, is_quick=True)
+
+            return extraction
+
+    @classmethod
+    async def extract_paper_deep(
+        cls,
+        paper_id: int,
+        backend: Literal["ollama", "auto"] = "auto",
+        force: bool = False,
+        verbose: bool = False,
+        progress_callback: Optional[ProgressCallback] = None
+    ) -> PaperExtraction:
+        """Extract deep tier using 2-pass approach (chunks → consolidation).
+
+        Deep extraction requires:
+        1. Existing quick extraction (for verification)
+        2. PDF chunks (from extract_pdf_and_store)
+
+        The 2-pass approach:
+        - Pass 1: Extract from each chunk separately
+        - Pass 2: Consolidate all chunk extractions into final schema
+
+        Args:
+            paper_id: Paper ID to extract
+            backend: LLM backend (ollama or auto)
+            force: If True, re-extract even if deep extraction exists
+            verbose: If True, include detailed extraction info
+            progress_callback: Optional callback (pass_num, current, total, message)
+
+        Returns:
+            PaperExtraction with full deep schema
+        """
+        with get_session() as session:
+            paper = session.query(Paper).filter(Paper.id == paper_id).first()
+            if not paper:
+                return PaperExtraction(
+                    paper_id=paper_id,
+                    success=False,
+                    error="Paper not found"
+                )
+
+            # Check if deep extraction already exists
+            if not force:
+                existing = session.query(PaperContent).filter(
+                    PaperContent.paper_id == paper_id
+                ).first()
+                if existing and existing.key_findings:
+                    # Has deep extraction (key_findings is a deep-tier field)
+                    return PaperExtraction(
+                        paper_id=paper_id,
+                        paper_type=existing.paper_type,
+                        topics=existing.topics,
+                        one_sentence_summary=existing.one_sentence_summary,
+                        key_findings=existing.key_findings,
+                        methodology_summary=existing.methodology_summary,
+                        extractor_model=existing.extractor_model,
+                        success=True,
+                        error="Already has deep extraction (use force=true to re-extract)"
+                    )
+
+            # Get chunks for deep extraction
+            chunks = session.query(PaperChunk).filter(
+                PaperChunk.paper_id == paper_id
+            ).order_by(PaperChunk.chunk_order).all()
+
+            if not chunks:
+                return PaperExtraction(
+                    paper_id=paper_id,
+                    success=False,
+                    error="Paper has no chunks. Run extract_pdf_and_store first."
+                )
+
+            # Get quick extraction for verification
+            existing_content = session.query(PaperContent).filter(
+                PaperContent.paper_id == paper_id
+            ).first()
+
+            quick_extraction = {}
+            if existing_content:
+                quick_extraction = {
+                    "paper_type": existing_content.paper_type,
+                    "topics": existing_content.topics,
+                    "one_sentence_summary": existing_content.one_sentence_summary,
+                }
+            else:
+                # Run quick extraction first
+                logger.info(f"Running quick extraction first for paper {paper_id}")
+                quick_result = await cls.extract_paper_quick(
+                    paper_id, backend=backend, verbose=verbose
+                )
+                if quick_result.success:
+                    quick_extraction = {
+                        "paper_type": quick_result.paper_type,
+                        "topics": quick_result.topics,
+                        "one_sentence_summary": quick_result.one_sentence_summary,
+                    }
+
+            # Get LLM client
+            client = cls._get_client(backend)
+            if not client:
+                return PaperExtraction(
+                    paper_id=paper_id,
+                    success=False,
+                    error="No LLM backend available"
+                )
+
+            # Get author names
+            authors = ", ".join(a.name for a in paper.authors) if paper.authors else None
+
+            # Extract using deep tier (2-pass)
+            chunk_texts = [c.content for c in chunks]
+            extraction = await client.extract_deep(
+                title=paper.title,
+                abstract=paper.abstract or "",
+                chunks=chunk_texts,
+                quick_extraction=quick_extraction,
+                journal=paper.journal,
+                authors=authors,
+                year=paper.year,
+                paper_id=paper_id,
+                verbose=verbose,
+                progress_callback=progress_callback
+            )
+
+            # Store if successful (deep tier)
+            if extraction.success:
+                cls._store_extraction(session, paper_id, extraction, is_quick=False)
+
+                # Process claim citations from chunk extractions
+                if extraction.chunk_extractions:
+                    cls._process_claim_citations(
+                        session, paper_id, extraction.chunk_extractions
+                    )
+
+            return extraction
+
+    @classmethod
     def _get_client(cls, backend: str) -> Optional[LLMClient]:
         """Get an LLM client based on preference (local only)."""
         ollama = OllamaClient()
@@ -1043,9 +1607,17 @@ class ExtractionService:
         cls,
         session,
         paper_id: int,
-        extraction: PaperExtraction
+        extraction: PaperExtraction,
+        is_quick: bool = False
     ) -> None:
-        """Store extraction in database."""
+        """Store extraction in database and update enrichment status.
+
+        Args:
+            session: Database session
+            paper_id: Paper ID
+            extraction: PaperExtraction dataclass with extracted data
+            is_quick: If True, this is a quick (abstract-only) extraction
+        """
         # Build structured_data for extended fields
         structured_data = {}
         if extraction.research_context:
@@ -1070,6 +1642,10 @@ class ExtractionService:
         if extraction.cited_references:
             structured_data["cited_references"] = extraction.cited_references
 
+        # Determine extraction depth and date field
+        extraction_depth = "abstract_only" if is_quick else "comprehensive"
+        now = datetime.utcnow()
+
         content = session.query(PaperContent).filter(
             PaperContent.paper_id == paper_id
         ).first()
@@ -1081,8 +1657,14 @@ class ExtractionService:
             content.key_findings = extraction.key_findings
             content.methodology_summary = extraction.methodology_summary
             content.extractor_model = extraction.extractor_model
-            content.extraction_date = datetime.utcnow()
-            content.structured_data = structured_data if structured_data else content.structured_data
+            content.extraction_depth = extraction_depth
+            content.schema_version = "2.0"
+            if is_quick:
+                content.quick_extraction_date = now
+            else:
+                content.deep_extraction_date = now
+            if structured_data:
+                content.structured_data = structured_data
         else:
             content = PaperContent(
                 paper_id=paper_id,
@@ -1092,13 +1674,133 @@ class ExtractionService:
                 key_findings=extraction.key_findings,
                 methodology_summary=extraction.methodology_summary,
                 extractor_model=extraction.extractor_model,
-                extraction_depth="COMPREHENSIVE",
+                extraction_depth=extraction_depth,
+                schema_version="2.0",
+                quick_extraction_date=now if is_quick else None,
+                deep_extraction_date=now if not is_quick else None,
                 structured_data=structured_data if structured_data else None,
             )
             session.add(content)
 
+        # Update paper enrichment status
+        paper = session.query(Paper).filter(Paper.id == paper_id).first()
+        if paper:
+            # Both quick and deep extraction mark as complete
+            paper.enrichment_status = EnrichmentStatus.COMPLETE
+
         session.commit()
-        logger.info(f"Stored extraction for paper {paper_id}")
+        logger.info(f"Stored {extraction_depth} extraction for paper {paper_id}")
+
+    @classmethod
+    def _process_claim_citations(
+        cls,
+        session,
+        paper_id: int,
+        chunk_extractions: list[dict],
+    ) -> int:
+        """Process claim citations from chunk extractions and store in database.
+
+        Links extracted claims to references in the paper's bibliography and
+        to matching papers in the library.
+
+        Args:
+            session: Database session
+            paper_id: Paper ID
+            chunk_extractions: List of dicts from chunk extraction pass
+
+        Returns:
+            Number of claim citations stored
+        """
+        from literature_core import ClaimCitation, PaperReference
+
+        # Get paper with its references
+        paper = session.query(Paper).filter(Paper.id == paper_id).first()
+        if not paper:
+            logger.warning(f"Cannot process claim citations: paper {paper_id} not found")
+            return 0
+
+        # Build reference lookup by reference_order (citation number)
+        references = {}
+        for ref in session.query(PaperReference).filter(
+            PaperReference.paper_id == paper_id
+        ).all():
+            if ref.reference_order is not None:
+                references[ref.reference_order] = ref
+
+        # Clear existing claim citations for this paper
+        session.query(ClaimCitation).filter(
+            ClaimCitation.paper_id == paper_id
+        ).delete()
+
+        claims_stored = 0
+
+        # Process each chunk's claim citations
+        for chunk_idx, chunk_data in enumerate(chunk_extractions):
+            claim_citations = chunk_data.get("claim_citations", [])
+            section_type = chunk_data.get("section_type")
+
+            for claim_data in claim_citations:
+                if not isinstance(claim_data, dict):
+                    continue
+
+                claim_text = claim_data.get("claim")
+                citation_numbers = claim_data.get("citation_numbers", [])
+                claim_type = claim_data.get("claim_type")
+                importance = claim_data.get("importance")
+
+                if not claim_text or not citation_numbers:
+                    continue
+
+                # Ensure citation_numbers is a list of integers
+                if not isinstance(citation_numbers, list):
+                    continue
+                citation_numbers = [int(n) for n in citation_numbers if isinstance(n, (int, float))]
+
+                if not citation_numbers:
+                    continue
+
+                # Match citation numbers to references and library papers
+                reference_ids = []
+                matched_paper_ids = []
+                match_statuses = []
+
+                for num in citation_numbers:
+                    # Citation numbers in papers are 1-indexed, but references are stored 0-indexed
+                    # So citation [1] maps to reference_order 0
+                    ref = references.get(num - 1) if num > 0 else None
+                    if ref:
+                        reference_ids.append(ref.id)
+                        if ref.matched_paper_id:
+                            matched_paper_ids.append(ref.matched_paper_id)
+                            match_statuses.append("matched")
+                        else:
+                            matched_paper_ids.append(None)
+                            match_statuses.append("unmatched")
+                    else:
+                        reference_ids.append(None)
+                        matched_paper_ids.append(None)
+                        match_statuses.append("reference_not_found")
+
+                # Create claim citation record
+                claim = ClaimCitation(
+                    paper_id=paper_id,
+                    claim_text=claim_text[:2000] if claim_text else "",  # Truncate if too long
+                    citation_numbers=citation_numbers,
+                    section=section_type,
+                    chunk_index=chunk_idx,
+                    claim_type=claim_type,
+                    reference_ids=reference_ids,
+                    matched_paper_ids=matched_paper_ids,
+                    match_statuses=match_statuses,
+                    importance=importance,
+                )
+                session.add(claim)
+                claims_stored += 1
+
+        if claims_stored > 0:
+            logger.info(f"Stored {claims_stored} claim citations for paper {paper_id}")
+
+        return claims_stored
 
     @classmethod
     async def extract_batch(
@@ -1183,7 +1885,6 @@ class ExtractionService:
 
             if content:
                 session.delete(content)
-                session.commit()
                 logger.info(f"Deleted extraction for paper {paper_id}")
                 return True
 
@@ -1337,6 +2038,7 @@ class ExtractionService:
         paper_id: int,
         force: bool = False,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
+        progress_callback: ProgressCallback | None = None,
     ) -> PDFExtractionResult:
         """Extract PDF and store as chunks.
 
@@ -1344,6 +2046,7 @@ class ExtractionService:
             paper_id: Paper ID
             force: Re-extract even if already done
             chunk_size: Target words per chunk
+            progress_callback: Optional callback for progress updates
 
         Returns:
             PDFExtractionResult with extraction details
@@ -1377,7 +2080,9 @@ class ExtractionService:
                 ExtractionMetadata.paper_id == paper_id
             ).first()
 
-            if existing and not force:
+            # Only skip if we have existing metadata WITH chunks extracted
+            # If chunk_count is 0 or None, proceed with extraction even if metadata exists
+            if existing and not force and (existing.chunk_count or 0) > 0:
                 return PDFExtractionResult(
                     success=True,
                     paper_id=paper_id,
@@ -1394,7 +2099,8 @@ class ExtractionService:
             # Extract content
             try:
                 full_text, tables, figures, references, page_count = ExtractionService._extract_pdf(
-                    pdf_path
+                    pdf_path,
+                    progress_callback=progress_callback,
                 )
             except Exception as e:
                 logger.error(f"PDF extraction failed for paper {paper_id}: {e}")
@@ -1487,8 +2193,6 @@ class ExtractionService:
                 )
                 session.add(metadata)
 
-            session.commit()
-
             return PDFExtractionResult(
                 success=True,
                 paper_id=paper_id,
@@ -1501,20 +2205,75 @@ class ExtractionService:
             )
 
     @staticmethod
-    def _extract_pdf(pdf_path: Path) -> tuple[str, list, list, list, int]:
+    def _extract_pdf(
+        pdf_path: Path,
+        progress_callback: ProgressCallback | None = None,
+    ) -> tuple[str, list, list, list, int]:
         """Extract text, tables, figures, and references from PDF.
+
+        Uses early detection to choose extraction strategy:
+        - Samples first 5 pages to detect if PDF is scanned
+        - If scanned: goes straight to OCR (no wasted text extraction)
+        - If text-based: uses fast pdfplumber extraction
+
+        Args:
+            pdf_path: Path to PDF file
+            progress_callback: Optional callback for progress updates
 
         Returns:
             (full_text, tables, figures, references, page_count)
         """
+        def report(phase: str, detail: str, pct: int | None = None):
+            if progress_callback:
+                progress_callback(phase, detail, pct)
+
+        report("detect", "Detecting PDF type...", 0)
+
+        # Step 1: Sample first few pages to detect if scanned
+        sample_size = 5
+        sample_empty = 0
+        page_count = 0
+
+        with pdfplumber.open(pdf_path) as pdf:
+            page_count = len(pdf.pages)
+            pages_to_sample = min(sample_size, page_count)
+
+            for i in range(pages_to_sample):
+                text = pdf.pages[i].extract_text() or ""
+                if not text.strip():
+                    sample_empty += 1
+
+        # Decide extraction strategy based on sample
+        use_ocr = sample_empty >= (pages_to_sample * 0.8)  # 80% of sample empty → OCR
+
+        if use_ocr:
+            report("ocr", f"Scanned PDF detected ({sample_empty}/{pages_to_sample} sample pages empty)", 2)
+            logger.info(f"PDF {pdf_path.name}: detected as scanned, using OCR")
+            return ExtractionService._extract_pdf_ocr(pdf_path, page_count, progress_callback)
+        else:
+            report("text", f"Text PDF detected ({pages_to_sample - sample_empty}/{pages_to_sample} sample pages have text)", 2)
+            return ExtractionService._extract_pdf_text(pdf_path, page_count, progress_callback)
+
+    @staticmethod
+    def _extract_pdf_text(
+        pdf_path: Path,
+        page_count: int,
+        progress_callback: ProgressCallback | None = None,
+    ) -> tuple[str, list, list, list, int]:
+        """Extract text from PDF using pdfplumber (fast, for text-based PDFs)."""
+        def report(phase: str, detail: str, pct: int | None = None):
+            if progress_callback:
+                progress_callback(phase, detail, pct)
+
         full_text_parts = []
         tables = []
         all_text_for_figures = []
 
         with pdfplumber.open(pdf_path) as pdf:
-            page_count = len(pdf.pages)
-
             for page_num, page in enumerate(pdf.pages, 1):
+                pct = 5 + int((page_num / page_count) * 80)  # 5-85%
+                report("text", f"Page {page_num}/{page_count}", pct)
+
                 # Extract text
                 text = page.extract_text() or ""
                 if text.strip():
@@ -1528,7 +2287,7 @@ class ExtractionService:
                         if markdown:
                             tables.append((
                                 markdown,
-                                None,  # caption (could be extracted with more logic)
+                                None,
                                 len(table),
                                 len(table[0]) if table[0] else 0,
                                 page_num,
@@ -1536,14 +2295,70 @@ class ExtractionService:
 
         full_text = "\n\n".join(full_text_parts)
 
-        # Extract figure captions from text
-        figures = ExtractionService._extract_figure_captions(
-            "\n".join(all_text_for_figures)
-        )
+        # Extract figure captions
+        report("figures", "Extracting figures...", 88)
+        figures = ExtractionService._extract_figure_captions("\n".join(all_text_for_figures))
 
-        # Extract references from the references section
+        # Extract references
+        report("references", "Extracting references...", 92)
         references = ExtractionService._extract_references(full_text)
 
+        report("complete", f"Done: {len(full_text_parts)} pages, {len(tables)} tables", 100)
+        return full_text, tables, figures, references, page_count
+
+    @staticmethod
+    def _extract_pdf_ocr(
+        pdf_path: Path,
+        page_count: int,
+        progress_callback: ProgressCallback | None = None,
+    ) -> tuple[str, list, list, list, int]:
+        """Extract text from scanned PDF using OCR."""
+        def report(phase: str, detail: str, pct: int | None = None):
+            if progress_callback:
+                progress_callback(phase, detail, pct)
+
+        full_text_parts = []
+        all_text_for_figures = []
+        tables = []  # OCR doesn't extract tables well
+
+        try:
+            from pdf2image import convert_from_path
+            import pytesseract
+
+            # Convert PDF to images
+            report("ocr", "Converting to images...", 5)
+            images = convert_from_path(pdf_path, dpi=150)
+
+            # OCR each page
+            for page_num, image in enumerate(images, 1):
+                pct = 10 + int((page_num / len(images)) * 75)  # 10-85%
+                report("ocr", f"OCR page {page_num}/{len(images)}", pct)
+
+                text = pytesseract.image_to_string(image, lang='eng')
+                if text.strip():
+                    full_text_parts.append(f"[Page {page_num}]\n{text}")
+                    all_text_for_figures.append(text)
+
+            logger.info(f"OCR extracted text from {len(full_text_parts)}/{len(images)} pages")
+
+        except ImportError as e:
+            report("ocr", f"OCR unavailable: {e}", None)
+            logger.warning(f"OCR dependencies not available: {e}")
+        except Exception as e:
+            report("ocr", f"OCR failed: {e}", None)
+            logger.warning(f"OCR failed: {e}")
+
+        full_text = "\n\n".join(full_text_parts)
+
+        # Extract figure captions
+        report("figures", "Extracting figures...", 88)
+        figures = ExtractionService._extract_figure_captions("\n".join(all_text_for_figures))
+
+        # Extract references
+        report("references", "Extracting references...", 92)
+        references = ExtractionService._extract_references(full_text)
+
+        report("complete", f"Done: {len(full_text_parts)} pages (OCR)", 100)
         return full_text, tables, figures, references, page_count
 
     @staticmethod
@@ -2213,8 +3028,10 @@ class ExtractionService:
             ).first()
 
             if metadata:
-                # Check if already chunked
-                if metadata.chunking_status == ChunkingStatus.COMPLETE and not force:
+                # Check if already chunked (only skip if actually has chunks)
+                if (metadata.chunking_status == ChunkingStatus.COMPLETE
+                        and (metadata.chunk_count or 0) > 0
+                        and not force):
                     return {
                         "status": "already_complete",
                         "chunk_count": metadata.chunk_count or 0,
@@ -2241,9 +3058,7 @@ class ExtractionService:
 
             # Update paper enrichment status if needed
             if paper.enrichment_status in (EnrichmentStatus.NEEDS_PDF, EnrichmentStatus.PENDING):
-                paper.enrichment_status = EnrichmentStatus.NEEDS_EXTRACTION
-
-            session.commit()
+                paper.enrichment_status = EnrichmentStatus.NEEDS_CHUNKING
 
             return {
                 "status": "queued",
@@ -2251,12 +3066,18 @@ class ExtractionService:
             }
 
     @classmethod
-    def process_extraction_single(cls, paper_id: int, force: bool = False) -> ChunkingResult:
+    def process_extraction_single(
+        cls,
+        paper_id: int,
+        force: bool = False,
+        progress_callback: ProgressCallback | None = None,
+    ) -> ChunkingResult:
         """Process PDF extraction for a single paper immediately.
 
         Args:
             paper_id: Paper ID to process
             force: Re-extract even if already done
+            progress_callback: Optional callback for progress updates
 
         Returns:
             ChunkingResult with outcome
@@ -2296,6 +3117,7 @@ class ExtractionService:
             result = cls.extract_pdf_and_store(
                 paper_id=paper_id,
                 force=force,
+                progress_callback=progress_callback,
             )
         except Exception as e:
             logger.error(f"Extraction failed for paper {paper_id}: {e}")
@@ -2306,7 +3128,6 @@ class ExtractionService:
                 if metadata:
                     metadata.chunking_status = ChunkingStatus.FAILED
                     metadata.chunking_error = str(e)
-                session.commit()
 
             return ChunkingResult(
                 paper_id=paper_id,
@@ -2327,11 +3148,9 @@ class ExtractionService:
                     metadata.chunking_status = ChunkingStatus.COMPLETE
                     metadata.chunking_error = None
 
-                # Update paper enrichment status
+                # Update paper enrichment status - ready for AI extraction
                 if paper:
-                    paper.enrichment_status = EnrichmentStatus.COMPLETE
-
-                session.commit()
+                    paper.enrichment_status = EnrichmentStatus.NEEDS_EXTRACTION
 
                 return ChunkingResult(
                     paper_id=paper_id,
@@ -2347,8 +3166,6 @@ class ExtractionService:
                 if paper:
                     paper.enrichment_status = EnrichmentStatus.FAILED
 
-                session.commit()
-
                 return ChunkingResult(
                     paper_id=paper_id,
                     status="failed",
@@ -2356,11 +3173,16 @@ class ExtractionService:
                 )
 
     @classmethod
-    def process_extraction_queue(cls, limit: int = 10) -> list[ChunkingResult]:
+    def process_extraction_queue(
+        cls,
+        limit: int = 10,
+        force: bool = False,
+    ) -> list[ChunkingResult]:
         """Process papers in the extraction queue.
 
         Args:
             limit: Maximum papers to process
+            force: Re-extract even if chunks exist
 
         Returns:
             List of ChunkingResult for each processed paper
@@ -2375,7 +3197,7 @@ class ExtractionService:
 
         results = []
         for paper_id in paper_ids:
-            result = cls.process_extraction_single(paper_id)
+            result = cls.process_extraction_single(paper_id, force=force)
             results.append(result)
             logger.info(
                 f"Processed extraction for paper {paper_id}: {result.status}",
@@ -2454,10 +3276,14 @@ class ExtractionService:
                         ExtractionMetadata.chunking_status == ChunkingStatus.FAILED
                     )
                 elif status == "needs_extraction":
-                    # Papers with PDF but no chunks
+                    # Papers with PDF but no chunks (never processed, or completed with 0 chunks)
                     query = query.filter(
                         (ExtractionMetadata.chunking_status.is_(None)) |
-                        (ExtractionMetadata.chunking_status == ChunkingStatus.NONE)
+                        (ExtractionMetadata.chunking_status == ChunkingStatus.NONE) |
+                        (
+                            (ExtractionMetadata.chunking_status == ChunkingStatus.COMPLETE) &
+                            ((ExtractionMetadata.chunk_count.is_(None)) | (ExtractionMetadata.chunk_count == 0))
+                        )
                     )
 
             query = query.order_by(ExtractionMetadata.chunking_queued_at.desc().nullslast())
@@ -2527,8 +3353,6 @@ class ExtractionService:
                     "paper_id": metadata.paper_id,
                     "status": "requeued",
                 })
-
-            session.commit()
 
             return requeued
 

@@ -1,0 +1,62 @@
+{
+  "version": "1.0",
+  "description": "Project registry for paper relevance scoring. Claude uses this to score papers against active research projects.",
+  "projects": [
+    {
+      "name": "thesis",
+      "display_name": "PhD Thesis: High-Throughput MLD Thin Films",
+      "path": "/home/dreece23/projects/research/thesis/main",
+      "bib_file": "thesis/uwthesis.bib",
+      "active": true,
+      "topics": [
+        "molecular layer deposition",
+        "MLD",
+        "atomic layer deposition",
+        "ALD",
+        "thin films",
+        "EUV lithography",
+        "extreme ultraviolet",
+        "tincones",
+        "alucones",
+        "zincones",
+        "hybrid organic-inorganic",
+        "reactor design",
+        "high-throughput screening",
+        "combinatorial synthesis",
+        "photoresist"
+      ],
+      "focus": "High-throughput screening methodology for hybrid organic-inorganic thin films with applications in EUV lithography",
+      "relevance_hints": {
+        "high": "Directly discusses MLD/ALD thin films, EUV resists, tincones/alucones/zincones, or reactor design",
+        "medium": "Discusses related thin film techniques, photoresist chemistry, or screening methods",
+        "low": "Tangentially related - general ALD/CVD, photolithography basics, characterization methods"
+      }
+    },
+    {
+      "name": "paper2",
+      "display_name": "Paper 2: EUV Photoresist Performance",
+      "path": "/home/dreece23/projects/research/Paper2",
+      "bib_file": "paper/tex/references_updated.bib",
+      "active": true,
+      "topics": [
+        "EUV photoresist",
+        "extreme ultraviolet lithography",
+        "alucones",
+        "zincones",
+        "MLD resist",
+        "photoresist stability",
+        "outgassing",
+        "pattern transfer",
+        "dose sensitivity",
+        "line-edge roughness",
+        "developer compatibility"
+      ],
+      "focus": "Performance evaluation of alucone and zincone hybrid films as EUV photoresist candidates",
+      "relevance_hints": {
+        "high": "Directly about EUV photoresists, alucone/zincone properties, or resist performance metrics",
+        "medium": "Related photoresist chemistry, EUV lithography challenges, or hybrid film properties",
+        "low": "General photoresist concepts, lithography methods, or thin film characterization"
+      }
+    }
+  ]
+}

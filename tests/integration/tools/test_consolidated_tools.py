@@ -350,19 +350,25 @@ class TestCitationNetworkTools:
 
     @pytest.mark.asyncio
     async def test_citation_network_lists_consolidated_tools(self, db):
-        """Verify citation_network module lists 6 tools (was 7)."""
+        """Verify citation_network module lists 10 tools (6 original + 4 claim citation tools)."""
         from mcp_server.tools import citation_network
 
         tools = await citation_network.list_tools()
         tool_names = [t.name for t in tools]
 
-        assert len(tools) == 6
+        assert len(tools) == 10
+        # Original tools
         assert "get_citations" in tool_names
         assert "find_common_references" in tool_names
         assert "build_citation_graph" in tool_names
         assert "import_references_from_paper" in tool_names
         assert "get_local_citations" in tool_names
         assert "link_papers_citation" in tool_names
+        # Claim citation tools (Phase 3)
+        assert "get_claim_citations" in tool_names
+        assert "find_claims_citing_paper" in tool_names
+        assert "get_unmatched_claim_references" in tool_names
+        assert "get_citation_chain" in tool_names
 
     @pytest.mark.asyncio
     async def test_get_citations_direction_parameter(self, db):
@@ -505,8 +511,9 @@ class TestDiscoveryTools:
         assert "embed_paper" not in tool_names
 
 
+@pytest.mark.skip(reason="Zotero integration removed in Phase 4 database audit")
 class TestZoteroTools:
-    """Tests for consolidated Zotero tools."""
+    """Tests for consolidated Zotero tools. SKIPPED - Zotero removed."""
 
     @pytest.mark.asyncio
     async def test_zotero_lists_consolidated_tools(self, db):
@@ -567,17 +574,18 @@ class TestTotalToolCount:
 
     @pytest.mark.asyncio
     async def test_total_tool_count(self, db):
-        """Verify total tool count after Phase 5 consolidation."""
+        """Verify total tool count after Phase 5 consolidation and Zotero removal."""
         from mcp_server.tools import (
             papers, search, extraction, discovery, citation_network,
             citations, collections, notes, pdf, browser_pdf,
-            import_export, project, validation, zotero
+            import_export, project, validation
         )
+        # Note: zotero removed in Phase 4 database audit
 
         modules = [
             papers, search, extraction, discovery, citation_network,
             citations, collections, notes, pdf, browser_pdf,
-            import_export, project, validation, zotero
+            import_export, project, validation
         ]
 
         total = 0
@@ -585,7 +593,7 @@ class TestTotalToolCount:
             tools = await mod.list_tools()
             total += len(tools)
 
-        # Phase 5 consolidation target: 71 → ~63 (after import/export, discovery, citation consolidations)
-        # Remaining: zotero (6 → 2) will bring to ~59
+        # After Phase 4 Zotero removal and Phase 3 claim citation tools (+3)
+        # Expected: ~60 tools (59 - 2 zotero + 3 claim citation = 60)
         assert total <= 70, f"Total tools ({total}) exceeds target of 70"
         assert total >= 55, f"Total tools ({total}) unexpectedly low"

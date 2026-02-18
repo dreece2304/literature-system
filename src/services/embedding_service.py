@@ -373,3 +373,156 @@ class EmbeddingService:
                     result.errors.append(f"Chunk embedding: {str(e)}")
 
         return result
+
+    @classmethod
+    def reembed_paper_sync(cls, paper_id: int) -> bool:
+        """Synchronously re-embed a paper's title + abstract (paper-level).
+
+        Used when title or abstract changes to update the vector store.
+
+        Args:
+            paper_id: ID of paper to re-embed
+
+        Returns:
+            True if successful, False otherwise
+        """
+        from embeddings.generator import get_embedding_generator
+        from embeddings.vectorstore import get_vector_store
+
+        with get_session() as session:
+            paper = session.query(Paper).filter(Paper.id == paper_id).first()
+            if not paper:
+                logger.warning(f"Cannot re-embed: paper {paper_id} not found")
+                return False
+
+            if not paper.abstract:
+                logger.debug(f"Skipping re-embed: paper {paper_id} has no abstract")
+                return True
+
+            try:
+                paper_store = get_vector_store()
+                generator = get_embedding_generator()
+
+                text = f"{paper.title or ''} {paper.abstract or ''}"
+                embedding = generator.generate(text)
+
+                # Delete old embedding if exists, then add new
+                try:
+                    paper_store.delete([str(paper_id)])
+                except Exception:
+                    pass  # May not exist
+
+                paper_store.add(
+                    id=str(paper.id),
+                    embedding=embedding,
+                    metadata={
+                        "paper_id": paper.id,
+                        "title": paper.title or "",
+                        "year": paper.year,
+                    },
+                    document=text[:1000],
+                )
+
+                logger.info(f"Re-embedded paper {paper_id}")
+                return True
+
+            except Exception as e:
+                logger.error(f"Failed to re-embed paper {paper_id}: {e}")
+                return False
+
+    @classmethod
+    def validate_sync(cls) -> dict:
+        """Check for consistency issues between SQLite and ChromaDB.
+
+        Returns:
+            Dict with orphaned_embeddings and missing_embeddings lists
+        """
+        from embeddings.vectorstore import get_vector_store, get_chunk_store
+
+        issues = {
+            "orphaned_embeddings": [],  # In ChromaDB but not in SQLite
+            "missing_embeddings": [],    # In SQLite with abstract but not in ChromaDB
+            "orphaned_chunks": [],       # Chunk embeddings for deleted papers
+        }
+
+        with get_session() as session:
+            # Get all paper IDs from database
+            db_paper_ids = set(p.id for p in session.query(Paper.id).all())
+
+            # Get papers with abstracts (should have paper-level embeddings)
+            papers_with_abstract = set(
+                p.id for p in session.query(Paper.id)
+                .filter(Paper.abstract.isnot(None)).all()
+            )
+
+        # Check paper-level embeddings
+        try:
+            paper_store = get_vector_store()
+            result = paper_store.collection.get(include=[])
+            if result and result.get("ids"):
+                chroma_paper_ids = set(int(id_) for id_ in result["ids"])
+
+                issues["orphaned_embeddings"] = sorted(
+                    chroma_paper_ids - db_paper_ids
+                )
+                issues["missing_embeddings"] = sorted(
+                    papers_with_abstract - chroma_paper_ids
+                )
+        except Exception as e:
+            logger.warning(f"Could not check paper embeddings: {e}")
+
+        # Check chunk-level embeddings
+        try:
+            chunk_store = get_chunk_store()
+            result = chunk_store.collection.get(include=["metadatas"])
+            if result and result.get("metadatas"):
+                chunk_paper_ids = set(
+                    m.get("paper_id")
+                    for m in result["metadatas"]
+                    if m.get("paper_id")
+                )
+                issues["orphaned_chunks"] = sorted(
+                    chunk_paper_ids - db_paper_ids
+                )
+        except Exception as e:
+            logger.warning(f"Could not check chunk embeddings: {e}")
+
+        return issues
+
+    @classmethod
+    def cleanup_orphaned(cls) -> dict:
+        """Remove embeddings for papers that no longer exist in SQLite.
+
+        Returns:
+            Dict with counts of cleaned up items
+        """
+        from embeddings.vectorstore import get_vector_store, get_chunk_store
+
+        issues = cls.validate_sync()
+        cleaned = {
+            "paper_embeddings_deleted": 0,
+            "chunk_papers_deleted": 0,
+        }
+
+        # Clean up orphaned paper embeddings
+        if issues["orphaned_embeddings"]:
+            try:
+                paper_store = get_vector_store()
+                paper_store.delete([str(pid) for pid in issues["orphaned_embeddings"]])
+                cleaned["paper_embeddings_deleted"] = len(issues["orphaned_embeddings"])
+                logger.info(f"Deleted {cleaned['paper_embeddings_deleted']} orphaned paper embeddings")
+            except Exception as e:
+                logger.error(f"Failed to delete orphaned paper embeddings: {e}")
+
+        # Clean up orphaned chunk embeddings
+        if issues["orphaned_chunks"]:
+            try:
+                chunk_store = get_chunk_store()
+                for paper_id in issues["orphaned_chunks"]:
+                    chunk_store.delete_paper_chunks(paper_id)
+                cleaned["chunk_papers_deleted"] = len(issues["orphaned_chunks"])
+                logger.info(f"Deleted chunk embeddings for {cleaned['chunk_papers_deleted']} orphaned papers")
+            except Exception as e:
+                logger.error(f"Failed to delete orphaned chunk embeddings: {e}")
+
+        return cleaned

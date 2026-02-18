@@ -105,6 +105,12 @@ See [Search Architecture](docs/SEARCH.md) for details on FTS5, ChromaDB, and Rec
 
 ## Documentation
 
+### Workflow Guides (for Claude)
+- [Paper Import Workflow](docs/PAPER_IMPORT_WORKFLOW.md) - Importing, processing, and completing papers
+- [Research Workflow](docs/RESEARCH_WORKFLOW.md) - Search, citations, and manuscript support
+- [Claude Extraction Workflow](docs/CLAUDE_EXTRACTION_WORKFLOW.md) - AI-powered paper extraction
+
+### Reference
 - [MCP Integration Guide](docs/MCP_USAGE.md) - How to use with Claude
 - [Tool Reference](docs/TOOL_REFERENCE.md) - All MCP tool signatures
 - [Search Architecture](docs/SEARCH.md) - FTS5, ChromaDB, hybrid search

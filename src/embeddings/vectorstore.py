@@ -94,14 +94,19 @@ class VectorStore:
             )
             logger.debug(f"Loaded existing collection: {self.collection_name}")
         except Exception:
-            # Create new collection
-            metadata = {"hnsw:space": self.distance_metric}
+            # Create new collection with tuned HNSW parameters
+            metadata = {
+                "hnsw:space": self.distance_metric,
+                "hnsw:construction_ef": settings.chromadb.hnsw_ef_construction,
+                "hnsw:M": settings.chromadb.hnsw_m,
+                "hnsw:search_ef": settings.chromadb.hnsw_ef_search,
+            }
             collection = self.client.create_collection(
                 name=self.collection_name,
                 metadata=metadata,
                 embedding_function=None,
             )
-            logger.info(f"Created new collection: {self.collection_name}")
+            logger.info(f"Created new collection: {self.collection_name} with HNSW tuning")
 
         return collection
 
@@ -423,10 +428,13 @@ class VectorStore:
 
         sanitized = {}
         for key, value in metadata.items():
+            # Skip None values - ChromaDB doesn't accept them
+            if value is None:
+                continue
             # Convert complex types to strings
             if isinstance(value, (dict, list)):
                 sanitized[key] = str(value)
-            elif isinstance(value, (int, float, str, bool)) or value is None:
+            elif isinstance(value, (int, float, str, bool)):
                 sanitized[key] = value
             else:
                 sanitized[key] = str(value)
@@ -497,8 +505,12 @@ class ChunkVectorStore:
             )
             logger.debug(f"Loaded existing collection: {CHUNKS_COLLECTION}")
         except Exception:
+            # Create new collection with tuned HNSW parameters
             metadata = {
                 "hnsw:space": self.distance_metric,
+                "hnsw:construction_ef": settings.chromadb.hnsw_ef_construction,
+                "hnsw:M": settings.chromadb.hnsw_m,
+                "hnsw:search_ef": settings.chromadb.hnsw_ef_search,
                 "description": "Chunk-level embeddings from paper full text",
             }
             collection = self.client.create_collection(
@@ -506,7 +518,7 @@ class ChunkVectorStore:
                 metadata=metadata,
                 embedding_function=None,
             )
-            logger.info(f"Created new collection: {CHUNKS_COLLECTION}")
+            logger.info(f"Created new collection: {CHUNKS_COLLECTION} with HNSW tuning")
 
         return collection
 
@@ -723,9 +735,12 @@ class ChunkVectorStore:
 
         sanitized = {}
         for key, value in metadata.items():
+            # Skip None values - ChromaDB doesn't accept them
+            if value is None:
+                continue
             if isinstance(value, (dict, list)):
                 sanitized[key] = str(value)
-            elif isinstance(value, (int, float, str, bool)) or value is None:
+            elif isinstance(value, (int, float, str, bool)):
                 sanitized[key] = value
             else:
                 sanitized[key] = str(value)

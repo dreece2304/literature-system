@@ -11,32 +11,41 @@
 
 ```
 research/
-├── src/                    # Main source code
-│   ├── mcp_server/         # MCP server and tools
-│   │   ├── server.py       # Server entry point
-│   │   └── tools/          # Tool implementations
-│   ├── services/           # Business logic layer
-│   │   ├── paper_service.py
-│   │   ├── search_service.py
-│   │   ├── pdf_service.py
+├── src/                        # Main source code
+│   ├── mcp_server/             # MCP server and tools
+│   │   ├── server.py           # Server entry point
+│   │   └── tools/              # Tool implementations (14 modules)
+│   ├── services/               # Business logic layer
+│   │   ├── paper_service.py    # Paper CRUD, store_extraction
+│   │   ├── search_service.py   # FTS5, RRF fusion
+│   │   ├── unified_search_service.py  # Smart search (acronyms, spelling)
+│   │   ├── embedding_service.py       # ChromaDB vector search
+│   │   ├── extraction_service.py      # AI extraction, PDF processing
 │   │   └── ...
-│   ├── literature_core/    # Database models and config
-│   │   ├── models.py       # SQLAlchemy models
-│   │   ├── database.py     # DB connection
-│   │   └── fts.py          # Full-text search
-│   ├── embeddings/         # Vector search (ChromaDB)
-│   ├── extractors/         # Zotero sync
-│   └── config/             # Settings
-├── tests/                  # Test suite
-│   ├── unit/               # Unit tests
-│   ├── integration/        # Integration tests
-│   └── fixtures/           # Shared fixtures
-├── data/                   # Runtime data (git-ignored)
-│   ├── sqlite/             # SQLite database
-│   ├── pdfs/               # PDF storage
-│   └── vectorstore/        # ChromaDB embeddings
-├── docs/                   # Documentation
-└── infrastructure/         # Legacy (data only)
+│   ├── literature_core/        # Database models and config
+│   │   ├── models.py           # SQLAlchemy models
+│   │   ├── database.py         # DB connection
+│   │   ├── fts.py              # Full-text search
+│   │   └── config.py           # Path configuration
+│   ├── embeddings/             # Vector search (ChromaDB)
+│   ├── extractors/             # Zotero sync
+│   ├── config/                 # AI settings
+│   │   └── ai_settings.py      # Ollama configuration
+│   └── alembic/                # Database migrations
+├── tests/                      # Test suite
+│   ├── unit/                   # Unit tests
+│   ├── integration/            # Integration tests
+│   └── fixtures/               # Shared fixtures
+├── data/                       # Runtime data (git-ignored)
+│   ├── literature.db           # SQLite database (~493 papers)
+│   ├── pdfs/                   # PDF storage
+│   ├── vectorstore/            # ChromaDB embeddings
+│   └── config/                 # Runtime config (credentials.yml)
+├── docs/                       # Documentation
+│   ├── ARCHITECTURE.md         # Technical deep-dive
+│   ├── WORKFLOWS.md            # Import & Query workflows
+│   └── TOOL_REFERENCE.md       # MCP tool documentation
+└── archive/                    # Archived code and scripts
 ```
 
 ## Development Commands
@@ -51,14 +60,14 @@ research/
 /home/dreece23/miniforge3/bin/mamba run -n litai python -m flake8 src/
 ```
 
-### Health Check
-```bash
-cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.health_check
-```
-
 ### Running MCP Server (for testing)
 ```bash
 cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m mcp_server.server
+```
+
+### Database Migrations
+```bash
+cd src && /home/dreece23/miniforge3/bin/mamba run -n litai alembic upgrade head
 ```
 
 ## Code Style
@@ -188,6 +197,30 @@ from literature_core import (
 )
 ```
 
+## Key Services
+
+| Service | Purpose |
+|---------|---------|
+| `PaperService` | Paper CRUD, metadata, store_extraction |
+| `SearchService` | FTS5 keyword search, RRF rank fusion |
+| `UnifiedSearchService` | Smart search (acronyms, spelling, mode selection) |
+| `EmbeddingService` | ChromaDB vector search |
+| `ExtractionService` | AI extraction (Ollama), PDF processing, quality checks |
+| `PDFService` | PDF download, text extraction |
+| `CitationService` | BibTeX, manuscript scanning |
+| `ValidationService` | Paper verification against external sources |
+
+## Key MCP Tools
+
+| Module | Purpose |
+|--------|---------|
+| `papers.py` | Paper CRUD, `store_extraction`, `get_paper_content` |
+| `search.py` | Unified `search` with mode parameter |
+| `extraction.py` | AI extraction, PDF processing queue |
+| `discovery.py` | `find_similar_papers`, `suggest_citations_for_text` |
+| `citation_network.py` | Citation graph, references |
+| `browser_pdf.py` | Windows PDF download queue |
+
 ## Git Conventions
 
 ### Branch Naming
@@ -226,7 +259,8 @@ Examples:
 
 When implementing AI features (extraction, summarization):
 - Local LLM via Ollama (RTX 4070, 8GB VRAM)
-- Max model size: ~14B with 4-bit quantization
+- Model: `qwen2.5:7b-instruct-q4_K_M` or similar
+- Max context: 28K tokens input + 3K output
 - Use `src/config/ai_settings.py` for model configuration
 - Prefer batch processing over real-time for large operations
 
@@ -282,3 +316,10 @@ def test_get_nonexistent_paper(self, db):
   ```bash
   /home/dreece23/miniforge3/bin/mamba run -n litai python -m pytest tests/ -q
   ```
+
+## Documentation
+
+- **CLAUDE.md** (this file): Quick reference for Claude sessions
+- **docs/ARCHITECTURE.md**: Technical deep-dive (schema, services, data flow)
+- **docs/WORKFLOWS.md**: Import & Query pipelines
+- **docs/TOOL_REFERENCE.md**: MCP tool documentation

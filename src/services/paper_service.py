@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
+from sqlalchemy.orm import joinedload
+
 from literature_core import (
     get_session,
     get_logger,
@@ -206,22 +208,26 @@ class PaperService:
             raise ValidationError("read_status", f"Must be one of: {ReadStatus.ALL}")
 
         with get_session() as session:
-            query = session.query(Paper)
+            # Use joinedload to prevent N+1 queries on authors/tags
+            query = session.query(Paper).options(
+                joinedload(Paper.authors),
+                joinedload(Paper.tags),
+            )
 
             # Apply filters
             if author:
-                query = query.join(Paper.authors).filter(
+                query = query.join(Paper.authors, isouter=True).filter(
                     Author.name.ilike(f"%{author}%")
                 )
             if year:
                 query = query.filter(Paper.year == year)
             if tag:
-                query = query.join(Paper.tags).filter(Tag.name == tag)
+                query = query.join(Paper.tags, isouter=True).filter(Tag.name == tag)
             if read_status:
                 query = query.filter(Paper.read_status == read_status)
 
-            # Get total count before pagination
-            total = query.count()
+            # Get total count before pagination (use subquery for accuracy with joins)
+            total = query.with_entities(Paper.id).distinct().count()
 
             # Apply pagination
             papers = (
@@ -339,17 +345,21 @@ class PaperService:
 
         # Track if PDF was added/changed for auto-chunking
         pdf_changed = False
+        # Track if embedding-relevant fields changed
+        needs_reembed = False
 
         with get_session() as session:
             paper = session.query(Paper).filter(Paper.id == paper_id).first()
             if not paper:
                 raise PaperNotFoundError(paper_id)
 
-            # Update simple fields
-            if title is not None:
+            # Update simple fields - track changes for re-embedding
+            if title is not None and title != paper.title:
                 paper.title = title
-            if abstract is not None:
+                needs_reembed = True
+            if abstract is not None and abstract != paper.abstract:
                 paper.abstract = abstract
+                needs_reembed = True
             if year is not None:
                 paper.year = year
             if doi is not None:
@@ -364,8 +374,8 @@ class PaperService:
                 # Track if file_path actually changed
                 if paper.file_path != file_path:
                     pdf_changed = True
-                    # Update enrichment status to needs_chunks
-                    paper.enrichment_status = EnrichmentStatus.NEEDS_EXTRACTION
+                    # Update enrichment status to needs_chunking (has PDF, needs text extraction)
+                    paper.enrichment_status = EnrichmentStatus.NEEDS_CHUNKING
                 paper.file_path = file_path
             if file_hash is not None:
                 paper.file_hash = file_hash
@@ -391,11 +401,20 @@ class PaperService:
                 # Don't fail the update if queuing fails
                 logger.warning(f"Failed to queue extraction for paper {paper_id}: {e}")
 
+        # Re-embed if title/abstract changed (after commit)
+        if needs_reembed:
+            try:
+                from .embedding_service import EmbeddingService
+                EmbeddingService.reembed_paper_sync(paper_id)
+            except Exception as e:
+                # Don't fail the update if re-embedding fails
+                logger.warning(f"Failed to re-embed paper {paper_id}: {e}")
+
         return result
 
     @classmethod
     def delete(cls, paper_id: int) -> None:
-        """Delete a paper.
+        """Delete a paper and clean up embeddings.
 
         Args:
             paper_id: Paper ID to delete
@@ -407,6 +426,16 @@ class PaperService:
             paper = session.query(Paper).filter(Paper.id == paper_id).first()
             if not paper:
                 raise PaperNotFoundError(paper_id)
+
+            # Delete from ChromaDB FIRST (before SQLite cascade)
+            try:
+                from embeddings.vectorstore import get_vector_store, get_chunk_store
+                get_vector_store().delete([str(paper_id)])
+                get_chunk_store().delete_paper_chunks(paper_id)
+            except Exception as e:
+                logger.warning(f"Failed to delete embeddings for paper {paper_id}: {e}")
+
+            # Then delete from SQLite (cascades to chunks, notes, etc.)
             session.delete(paper)
             logger.info(f"Deleted paper {paper_id}")
 
@@ -533,6 +562,17 @@ class PaperService:
                 if paper.content.structured_data:
                     result["extraction"].update(paper.content.structured_data)
 
+                # Determine extraction tier based on populated fields
+                has_deep_fields = (
+                    paper.content.key_findings
+                    or paper.content.methodology_summary
+                    or (paper.content.structured_data and any(
+                        paper.content.structured_data.get(f)
+                        for f in ["quantitative_results", "citable_claims", "techniques_used"]
+                    ))
+                )
+                result["extraction_tier"] = "deep" if has_deep_fields else "quick"
+
             return result
 
     @classmethod
@@ -546,23 +586,34 @@ class PaperService:
         methodology_summary: str | None = None,
         structured_data: dict | None = None,
         extractor_model: str | None = None,
+        is_quick: bool = True,
     ) -> None:
-        """Store AI-extracted content for a paper.
+        """Store AI-extracted content for a paper and update status.
+
+        Schema v2.1: Quick and deep extractions stored separately.
+        - Quick: paper_type, topics, one_sentence_summary
+        - Deep: deep_paper_type, deep_topics, deep_one_sentence_summary + extended
+
+        After storing, sets enrichment_status to COMPLETE (for both quick and deep).
+        Papers can be flagged for deep extraction via NEEDS_DEEP_EXTRACTION status.
 
         Args:
             paper_id: Paper ID
             paper_type: Type of paper (research_article, review, etc.)
             topics: List of identified topics/themes
             one_sentence_summary: One sentence summary
-            key_findings: List of key findings
-            methodology_summary: Summary of methodology
-            structured_data: Extended fields (quantitative_results, citable_claims, etc.)
-            extractor_model: Model used for extraction (e.g., 'claude/opus-4')
+            key_findings: List of key findings (deep only)
+            methodology_summary: Summary of methodology (deep only)
+            structured_data: Extended fields (deep only)
+            extractor_model: Model used for extraction
+            is_quick: If True, quick (abstract-only) extraction (default for Claude)
 
         Raises:
             PaperNotFoundError: If paper doesn't exist
         """
+        from datetime import datetime
         model_name = extractor_model or "claude-code"
+        now = datetime.utcnow()
 
         with get_session() as session:
             paper = session.query(Paper).filter(Paper.id == paper_id).first()
@@ -575,38 +626,117 @@ class PaperService:
                 .first()
             )
 
-            if content:
-                # Update existing
+            if not content:
+                content = PaperContent(paper_id=paper_id, schema_version="2.1")
+                session.add(content)
+
+            if is_quick:
+                # Quick extraction: store to quick fields only
                 if paper_type is not None:
                     content.paper_type = paper_type
                 if topics is not None:
                     content.topics = topics
                 if one_sentence_summary is not None:
                     content.one_sentence_summary = one_sentence_summary
+                content.extractor_model = model_name
+                content.quick_extraction_date = now
+                content.extraction_depth = "abstract_only"
+            else:
+                # Deep extraction: store to deep_* fields
+                if paper_type is not None:
+                    content.deep_paper_type = paper_type
+                if topics is not None:
+                    content.deep_topics = topics
+                if one_sentence_summary is not None:
+                    content.deep_one_sentence_summary = one_sentence_summary
                 if key_findings is not None:
                     content.key_findings = key_findings
                 if methodology_summary is not None:
                     content.methodology_summary = methodology_summary
                 if structured_data is not None:
                     content.structured_data = structured_data
-                content.extraction_depth = "COMPREHENSIVE"
-                content.extractor_model = model_name
-            else:
-                # Create new
-                content = PaperContent(
-                    paper_id=paper_id,
-                    paper_type=paper_type,
-                    topics=topics,
-                    one_sentence_summary=one_sentence_summary,
-                    key_findings=key_findings,
-                    methodology_summary=methodology_summary,
-                    structured_data=structured_data,
-                    extraction_depth="COMPREHENSIVE",
-                    extractor_model=model_name,
-                )
-                session.add(content)
+                content.deep_extractor_model = model_name
+                content.deep_extraction_date = now
+                content.extraction_depth = "comprehensive"
 
-            logger.info(f"Stored extraction for paper {paper_id}")
+                # Generate verification if quick extraction exists
+                if content.paper_type and paper_type:
+                    quick_topics = set(content.topics or [])
+                    deep_topics = set(topics or [])
+                    overlap = len(quick_topics & deep_topics) / max(len(quick_topics | deep_topics), 1)
+
+                    content.verification = {
+                        "paper_type_matches": content.paper_type == paper_type,
+                        "topics_overlap": round(overlap, 2),
+                        "quick_topics_count": len(quick_topics),
+                        "deep_topics_count": len(deep_topics),
+                        "verified_at": now.isoformat(),
+                    }
+
+            content.schema_version = "2.1"
+
+            # Update enrichment status to complete after extraction
+            paper.enrichment_status = EnrichmentStatus.COMPLETE
+
+            tier = "quick" if is_quick else "deep"
+            logger.info(f"Stored {tier} extraction for paper {paper_id}")
+
+    @classmethod
+    def flag_for_deep_extraction(cls, paper_id: int) -> dict:
+        """Flag a paper for deep extraction.
+
+        Sets the enrichment_status to NEEDS_DEEP_EXTRACTION.
+        Typically called after quick extraction completes and relevance
+        scoring determines the paper warrants deeper analysis.
+
+        Args:
+            paper_id: Paper ID to flag
+
+        Returns:
+            Updated paper dictionary
+
+        Raises:
+            PaperNotFoundError: If paper doesn't exist
+        """
+        with get_session() as session:
+            paper = session.query(Paper).filter(Paper.id == paper_id).first()
+            if not paper:
+                raise PaperNotFoundError(paper_id)
+
+            paper.enrichment_status = EnrichmentStatus.NEEDS_DEEP_EXTRACTION
+            paper.date_modified = datetime.utcnow()
+
+            logger.info(f"Flagged paper {paper_id} for deep extraction")
+            return cls.paper_to_dict(paper)
+
+    @classmethod
+    def batch_flag_for_deep_extraction(cls, paper_ids: list[int]) -> dict:
+        """Flag multiple papers for deep extraction.
+
+        Args:
+            paper_ids: List of paper IDs to flag
+
+        Returns:
+            Summary with flagged count and any errors
+        """
+        flagged = []
+        errors = []
+
+        for paper_id in paper_ids:
+            try:
+                cls.flag_for_deep_extraction(paper_id)
+                flagged.append(paper_id)
+            except PaperNotFoundError:
+                errors.append({"paper_id": paper_id, "error": "Not found"})
+            except Exception as e:
+                errors.append({"paper_id": paper_id, "error": str(e)})
+
+        return {
+            "flagged_count": len(flagged),
+            "flagged_ids": flagged,
+            "error_count": len(errors),
+            "errors": errors if errors else None,
+        }
 
     @classmethod
     def get_extraction_queue(cls, limit: int = 20) -> list[dict]:
@@ -721,7 +851,7 @@ class PaperService:
 
     @classmethod
     def batch_delete(cls, paper_ids: list[int]) -> BatchResult:
-        """Bulk delete multiple papers.
+        """Bulk delete multiple papers and clean up embeddings.
 
         Args:
             paper_ids: List of paper IDs to delete
@@ -732,11 +862,30 @@ class PaperService:
         processed = []
         failed = []
 
+        # Import embedding stores once for batch operations
+        try:
+            from embeddings.vectorstore import get_vector_store, get_chunk_store
+            vector_store = get_vector_store()
+            chunk_store = get_chunk_store()
+            embeddings_available = True
+        except Exception as e:
+            logger.warning(f"ChromaDB not available for cleanup: {e}")
+            embeddings_available = False
+
         with get_session() as session:
             for paper_id in paper_ids:
                 try:
                     paper = session.query(Paper).filter(Paper.id == paper_id).first()
                     if paper:
+                        # Delete from ChromaDB FIRST
+                        if embeddings_available:
+                            try:
+                                vector_store.delete([str(paper_id)])
+                                chunk_store.delete_paper_chunks(paper_id)
+                            except Exception as e:
+                                logger.warning(f"Failed to delete embeddings for paper {paper_id}: {e}")
+
+                        # Then delete from SQLite
                         session.delete(paper)
                         processed.append(paper_id)
                     else:

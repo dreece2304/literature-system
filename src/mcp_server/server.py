@@ -50,7 +50,7 @@ from .tools import collections  # noqa: E402
 from .tools import notes  # noqa: E402
 from .tools import import_export  # noqa: E402
 from .tools import project  # noqa: E402
-from .tools import zotero  # noqa: E402
+# Zotero removed per Phase 4 - user no longer needs sync
 from .tools import browser_pdf  # noqa: E402
 from .tools import discovery  # noqa: E402
 from .tools import citation_network  # noqa: E402
@@ -88,7 +88,7 @@ TOOL_MODULES = [
     (notes, "notes"),
     (import_export, "import_export"),
     (project, "project"),
-    (zotero, "zotero"),
+    # Zotero removed per Phase 4 - user no longer needs sync
     (browser_pdf, "browser_pdf"),
     (discovery, "discovery"),
     (citation_network, "citation_network"),

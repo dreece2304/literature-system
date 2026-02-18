@@ -348,6 +348,78 @@ class PDFService:
             )
 
     # =========================================================================
+    # Link Local PDF
+    # =========================================================================
+
+    @classmethod
+    def link_local_pdf(cls, paper_id: int, file_path: str) -> dict:
+        """Link an existing local PDF file to a paper.
+
+        Validates the file exists, computes hash, extracts word count,
+        and updates the paper record. Also sets enrichment_status to NEEDS_CHUNKING.
+
+        Args:
+            paper_id: Paper ID to link PDF to
+            file_path: Path to local PDF file
+
+        Returns:
+            Dict with paper_id, file_path, file_hash, word_count
+
+        Raises:
+            PaperNotFoundError: If paper doesn't exist
+            PDFError: If file doesn't exist or is not a valid PDF
+        """
+        path = Path(file_path)
+
+        # Validate file exists
+        if not path.exists():
+            raise PDFError(f"File not found: {file_path}")
+
+        if not path.is_file():
+            raise PDFError(f"Not a file: {file_path}")
+
+        # Validate it's a PDF
+        try:
+            with open(path, "rb") as f:
+                header = f.read(5)
+                if not header.startswith(b"%PDF"):
+                    raise PDFError(f"Not a valid PDF file: {file_path}")
+        except OSError as e:
+            raise PDFError(f"Cannot read file: {e}")
+
+        with get_session() as session:
+            paper = session.query(Paper).filter(Paper.id == paper_id).first()
+            if not paper:
+                raise PaperNotFoundError(paper_id)
+
+            # Compute hash and extract text
+            file_hash = cls.compute_file_hash(path)
+
+            try:
+                _, word_count = cls.extract_text(path)
+            except PDFError:
+                word_count = 0
+                logger.warning(f"Text extraction failed for {file_path}")
+
+            # Update paper
+            paper.file_path = str(path.absolute())
+            paper.file_hash = file_hash
+            paper.word_count = word_count
+            paper.enrichment_status = EnrichmentStatus.NEEDS_CHUNKING
+
+            logger.info(
+                f"Linked PDF to paper {paper_id}: {file_path} "
+                f"({word_count} words)"
+            )
+
+            return {
+                "paper_id": paper_id,
+                "file_path": str(path.absolute()),
+                "file_hash": file_hash,
+                "word_count": word_count,
+            }
+
+    # =========================================================================
     # Duplicate Detection
     # =========================================================================
 
@@ -616,8 +688,8 @@ class PDFService:
             paper.word_count = word_count
             # NOTE: We no longer write to paper.full_text - chunking creates PaperChunk records instead
 
-            # Update enrichment status to needs_extraction (has PDF, needs AI processing)
-            paper.enrichment_status = EnrichmentStatus.NEEDS_EXTRACTION
+            # Update enrichment status to needs_chunking (has PDF, needs text extraction)
+            paper.enrichment_status = EnrichmentStatus.NEEDS_CHUNKING
 
             logger.info(
                 f"Acquired PDF for paper {paper_id}: {file_path} "
@@ -634,16 +706,26 @@ class PDFService:
                 tried_sources=tried_sources,
             )
 
-        # Auto-queue chunking after successful PDF acquisition
+        # Auto-extract PDF text and create chunks after successful acquisition
         # Done outside transaction to avoid long locks
         if result.status == "success":
             try:
                 from .extraction_service import ExtractionService
-                ExtractionService.queue_extraction(paper_id)
-                logger.info(f"Queued paper {paper_id} for extraction after PDF acquisition")
+                extraction_result = ExtractionService.extract_pdf_and_store(paper_id=paper_id)
+                if extraction_result.success:
+                    logger.info(
+                        f"Extracted PDF for paper {paper_id}: "
+                        f"{extraction_result.chunk_count} chunks, "
+                        f"{extraction_result.word_count} words"
+                    )
+                else:
+                    logger.warning(
+                        f"PDF extraction failed for paper {paper_id}: "
+                        f"{extraction_result.error}"
+                    )
             except Exception as e:
-                # Don't fail the acquisition if queuing fails
-                logger.warning(f"Failed to queue extraction for paper {paper_id}: {e}")
+                # Don't fail the acquisition if extraction fails
+                logger.warning(f"Failed to extract PDF for paper {paper_id}: {e}")
 
         return result
 

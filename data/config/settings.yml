@@ -1,0 +1,40 @@
+# Zotero Configuration
+zotero:
+  # Path to Zotero data directory on Windows
+  windows_path: "/mnt/c/Users/dreec/Zotero"
+  # Your Zotero library ID (if using API)
+  library_id: "13344138"
+  library_type: "user"  # or "group"
+  # API key (keep in credentials.yml for security)
+
+  # Zotero local connector URL (optional - only for detecting if Zotero app is running)
+  # The Web API is used for actual sync operations, so this is not required
+  # Leave empty to skip local detection
+  proxy_url: ""
+  
+# Database Configuration  
+database:
+  type: "sqlite"  # or "postgresql"
+  path: "data/metadata/literature.db"
+  
+# PDF Processing
+pdf:
+  storage_path: "data/pdfs"
+  extract_text: true
+  extract_images: false
+  ocr_enabled: false
+  
+# Logging
+logging:
+  level: "INFO"
+  file: "logs/litdb.log"
+  
+# Search
+search:
+  index_path: "data/cache/search_index"
+  
+# Features
+features:
+  auto_sync: false
+  watch_folder: false
+  web_ui: false

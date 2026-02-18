@@ -33,6 +33,16 @@ class OllamaSettings(BaseSettings):
     triager_model: str = Field(default="qwen:7b-q4_K_M", description="Model for paper triage")
     reader_model: str = Field(default="qwen2.5:7b-instruct-q5_K_M", description="Model for Q&A and extraction")
 
+    # Extraction-specific models (two-tier system)
+    quick_extractor_model: str = Field(
+        default="qwen2.5:3b-instruct-q4_K_M",
+        description="Fast model for quick extraction (abstract-only: type, topics, summary)"
+    )
+    deep_extractor_model: str = Field(
+        default="qwen2.5:7b-instruct-q5_K_M",
+        description="Full model for deep extraction (PDF: findings, methodology, claims)"
+    )
+
     # Model parameters
     writer_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     triager_temperature: float = Field(default=0.3, ge=0.0, le=2.0)
@@ -45,20 +55,47 @@ class OllamaSettings(BaseSettings):
 
 
 class EmbeddingSettings(BaseSettings):
-    """Embedding model configuration."""
+    """Embedding model configuration.
 
+    Dual-model architecture:
+    - Paper-level: SPECTER2 for scientific paper similarity
+    - Chunk-level: BGE for full-text retrieval
+    """
+
+    # Legacy single model (for backwards compatibility during migration)
     model_name: str = Field(
         default="sentence-transformers/all-MiniLM-L6-v2",
-        description="HuggingFace model identifier"
+        description="Legacy model (deprecated, use paper_model_name/chunk_model_name)"
     )
-    dimension: int = Field(default=384, description="Embedding vector dimension")
-    batch_size: int = Field(default=32, description="Batch size for embedding generation")
+    dimension: int = Field(default=384, description="Legacy dimension (deprecated)")
+
+    # Paper-level embeddings (SPECTER2)
+    paper_model_name: str = Field(
+        default="allenai/specter2_base",
+        description="Model for paper-level similarity (title+abstract)"
+    )
+    paper_dimension: int = Field(default=768, description="SPECTER2 embedding dimension")
+
+    # Chunk-level embeddings (BGE)
+    chunk_model_name: str = Field(
+        default="BAAI/bge-base-en-v1.5",
+        description="Model for chunk-level retrieval (full-text)"
+    )
+    chunk_dimension: int = Field(default=768, description="BGE embedding dimension")
+
+    # Dual model feature flag (enable to use new models)
+    use_dual_models: bool = Field(
+        default=False,
+        description="Enable dual model architecture (SPECTER2 + BGE). Set True after re-indexing."
+    )
+
+    batch_size: int = Field(default=64, description="Batch size for embedding generation (was 32)")
     device: str = Field(default="cuda", description="Device: 'cuda' or 'cpu'")
     normalize: bool = Field(default=True, description="L2 normalize embeddings")
 
-    # Chunking parameters
-    chunk_size: int = Field(default=512, description="Tokens per chunk")
-    chunk_overlap: int = Field(default=128, description="Overlap between chunks")
+    # Chunking parameters (improved settings)
+    chunk_size: int = Field(default=768, description="Tokens per chunk (was 512)")
+    chunk_overlap: int = Field(default=192, description="Overlap between chunks (was 128)")
 
     model_config = SettingsConfigDict(env_prefix="EMBEDDING_")
 
@@ -79,6 +116,20 @@ class ChromaDBSettings(BaseSettings):
     # Search parameters
     top_k: int = Field(default=10, description="Default number of results")
     score_threshold: float = Field(default=0.35, description="Minimum similarity score (discovery-focused)")
+
+    # HNSW index tuning (improved settings)
+    hnsw_ef_construction: int = Field(
+        default=200,
+        description="HNSW ef_construction - higher = better index quality (was ~100)"
+    )
+    hnsw_ef_search: int = Field(
+        default=64,
+        description="HNSW ef at query time - higher = better recall (was ~10)"
+    )
+    hnsw_m: int = Field(
+        default=32,
+        description="HNSW M - connections per node - higher = better recall (was ~16)"
+    )
 
     model_config = SettingsConfigDict(env_prefix="CHROMA_")
 
@@ -218,6 +269,34 @@ class GPUSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="GPU_")
 
 
+class RerankerSettings(BaseSettings):
+    """Cross-encoder re-ranking configuration.
+
+    Re-ranking improves precision by scoring (query, document) pairs directly.
+    Used after initial retrieval to refine top results.
+    """
+
+    model_name: str = Field(
+        default="cross-encoder/ms-marco-MiniLM-L-6-v2",
+        description="Cross-encoder model for re-ranking"
+    )
+    enabled: bool = Field(
+        default=False,
+        description="Enable re-ranking (requires model download)"
+    )
+    top_k_candidates: int = Field(
+        default=50,
+        description="Number of candidates to fetch for re-ranking"
+    )
+    top_k_results: int = Field(
+        default=20,
+        description="Number of results to return after re-ranking"
+    )
+    device: str = Field(default="cuda", description="Device: 'cuda' or 'cpu'")
+
+    model_config = SettingsConfigDict(env_prefix="RERANKER_")
+
+
 class ClaudeSettings(BaseSettings):
     """Claude API settings for AI extraction.
 
@@ -277,6 +356,7 @@ class Settings(BaseSettings):
     mcp: MCPSettings = Field(default_factory=MCPSettings)
     logging: LoggingSettings = Field(default_factory=LoggingSettings)
     gpu: GPUSettings = Field(default_factory=GPUSettings)
+    reranker: RerankerSettings = Field(default_factory=RerankerSettings)
     claude: ClaudeSettings = Field(default_factory=ClaudeSettings)
 
     model_config = SettingsConfigDict(
@@ -304,6 +384,7 @@ __all__ = [
     "MCPSettings",
     "LoggingSettings",
     "GPUSettings",
+    "RerankerSettings",
     "ClaudeSettings",
     "PROJECT_ROOT",
     "DATA_DIR",

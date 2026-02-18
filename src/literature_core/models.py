@@ -234,43 +234,82 @@ class CitationLocation(Base):
 
 
 class PaperContent(Base):
-    """AI-extracted structured content from papers."""
+    """AI-extracted structured content from papers.
+
+    Two-tier extraction system (schema v2.1):
+    - Quick tier: paper_type, topics, one_sentence_summary (from abstract)
+    - Deep tier: deep_* versions of quick fields + extended fields (from PDF)
+
+    Both tiers persist separately for verification and audit trail.
+    """
     __tablename__ = 'paper_contents'
 
     id = Column(Integer, primary_key=True)
-    paper_id = Column(Integer, ForeignKey('papers.id', ondelete='CASCADE'), unique=True, nullable=False)
+    paper_id = Column(Integer, ForeignKey('papers.id', ondelete='CASCADE'),
+                      unique=True, nullable=False)
 
-    extraction_date = Column(DateTime, default=func.now())
-    extraction_depth = Column(String(50))
-    schema_version = Column(String(20), default='1.0')
+    # Extraction metadata
+    quick_extraction_date = Column(DateTime)  # When quick tier was run
+    deep_extraction_date = Column(DateTime)   # When deep tier was run
+    extraction_depth = Column(String(50))     # "abstract_only" or "comprehensive"
+    schema_version = Column(String(20), default='2.1')
     extractor_model = Column(String(100))
+    deep_extractor_model = Column(String(100))  # Model used for deep extraction
 
+    # Quick tier fields (from abstract only - preserved even after deep)
     paper_type = Column(String(50))
     topics = Column(JSON)
     one_sentence_summary = Column(Text)
 
+    # Deep tier versions of quick fields (from full PDF - may differ)
+    deep_paper_type = Column(String(50))
+    deep_topics = Column(JSON)
+    deep_one_sentence_summary = Column(Text)
+
+    # Deep tier extended fields (only populated by deep extraction)
     key_findings = Column(JSON)
     methodology_summary = Column(Text)
-    structured_data = Column(JSON)
+    structured_data = Column(JSON)  # Extended fields as JSON
+
+    # Verification (comparison of quick vs deep)
+    verification = Column(JSON)  # {paper_type_matches, topics_overlap, notes}
 
     updated_at = Column(DateTime, onupdate=func.now())
 
     # Relationships
-    paper = relationship('Paper', backref=backref('content', uselist=False))
+    paper = relationship('Paper', backref=backref('content', uselist=False,
+                                                  cascade='all, delete-orphan'))
 
 
 class ProjectRelevance(Base):
-    """Paper relevance to specific research projects."""
+    """Paper relevance to specific research projects.
+
+    Used to:
+    - Score papers against project topics (from data/projects.json)
+    - Track deep extraction decisions (queue/skip/done)
+    - Enable project-specific paper filtering
+
+    Relevance levels: "high", "medium", "low", "none"
+    """
     __tablename__ = 'project_relevances'
 
     id = Column(Integer, primary_key=True)
-    paper_id = Column(Integer, ForeignKey('papers.id', ondelete='CASCADE'), nullable=False)
+    paper_id = Column(Integer, ForeignKey('papers.id', ondelete='CASCADE'),
+                      nullable=False)
     project_name = Column(String(200), nullable=False)
 
-    overall_relevance = Column(String(20))
-    relevance_summary = Column(Text)
-    primary_use = Column(String(100))
+    # Relevance scoring
+    relevance_level = Column(String(20))      # high, medium, low, none
+    matched_topics = Column(JSON)             # List of matched topic strings
+    relevance_summary = Column(Text)          # Human-readable explanation
+    primary_use = Column(String(100))         # background, methods, comparison
 
+    # Deep extraction tracking
+    deep_extract_decision = Column(String(20))  # queue, skip, done
+    decision_reason = Column(String(200))       # Why (e.g., "high relevance")
+
+    # Timestamps
+    scored_at = Column(DateTime)              # When relevance was calculated
     created_at = Column(DateTime, default=func.now())
     updated_at = Column(DateTime, onupdate=func.now())
 
@@ -303,7 +342,7 @@ class PaperChunk(Base):
 
     # Relationships
     paper = relationship('Paper', backref=backref('chunks', order_by='PaperChunk.chunk_order',
-                                                   cascade='all, delete-orphan'))
+                                                  cascade='all, delete-orphan'))
 
 
 class PaperTable(Base):
@@ -323,7 +362,7 @@ class PaperTable(Base):
 
     # Relationships
     paper = relationship('Paper', backref=backref('tables', order_by='PaperTable.table_order',
-                                                   cascade='all, delete-orphan'))
+                                                  cascade='all, delete-orphan'))
 
 
 class PaperFigure(Base):
@@ -379,9 +418,88 @@ class PaperReference(Base):
 
     # Relationships
     paper = relationship('Paper', foreign_keys=[paper_id],
-                        backref=backref('references', order_by='PaperReference.reference_order',
-                                        cascade='all, delete-orphan'))
+                         backref=backref('references', order_by='PaperReference.reference_order',
+                                         cascade='all, delete-orphan'))
     matched_paper = relationship('Paper', foreign_keys=[matched_paper_id])
+
+
+class PaperCitation(Base):
+    """Citation relationships between papers in the library.
+
+    Tracks which papers cite which other papers. Links are created when:
+    - Importing references from a paper via external APIs
+    - Matching PDF-extracted references to library papers
+    - Manual linking
+
+    This enables local citation graph queries without API calls.
+    """
+    __tablename__ = 'paper_citations'
+
+    id = Column(Integer, primary_key=True)
+    citing_paper_id = Column(Integer, ForeignKey('papers.id', ondelete='CASCADE'), nullable=False, index=True)
+    cited_paper_id = Column(Integer, ForeignKey('papers.id', ondelete='CASCADE'), nullable=False, index=True)
+    source = Column(String(50), nullable=False)  # 'openalex', 'semantic_scholar', 'pdf', 'manual'
+    created_at = Column(DateTime, default=func.now())
+
+    # Relationships
+    citing_paper = relationship('Paper', foreign_keys=[citing_paper_id],
+                                backref=backref('outgoing_citations', cascade='all, delete-orphan'))
+    cited_paper = relationship('Paper', foreign_keys=[cited_paper_id],
+                               backref=backref('incoming_citations', cascade='all, delete-orphan'))
+
+    __table_args__ = (
+        Index('ix_paper_citations_citing', 'citing_paper_id'),
+        Index('ix_paper_citations_cited', 'cited_paper_id'),
+    )
+
+
+class ClaimCitation(Base):
+    """Maps claims in a paper to their cited references.
+
+    When we extract "ALD enables conformal coatings [17, 23]",
+    we store the claim text, citation numbers, and link to the
+    referenced papers (both in bibliography and library).
+
+    Use cases:
+    - Find source papers for claims
+    - Build citation chains (A cites B cites C)
+    - Verify if cited papers support claims
+    """
+    __tablename__ = 'claim_citations'
+
+    id = Column(Integer, primary_key=True)
+    paper_id = Column(Integer, ForeignKey('papers.id', ondelete='CASCADE'), nullable=False)
+
+    # The claim text from the paper
+    claim_text = Column(Text, nullable=False)
+    citation_numbers = Column(JSON)  # [17, 23] - numbers as they appear in text
+
+    # Context
+    section = Column(String(50))  # introduction, methods, results, discussion
+    chunk_index = Column(Integer)  # Which chunk this came from
+    claim_type = Column(String(50))  # fact, method, comparison, limitation
+
+    # Links to references and library papers
+    # One claim can cite multiple references, stored as JSON array of IDs
+    reference_ids = Column(JSON)  # [ref_id_1, ref_id_2] - FKs to paper_references
+    matched_paper_ids = Column(JSON)  # [paper_id_1, paper_id_2] - FKs to papers (if in library)
+
+    # Status for each citation (parallel arrays)
+    match_statuses = Column(JSON)  # ["matched", "unmatched", "imported"]
+
+    # Importance/relevance
+    importance = Column(String(20))  # high, medium, low
+
+    created_at = Column(DateTime, default=func.now())
+
+    # Relationships
+    paper = relationship('Paper', backref=backref('claim_citations', cascade='all, delete-orphan'))
+
+    __table_args__ = (
+        Index('ix_claim_citations_paper_id', 'paper_id'),
+        Index('ix_claim_citations_section', 'section'),
+        Index('ix_claim_citations_claim_type', 'claim_type'),
+    )
 
 
 class ExtractionMetadata(Base):
@@ -416,44 +534,4 @@ class ExtractionMetadata(Base):
 
     # Relationships
     paper = relationship('Paper', backref=backref('extraction_metadata', uselist=False,
-                                                   cascade='all, delete-orphan'))
-
-
-class CitedClaim(Base):
-    """Claims from a paper that cite other works.
-
-    Tracks what claims a paper makes and which sources support them.
-    Used for understanding citation context and building citation networks.
-    """
-    __tablename__ = 'cited_claims'
-    __table_args__ = (
-        Index('ix_cited_claims_paper_section', 'paper_id', 'section'),
-    )
-
-    id = Column(Integer, primary_key=True)
-    paper_id = Column(Integer, ForeignKey('papers.id', ondelete='CASCADE'), nullable=False, index=True)
-
-    # The claim itself
-    claim_text = Column(Text, nullable=False)  # The claim being made
-    citation_marker = Column(String(100))  # "[Smith 2020]" or "[23]" or "Smith et al."
-
-    # Referenced work (best-effort resolution)
-    referenced_title = Column(Text)  # Resolved title if possible
-    referenced_doi = Column(String(100), index=True)  # Resolved DOI if possible
-    referenced_paper_id = Column(Integer, ForeignKey('papers.id', ondelete='SET NULL'), index=True)
-
-    # Context
-    section = Column(String(50), index=True)  # introduction, methods, results, discussion
-    usefulness = Column(String(50))  # background, methods, comparison, key_finding, supports_claim
-
-    # Chunk reference (where this claim was extracted from)
-    chunk_id = Column(Integer, ForeignKey('paper_chunks.id', ondelete='SET NULL'))
-
-    # Timestamps
-    created_at = Column(DateTime, default=func.now())
-
-    # Relationships
-    paper = relationship('Paper', foreign_keys=[paper_id],
-                        backref=backref('cited_claims', cascade='all, delete-orphan'))
-    referenced_paper = relationship('Paper', foreign_keys=[referenced_paper_id])
-    chunk = relationship('PaperChunk')
+                                                  cascade='all, delete-orphan'))

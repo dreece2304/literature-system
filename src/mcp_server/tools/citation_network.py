@@ -28,6 +28,7 @@ from literature_core import (  # noqa: E402
     serialize,
     LiteratureError,
     PaperReference,
+    ClaimCitation,
 )
 from services import PaperService  # noqa: E402
 from services.external_search import ExternalSearchService  # noqa: E402
@@ -188,6 +189,111 @@ async def list_tools() -> list[Tool]:
                     },
                 },
                 "required": ["citing_paper_id", "cited_paper_id"],
+            },
+        ),
+        # =================================================================
+        # CLAIM CITATION TOOLS (new)
+        # =================================================================
+        Tool(
+            name="get_claim_citations",
+            description="Get claims from a paper with their cited references",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "Database paper ID",
+                    },
+                    "section": {
+                        "type": "string",
+                        "enum": ["introduction", "methods", "results", "discussion", "conclusion"],
+                        "description": "Filter by section (optional)",
+                    },
+                    "claim_type": {
+                        "type": "string",
+                        "enum": ["fact", "method", "comparison", "limitation", "background"],
+                        "description": "Filter by claim type (optional)",
+                    },
+                    "importance": {
+                        "type": "string",
+                        "enum": ["high", "medium", "low"],
+                        "description": "Filter by importance (optional)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum claims to return",
+                        "default": 50,
+                    },
+                },
+                "required": ["paper_id"],
+            },
+        ),
+        Tool(
+            name="find_claims_citing_paper",
+            description="Find all claims in library that cite a specific paper",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "Database paper ID of the paper being cited",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum claims to return",
+                        "default": 50,
+                    },
+                },
+                "required": ["paper_id"],
+            },
+        ),
+        Tool(
+            name="get_unmatched_claim_references",
+            description="List unmatched references from claims (potential imports)",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "Database paper ID (omit for all papers)",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum references to return",
+                        "default": 50,
+                    },
+                },
+            },
+        ),
+        Tool(
+            name="get_citation_chain",
+            description="Trace citation chains: claim → cited paper → that paper's claims → etc.",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "paper_id": {
+                        "type": "integer",
+                        "description": "Starting paper ID",
+                    },
+                    "claim_id": {
+                        "type": "integer",
+                        "description": "Starting claim ID (optional, traces from specific claim)",
+                    },
+                    "depth": {
+                        "type": "integer",
+                        "description": "How many citation hops to follow (1-3)",
+                        "default": 2,
+                        "minimum": 1,
+                        "maximum": 3,
+                    },
+                    "direction": {
+                        "type": "string",
+                        "enum": ["forward", "backward"],
+                        "description": "forward=follow claims to cited papers, backward=find claims citing this paper",
+                        "default": "forward",
+                    },
+                },
+                "required": ["paper_id"],
             },
         ),
     ]
@@ -667,8 +773,6 @@ async def _import_references_from_paper(arguments: dict[str, Any]) -> list[TextC
                     session.add(link)
                     links_created += 1
 
-        session.commit()
-
     return _to_response(success({
         "source_paper_id": paper_id,
         "source_title": title,
@@ -779,7 +883,6 @@ async def _link_papers_citation(arguments: dict[str, Any]) -> list[TextContent]:
             source="manual"
         )
         session.add(link)
-        session.commit()
 
     return _to_response(success({
         "status": "created",
@@ -787,6 +890,304 @@ async def _link_papers_citation(arguments: dict[str, Any]) -> list[TextContent]:
         "citing_paper_id": citing_paper_id,
         "cited_paper_id": cited_paper_id,
     }))
+
+
+# ============================================================================
+# Claim Citation Tools
+# ============================================================================
+
+
+async def _get_claim_citations(arguments: dict[str, Any]) -> list[TextContent]:
+    """Get claims from a paper with their cited references."""
+    from literature_core import get_session, Paper
+
+    paper_id = arguments["paper_id"]
+    section_filter = arguments.get("section")
+    claim_type_filter = arguments.get("claim_type")
+    importance_filter = arguments.get("importance")
+    limit = arguments.get("limit", 50)
+
+    # Verify paper exists
+    paper = PaperService.get(paper_id)
+    if not paper:
+        return _to_response(error(f"Paper {paper_id} not found", code="NOT_FOUND"))
+
+    with get_session() as session:
+        query = session.query(ClaimCitation).filter(ClaimCitation.paper_id == paper_id)
+
+        if section_filter:
+            query = query.filter(ClaimCitation.section == section_filter)
+        if claim_type_filter:
+            query = query.filter(ClaimCitation.claim_type == claim_type_filter)
+        if importance_filter:
+            query = query.filter(ClaimCitation.importance == importance_filter)
+
+        claims = query.limit(limit).all()
+
+        results = []
+        for claim in claims:
+            # Get matched paper info if available
+            matched_papers = []
+            if claim.matched_paper_ids:
+                for pid, status in zip(claim.matched_paper_ids, claim.match_statuses or []):
+                    if pid and status == "matched":
+                        matched = session.query(Paper).get(pid)
+                        if matched:
+                            matched_papers.append({
+                                "id": matched.id,
+                                "title": matched.title[:80] if matched.title else None,
+                                "doi": matched.doi,
+                            })
+
+            results.append({
+                "id": claim.id,
+                "claim_text": claim.claim_text,
+                "citation_numbers": claim.citation_numbers,
+                "section": claim.section,
+                "claim_type": claim.claim_type,
+                "importance": claim.importance,
+                "reference_ids": claim.reference_ids,
+                "matched_paper_ids": claim.matched_paper_ids,
+                "match_statuses": claim.match_statuses,
+                "matched_papers": matched_papers,
+            })
+
+    return _to_response(success({
+        "paper_id": paper_id,
+        "paper_title": paper.get("title"),
+        "total_claims": len(results),
+        "claims": results,
+    }))
+
+
+async def _find_claims_citing_paper(arguments: dict[str, Any]) -> list[TextContent]:
+    """Find all claims in the library that cite a specific paper."""
+    from literature_core import get_session, Paper
+    from sqlalchemy import text
+
+    paper_id = arguments["paper_id"]
+    limit = arguments.get("limit", 50)
+
+    # Verify paper exists
+    paper = PaperService.get(paper_id)
+    if not paper:
+        return _to_response(error(f"Paper {paper_id} not found", code="NOT_FOUND"))
+
+    with get_session() as session:
+        # Find claims where matched_paper_ids contains this paper_id
+        # JSON query: matched_paper_ids is a JSON array
+        # This is SQLite-specific using json_each
+        claims = session.query(ClaimCitation).filter(
+            text(f"EXISTS (SELECT 1 FROM json_each(matched_paper_ids) WHERE value = {paper_id})")
+        ).limit(limit).all()
+
+        results = []
+        for claim in claims:
+            citing_paper = session.query(Paper).get(claim.paper_id)
+            results.append({
+                "claim_id": claim.id,
+                "claim_text": claim.claim_text,
+                "citing_paper_id": claim.paper_id,
+                "citing_paper_title": citing_paper.title[:80] if citing_paper and citing_paper.title else None,
+                "section": claim.section,
+                "claim_type": claim.claim_type,
+                "importance": claim.importance,
+            })
+
+    return _to_response(success({
+        "cited_paper_id": paper_id,
+        "cited_paper_title": paper.get("title"),
+        "total_citing_claims": len(results),
+        "citing_claims": results,
+    }))
+
+
+async def _get_unmatched_claim_references(arguments: dict[str, Any]) -> list[TextContent]:
+    """List unmatched references from claims (potential imports)."""
+    from literature_core import get_session, Paper
+    from sqlalchemy import text
+
+    paper_id = arguments.get("paper_id")
+    limit = arguments.get("limit", 50)
+
+    with get_session() as session:
+        query = session.query(ClaimCitation)
+
+        if paper_id:
+            query = query.filter(ClaimCitation.paper_id == paper_id)
+
+        # Get claims that have unmatched references
+        claims = query.filter(
+            text("EXISTS (SELECT 1 FROM json_each(match_statuses) WHERE value IN ('unmatched', 'reference_not_found'))")
+        ).limit(limit * 2).all()  # Get more since we'll filter
+
+        # Collect unmatched references
+        unmatched_refs = []
+        seen = set()
+
+        for claim in claims:
+            if not claim.reference_ids or not claim.match_statuses:
+                continue
+
+            citing_paper = session.query(Paper).get(claim.paper_id)
+
+            for i, (ref_id, status) in enumerate(zip(claim.reference_ids, claim.match_statuses)):
+                if status in ("unmatched", "reference_not_found") and ref_id:
+                    if ref_id in seen:
+                        continue
+                    seen.add(ref_id)
+
+                    # Get reference details
+                    ref = session.query(PaperReference).get(ref_id)
+                    if ref and len(unmatched_refs) < limit:
+                        unmatched_refs.append({
+                            "reference_id": ref_id,
+                            "raw_text": ref.raw_text[:200] if ref.raw_text else None,
+                            "parsed_title": ref.parsed_title,
+                            "parsed_authors": ref.parsed_authors,
+                            "parsed_year": ref.parsed_year,
+                            "parsed_doi": ref.parsed_doi,
+                            "citing_paper_id": claim.paper_id,
+                            "citing_paper_title": citing_paper.title[:60] if citing_paper and citing_paper.title else None,
+                            "claim_text": claim.claim_text[:100] + "..." if len(claim.claim_text) > 100 else claim.claim_text,
+                        })
+
+    return _to_response(success({
+        "paper_id": paper_id,
+        "total_unmatched": len(unmatched_refs),
+        "unmatched_references": unmatched_refs,
+        "hint": "Use import_paper with DOI to add these to library, then re-run deep extraction",
+    }))
+
+
+async def _get_citation_chain(arguments: dict[str, Any]) -> list[TextContent]:
+    """Trace citation chains through claims and references.
+
+    Forward: paper's claims → cited papers → their claims → etc.
+    Backward: papers citing this → their claims that cite this → etc.
+    """
+    from literature_core import get_session, Paper
+    from sqlalchemy import text
+
+    paper_id = arguments["paper_id"]
+    claim_id = arguments.get("claim_id")
+    depth = min(arguments.get("depth", 2), 3)  # Cap at 3
+    direction = arguments.get("direction", "forward")
+
+    # Verify paper exists
+    paper = PaperService.get(paper_id)
+    if not paper:
+        return _to_response(error(f"Paper {paper_id} not found", code="NOT_FOUND"))
+
+    chain = {
+        "start_paper": {
+            "id": paper_id,
+            "title": paper.get("title"),
+        },
+        "direction": direction,
+        "depth": depth,
+        "levels": [],
+    }
+
+    with get_session() as session:
+        if direction == "forward":
+            # Forward: Start with claims from this paper, follow to cited papers
+            current_paper_ids = [paper_id]
+
+            for level in range(depth):
+                level_data = {"level": level + 1, "papers": []}
+
+                for pid in current_paper_ids:
+                    # Get claims from this paper
+                    claims = session.query(ClaimCitation).filter(
+                        ClaimCitation.paper_id == pid
+                    ).all()
+
+                    if claim_id and level == 0:
+                        # Filter to specific claim if provided
+                        claims = [c for c in claims if c.id == claim_id]
+
+                    for claim in claims:
+                        if not claim.matched_paper_ids:
+                            continue
+
+                        for i, (matched_id, status) in enumerate(
+                            zip(claim.matched_paper_ids, claim.match_statuses or [])
+                        ):
+                            if matched_id and status == "matched":
+                                cited_paper = session.query(Paper).get(matched_id)
+                                if cited_paper:
+                                    level_data["papers"].append({
+                                        "paper_id": cited_paper.id,
+                                        "title": cited_paper.title[:80] if cited_paper.title else None,
+                                        "doi": cited_paper.doi,
+                                        "citing_claim": claim.claim_text[:150] + "..." if len(claim.claim_text) > 150 else claim.claim_text,
+                                        "from_paper_id": pid,
+                                        "claim_type": claim.claim_type,
+                                        "importance": claim.importance,
+                                    })
+
+                # De-duplicate papers at this level
+                seen = set()
+                unique_papers = []
+                for p in level_data["papers"]:
+                    if p["paper_id"] not in seen:
+                        seen.add(p["paper_id"])
+                        unique_papers.append(p)
+                level_data["papers"] = unique_papers[:20]  # Limit per level
+                level_data["count"] = len(unique_papers)
+
+                if unique_papers:
+                    chain["levels"].append(level_data)
+                    # Next level starts from cited papers
+                    current_paper_ids = [p["paper_id"] for p in unique_papers]
+                else:
+                    break
+
+        else:
+            # Backward: Find claims that cite this paper, then their source papers
+            current_paper_ids = [paper_id]
+
+            for level in range(depth):
+                level_data = {"level": level + 1, "papers": []}
+
+                for pid in current_paper_ids:
+                    # Find claims that cite this paper
+                    claims = session.query(ClaimCitation).filter(
+                        text(f"EXISTS (SELECT 1 FROM json_each(matched_paper_ids) WHERE value = {pid})")
+                    ).all()
+
+                    for claim in claims:
+                        citing_paper = session.query(Paper).get(claim.paper_id)
+                        if citing_paper and citing_paper.id not in [p["paper_id"] for p in level_data["papers"]]:
+                            level_data["papers"].append({
+                                "paper_id": citing_paper.id,
+                                "title": citing_paper.title[:80] if citing_paper.title else None,
+                                "doi": citing_paper.doi,
+                                "claim_text": claim.claim_text[:150] + "..." if len(claim.claim_text) > 150 else claim.claim_text,
+                                "cites_paper_id": pid,
+                                "claim_type": claim.claim_type,
+                                "importance": claim.importance,
+                            })
+
+                level_data["papers"] = level_data["papers"][:20]  # Limit per level
+                level_data["count"] = len(level_data["papers"])
+
+                if level_data["papers"]:
+                    chain["levels"].append(level_data)
+                    # Next level: find papers citing these papers
+                    current_paper_ids = [p["paper_id"] for p in level_data["papers"]]
+                else:
+                    break
+
+    # Summary stats
+    total_papers = sum(level["count"] for level in chain["levels"])
+    chain["summary"] = {
+        "total_papers_in_chain": total_papers,
+        "levels_traced": len(chain["levels"]),
+    }
+
+    return _to_response(success(chain))
 
 
 # ============================================================================
@@ -812,6 +1213,11 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
         "import_references_from_paper": _import_references_from_paper,
         "get_local_citations": _get_local_citations,
         "link_papers_citation": _link_papers_citation,
+        # Claim citation tools
+        "get_claim_citations": _get_claim_citations,
+        "find_claims_citing_paper": _find_claims_citing_paper,
+        "get_unmatched_claim_references": _get_unmatched_claim_references,
+        "get_citation_chain": _get_citation_chain,
     }
 
     if name not in tool_map:

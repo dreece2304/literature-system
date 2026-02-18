@@ -81,6 +81,11 @@ class PaperResult:
     confidence: float = 0.0
     citation_count: Optional[int] = None
     arxiv_id: Optional[str] = None
+    pubmed_id: Optional[str] = None
+    volume: Optional[str] = None
+    issue: Optional[str] = None
+    pages: Optional[str] = None
+    publisher: Optional[str] = None
 
 
 class RateLimiter:
@@ -411,6 +416,150 @@ class ExternalSearchService:
             )
         except Exception as e:
             logger.error(f"CrossRef DOI lookup error: {e}")
+            return None
+
+    # Alias for backward compatibility
+    async def lookup_crossref_doi(self, doi: str) -> Optional[PaperResult]:
+        """Alias for lookup_by_doi (CrossRef)."""
+        return await self.lookup_by_doi(doi)
+
+    async def lookup_openalex_doi(self, doi: str) -> Optional[PaperResult]:
+        """Look up a paper by DOI using OpenAlex's direct works endpoint.
+
+        Returns exact DOI match only, or None if not found.
+        """
+        # Clean DOI
+        doi = doi.strip()
+        if doi.startswith("https://doi.org/"):
+            doi = doi[16:]
+        elif doi.startswith("http://doi.org/"):
+            doi = doi[15:]
+
+        # OpenAlex direct DOI lookup endpoint
+        url = f"https://api.openalex.org/works/https://doi.org/{doi}"
+
+        headers = {}
+        if self.openalex_email:
+            headers["User-Agent"] = f"mailto:{self.openalex_email}"
+
+        try:
+            response, success = await self._make_request("openalex", url, headers=headers)
+            if not success or response is None or response.status_code != 200:
+                return None
+
+            work = response.json()
+
+            # Extract authors
+            authors = []
+            for authorship in work.get("authorships", []):
+                author_name = authorship.get("author", {}).get("display_name")
+                if author_name:
+                    authors.append(author_name)
+
+            # Extract journal
+            journal = None
+            primary_loc = work.get("primary_location", {})
+            if primary_loc and primary_loc.get("source"):
+                journal = primary_loc["source"].get("display_name")
+
+            # Extract DOI (remove https://doi.org/ prefix)
+            result_doi = work.get("doi")
+            if result_doi and result_doi.startswith("https://doi.org/"):
+                result_doi = result_doi[16:]
+
+            # Reconstruct abstract from inverted index
+            abstract = None
+            if work.get("abstract_inverted_index"):
+                try:
+                    inv_idx = work["abstract_inverted_index"]
+                    positions = []
+                    for word, pos_list in inv_idx.items():
+                        for pos in pos_list:
+                            positions.append((pos, word))
+                    positions.sort()
+                    abstract = " ".join(word for _, word in positions)
+                except (KeyError, TypeError):
+                    pass
+
+            # Get PDF URL
+            pdf_url = None
+            oa = work.get("open_access", {})
+            if oa.get("oa_url"):
+                pdf_url = oa["oa_url"]
+
+            return PaperResult(
+                title=work.get("title", ""),
+                authors=authors,
+                year=work.get("publication_year"),
+                doi=result_doi,
+                journal=journal,
+                abstract=abstract,
+                pdf_url=pdf_url,
+                source="openalex",
+                confidence=1.0,  # Direct DOI lookup = exact match
+                citation_count=work.get("cited_by_count")
+            )
+
+        except Exception as e:
+            logger.error(f"OpenAlex DOI lookup error: {e}")
+            return None
+
+    async def lookup_semantic_scholar_doi(self, doi: str) -> Optional[PaperResult]:
+        """Look up a paper by DOI using Semantic Scholar's direct endpoint.
+
+        Returns exact DOI match only, or None if not found.
+        """
+        # Clean DOI
+        doi = doi.strip()
+        if doi.startswith("https://doi.org/"):
+            doi = doi[16:]
+        elif doi.startswith("http://doi.org/"):
+            doi = doi[15:]
+
+        # Semantic Scholar direct DOI lookup endpoint
+        url = f"https://api.semanticscholar.org/graph/v1/paper/DOI:{doi}"
+
+        params = {
+            "fields": "title,authors,year,externalIds,venue,abstract,openAccessPdf,citationCount"
+        }
+
+        headers = {}
+        if self.semantic_scholar_key:
+            headers["x-api-key"] = self.semantic_scholar_key
+
+        try:
+            response, success = await self._make_request(
+                "semantic_scholar", url, params=params, headers=headers
+            )
+            if not success or response is None or response.status_code != 200:
+                return None
+
+            paper = response.json()
+
+            authors = [a.get("name", "") for a in paper.get("authors", [])]
+            result_doi = paper.get("externalIds", {}).get("DOI")
+            arxiv_id = paper.get("externalIds", {}).get("ArXiv")
+
+            pdf_url = None
+            if paper.get("openAccessPdf"):
+                pdf_url = paper["openAccessPdf"].get("url")
+
+            return PaperResult(
+                title=paper.get("title", ""),
+                authors=authors,
+                year=paper.get("year"),
+                doi=result_doi,
+                journal=paper.get("venue"),
+                abstract=paper.get("abstract"),
+                pdf_url=pdf_url,
+                source="semantic_scholar",
+                confidence=1.0,  # Direct DOI lookup = exact match
+                citation_count=paper.get("citationCount"),
+                arxiv_id=arxiv_id
+            )
+
+        except Exception as e:
+            logger.error(f"Semantic Scholar DOI lookup error: {e}")
             return None
 
     async def _search_crossref(
@@ -754,6 +903,256 @@ class ExternalSearchService:
                     logger.debug(f"Title search for ID failed: {e}")
 
         return None
+
+    async def _resolve_openalex_id(
+        self, doi: str = None, title: str = None, openalex_id: str = None
+    ) -> Optional[str]:
+        """Resolve various identifiers to an OpenAlex work ID."""
+        if openalex_id:
+            return openalex_id
+
+        if doi:
+            # Direct DOI lookup
+            doi = doi.strip()
+            if doi.startswith("https://doi.org/"):
+                doi = doi[16:]
+            elif doi.startswith("http://doi.org/"):
+                doi = doi[15:]
+
+            url = f"https://api.openalex.org/works/https://doi.org/{doi}"
+            headers = {}
+            if self.openalex_email:
+                headers["User-Agent"] = f"mailto:{self.openalex_email}"
+
+            try:
+                response, success = await self._make_request("openalex", url, headers=headers)
+                if success and response and response.status_code == 200:
+                    data = response.json()
+                    return data.get("id")  # Returns full URL like https://openalex.org/W123
+            except Exception as e:
+                logger.debug(f"OpenAlex DOI lookup failed: {e}")
+
+        if title:
+            # Search by title
+            url = "https://api.openalex.org/works"
+            params = {"filter": f"title.search:{title}", "per-page": 1}
+            headers = {}
+            if self.openalex_email:
+                headers["User-Agent"] = f"mailto:{self.openalex_email}"
+
+            try:
+                response, success = await self._make_request(
+                    "openalex", url, params=params, headers=headers
+                )
+                if success and response and response.status_code == 200:
+                    data = response.json()
+                    results = data.get("results", [])
+                    if results:
+                        return results[0].get("id")
+            except Exception as e:
+                logger.debug(f"OpenAlex title search failed: {e}")
+
+        return None
+
+    def _parse_openalex_work(self, work: dict) -> PaperResult:
+        """Parse an OpenAlex work into a PaperResult."""
+        # Extract authors
+        authors = []
+        for authorship in work.get("authorships", []):
+            author_name = authorship.get("author", {}).get("display_name")
+            if author_name:
+                authors.append(author_name)
+
+        # Extract journal
+        journal = None
+        primary_loc = work.get("primary_location", {})
+        if primary_loc and primary_loc.get("source"):
+            journal = primary_loc["source"].get("display_name")
+
+        # Extract DOI (remove https://doi.org/ prefix)
+        result_doi = work.get("doi")
+        if result_doi and result_doi.startswith("https://doi.org/"):
+            result_doi = result_doi[16:]
+
+        # Reconstruct abstract from inverted index
+        abstract = None
+        if work.get("abstract_inverted_index"):
+            try:
+                inv_idx = work["abstract_inverted_index"]
+                positions = []
+                for word, pos_list in inv_idx.items():
+                    for pos in pos_list:
+                        positions.append((pos, word))
+                positions.sort()
+                abstract = " ".join(word for _, word in positions)
+            except (KeyError, TypeError):
+                pass
+
+        # Get PDF URL
+        pdf_url = None
+        oa = work.get("open_access", {})
+        if oa.get("oa_url"):
+            pdf_url = oa["oa_url"]
+
+        return PaperResult(
+            title=work.get("title", ""),
+            authors=authors,
+            year=work.get("publication_year"),
+            doi=result_doi,
+            journal=journal,
+            abstract=abstract,
+            pdf_url=pdf_url,
+            source="openalex",
+            confidence=1.0,
+            citation_count=work.get("cited_by_count")
+        )
+
+    async def get_paper_references_openalex(
+        self, doi: str = None, title: str = None, openalex_id: str = None, limit: int = 100
+    ) -> List[PaperResult]:
+        """Get papers that a given paper references using OpenAlex.
+
+        Args:
+            doi: Paper DOI
+            title: Paper title (fallback)
+            openalex_id: OpenAlex work ID (preferred)
+            limit: Maximum references to return
+
+        Returns:
+            List of referenced papers
+        """
+        # Resolve to OpenAlex ID
+        oa_id = await self._resolve_openalex_id(doi=doi, title=title, openalex_id=openalex_id)
+        if not oa_id:
+            logger.warning("Could not resolve paper to OpenAlex ID")
+            return []
+
+        # Get the work with referenced_works field
+        # Convert web URL (openalex.org) to API URL (api.openalex.org)
+        if oa_id.startswith("https://openalex.org/"):
+            work_id = oa_id.split("/")[-1]
+            url = f"https://api.openalex.org/works/{work_id}"
+        elif oa_id.startswith("http"):
+            url = oa_id
+        else:
+            url = f"https://api.openalex.org/works/{oa_id}"
+        params = {"select": "referenced_works"}
+        headers = {}
+        if self.openalex_email:
+            headers["User-Agent"] = f"mailto:{self.openalex_email}"
+
+        try:
+            response, success = await self._make_request("openalex", url, params=params, headers=headers)
+            if not success or response is None or response.status_code != 200:
+                logger.warning(f"Failed to get work: {response.status_code if response else 'no response'}")
+                return []
+
+            data = response.json()
+            referenced_ids = data.get("referenced_works", [])
+
+            if not referenced_ids:
+                return []
+
+            # Batch fetch referenced works (OpenAlex allows filter by ID list)
+            # Limit to requested amount
+            referenced_ids = referenced_ids[:limit]
+
+            # OpenAlex allows filtering by multiple IDs with pipe separator
+            # But has URL length limits, so batch in groups of 50
+            results = []
+            batch_size = 50
+
+            for i in range(0, len(referenced_ids), batch_size):
+                batch_ids = referenced_ids[i:i + batch_size]
+                # Extract just the ID part (W123456) from full URLs
+                id_filter = "|".join(
+                    rid.split("/")[-1] if "/" in rid else rid
+                    for rid in batch_ids
+                )
+
+                batch_url = "https://api.openalex.org/works"
+                select_fields = (
+                    "id,title,authorships,publication_year,doi,"
+                    "primary_location,abstract_inverted_index,open_access,cited_by_count"
+                )
+                batch_params = {
+                    "filter": f"openalex_id:{id_filter}",
+                    "per-page": batch_size,
+                    "select": select_fields
+                }
+
+                batch_response, batch_success = await self._make_request(
+                    "openalex", batch_url, params=batch_params, headers=headers
+                )
+
+                if batch_success and batch_response and batch_response.status_code == 200:
+                    batch_data = batch_response.json()
+                    for work in batch_data.get("results", []):
+                        results.append(self._parse_openalex_work(work))
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error fetching OpenAlex references: {e}")
+            return []
+
+    async def get_paper_citations_openalex(
+        self, doi: str = None, title: str = None, openalex_id: str = None, limit: int = 100
+    ) -> List[PaperResult]:
+        """Get papers that cite a given paper using OpenAlex.
+
+        Args:
+            doi: Paper DOI
+            title: Paper title (fallback)
+            openalex_id: OpenAlex work ID (preferred)
+            limit: Maximum citations to return
+
+        Returns:
+            List of citing papers
+        """
+        # Resolve to OpenAlex ID
+        oa_id = await self._resolve_openalex_id(doi=doi, title=title, openalex_id=openalex_id)
+        if not oa_id:
+            logger.warning("Could not resolve paper to OpenAlex ID")
+            return []
+
+        # Extract just the ID part for the filter
+        work_id = oa_id.split("/")[-1] if "/" in oa_id else oa_id
+
+        # Query works that cite this paper
+        url = "https://api.openalex.org/works"
+        select_fields = (
+            "id,title,authorships,publication_year,doi,"
+            "primary_location,abstract_inverted_index,open_access,cited_by_count"
+        )
+        params = {
+            "filter": f"cites:{work_id}",
+            "per-page": min(limit, 200),  # OpenAlex max per page
+            "sort": "cited_by_count:desc",
+            "select": select_fields
+        }
+        headers = {}
+        if self.openalex_email:
+            headers["User-Agent"] = f"mailto:{self.openalex_email}"
+
+        results = []
+
+        try:
+            response, success = await self._make_request("openalex", url, params=params, headers=headers)
+            if not success or response is None or response.status_code != 200:
+                logger.warning(f"Failed to get citations: {response.status_code if response else 'no response'}")
+                return results
+
+            data = response.json()
+
+            for work in data.get("results", []):
+                results.append(self._parse_openalex_work(work))
+
+            return results
+
+        except Exception as e:
+            logger.error(f"Error fetching OpenAlex citations: {e}")
+            return results
 
     # ==================== OpenAlex ====================
     async def _search_openalex(self, query: str, limit: int = 10) -> List[PaperResult]:

@@ -35,7 +35,7 @@ from services.search_constants import (
 
 logger = logging.getLogger(__name__)
 
-SearchMode = Literal["smart", "keyword", "semantic", "hybrid"]
+SearchMode = Literal["smart", "keyword", "semantic", "hybrid", "exact"]
 
 
 @dataclass
@@ -320,6 +320,9 @@ class UnifiedSearchService:
         search_level: str = "chunk",
         min_similarity: float = 0.35,
 
+        # Re-ranking options
+        rerank: bool | None = None,  # None = use settings default
+
         # Filters
         year_min: int | None = None,
         year_max: int | None = None,
@@ -329,7 +332,7 @@ class UnifiedSearchService:
         Args:
             query: Search query string
             limit: Maximum results to return
-            mode: Search mode - "smart", "keyword", "semantic", or "hybrid"
+            mode: Search mode - "smart", "keyword", "semantic", "hybrid", or "exact"
 
             # Smart mode options (mode="smart")
             correct_spelling: Auto-correct typos
@@ -342,6 +345,9 @@ class UnifiedSearchService:
             # Semantic options (mode="semantic")
             search_level: "chunk" for full-text, "paper" for title+abstract
             min_similarity: Minimum similarity score (0-1)
+
+            # Re-ranking options
+            rerank: Enable cross-encoder re-ranking (None = use settings default)
 
             # Filters (all modes)
             year_min: Minimum publication year
@@ -357,6 +363,7 @@ class UnifiedSearchService:
                 correct_spelling=correct_spelling,
                 expand_acronyms=expand_acronyms,
                 add_synonyms=add_synonyms,
+                rerank=rerank,
                 year_min=year_min,
                 year_max=year_max,
             )
@@ -364,6 +371,7 @@ class UnifiedSearchService:
             return await cls._keyword_search(
                 query=query,
                 limit=limit,
+                rerank=rerank,
                 year_min=year_min,
                 year_max=year_max,
             )
@@ -373,6 +381,7 @@ class UnifiedSearchService:
                 limit=limit,
                 search_level=search_level,
                 min_similarity=min_similarity,
+                rerank=rerank,
             )
         elif mode == "hybrid":
             return await cls._hybrid_search(
@@ -380,11 +389,76 @@ class UnifiedSearchService:
                 limit=limit,
                 alpha=alpha,
                 min_similarity=min_similarity,
+                rerank=rerank,
+                year_min=year_min,
+                year_max=year_max,
+            )
+        elif mode == "exact":
+            # Exact mode doesn't use re-ranking (it's for fast lookups)
+            return await cls._exact_search(
+                query=query,
+                limit=limit,
                 year_min=year_min,
                 year_max=year_max,
             )
         else:
-            raise ValueError(f"Unknown search mode: {mode}. Use 'smart', 'keyword', 'semantic', or 'hybrid'")
+            raise ValueError(f"Unknown search mode: {mode}. Use 'smart', 'keyword', 'semantic', 'hybrid', or 'exact'")
+
+    # =========================================================================
+    # Re-ranking Helpers
+    # =========================================================================
+
+    @classmethod
+    def _should_rerank(cls, rerank: bool | None) -> bool:
+        """Determine if re-ranking should be applied.
+
+        Args:
+            rerank: Explicit override (None = use settings default)
+
+        Returns:
+            True if re-ranking should be applied
+        """
+        from config.ai_settings import settings
+
+        if rerank is not None:
+            return rerank
+        return settings.reranker.enabled
+
+    @classmethod
+    def _apply_reranking(
+        cls,
+        query: str,
+        results: list[dict],
+        limit: int,
+    ) -> list[dict]:
+        """Apply cross-encoder re-ranking to results.
+
+        Args:
+            query: The search query
+            results: List of result dicts
+            limit: Maximum results to return
+
+        Returns:
+            Re-ranked results
+        """
+        try:
+            from services.reranking_service import RerankerService
+
+            if not RerankerService.is_available():
+                logger.debug("Re-ranker not available, skipping")
+                return results
+
+            reranked = RerankerService.rerank(
+                query=query,
+                results=results,
+                top_k=limit,
+            )
+            logger.debug(f"Re-ranked {len(results)} results -> {len(reranked)}")
+            return reranked
+
+        except Exception as e:
+            logger.warning(f"Re-ranking failed: {e}")
+            return results
 
     @classmethod
     async def _smart_search(
@@ -394,6 +468,7 @@ class UnifiedSearchService:
         correct_spelling: bool,
         expand_acronyms: bool,
         add_synonyms: bool,
+        rerank: bool | None,
         year_min: int | None,
         year_max: int | None,
     ) -> UnifiedSearchResults:
@@ -416,6 +491,7 @@ class UnifiedSearchService:
             limit=limit,
             alpha=DEFAULT_ALPHA,
             min_similarity=DEFAULT_MIN_SIMILARITY,
+            rerank=rerank,
             year_min=year_min,
             year_max=year_max,
         )
@@ -442,6 +518,7 @@ class UnifiedSearchService:
         cls,
         query: str,
         limit: int,
+        rerank: bool | None,
         year_min: int | None,
         year_max: int | None,
     ) -> UnifiedSearchResults:
@@ -455,13 +532,20 @@ class UnifiedSearchService:
             year_max=year_max,
         )
 
+        # Apply re-ranking if enabled
+        results = result.results
+        strategies = ["fts5_keyword"]
+        if cls._should_rerank(rerank) and results:
+            results = cls._apply_reranking(query, results, limit)
+            strategies.append("reranked")
+
         return UnifiedSearchResults(
             query=query,
             mode="keyword",
-            results=result.results,
-            count=result.count,
+            results=results,
+            count=len(results),
             search_type=result.search_type,
-            strategies_used=["fts5_keyword"],
+            strategies_used=strategies,
         )
 
     @classmethod
@@ -471,6 +555,7 @@ class UnifiedSearchService:
         limit: int,
         search_level: str,
         min_similarity: float,
+        rerank: bool | None,
     ) -> UnifiedSearchResults:
         """Semantic embedding search."""
         from services.search_service import SearchService
@@ -482,14 +567,21 @@ class UnifiedSearchService:
             search_level=search_level,
         )
 
+        # Apply re-ranking if enabled
+        results = result.results
+        strategies = ["semantic"]
+        if cls._should_rerank(rerank) and results:
+            results = cls._apply_reranking(query, results, limit)
+            strategies.append("reranked")
+
         return UnifiedSearchResults(
             query=query,
             mode="semantic",
-            results=result.results,
-            count=result.count,
+            results=results,
+            count=len(results),
             search_type=result.search_type,
             search_level=search_level,
-            strategies_used=["semantic"],
+            strategies_used=strategies,
             fallback_used=result.fallback_used,
             fallback_reason=result.fallback_reason,
         )
@@ -501,6 +593,7 @@ class UnifiedSearchService:
         limit: int,
         alpha: float,
         min_similarity: float,
+        rerank: bool | None,
         year_min: int | None,
         year_max: int | None,
     ) -> UnifiedSearchResults:
@@ -508,6 +601,7 @@ class UnifiedSearchService:
 
         Combines FTS5 keyword search (BM25) with semantic vector search
         using Reciprocal Rank Fusion for result merging.
+        Optionally applies cross-encoder re-ranking for improved precision.
         """
         from services.search_service import SearchService
         from sqlalchemy.orm import joinedload
@@ -652,9 +746,14 @@ class UnifiedSearchService:
                             score=score_map.get(paper_id)
                         ))
 
+        # Step 5: Apply re-ranking if enabled
+        if cls._should_rerank(rerank) and results:
+            results = cls._apply_reranking(query, results, limit)
+            strategies.append("reranked")
+
         logger.info(
             f"Hybrid search '{query}' returned {len(results)} results "
-            f"(keyword={len(keyword_results)}, semantic={len(semantic_results)})"
+            f"(keyword={len(keyword_results)}, semantic={len(semantic_results)}, reranked={cls._should_rerank(rerank)})"
         )
 
         return UnifiedSearchResults(
@@ -669,6 +768,157 @@ class UnifiedSearchService:
             strategies_used=strategies,
             fallback_used=fallback_used,
             fallback_reason=fallback_reason,
+        )
+
+    @classmethod
+    async def _exact_search(
+        cls,
+        query: str,
+        limit: int,
+        year_min: int | None,
+        year_max: int | None,
+    ) -> UnifiedSearchResults:
+        """Exact search optimized for known paper lookups.
+
+        Strategy:
+        1. Try exact title match (case-insensitive)
+        2. Try FTS5 phrase search (exact phrase in title or abstract)
+        3. Fall back to keyword search with AND logic
+
+        This mode skips semantic search entirely for speed.
+        """
+        from services.search_service import SearchService
+        from literature_core import get_session, Paper
+        from sqlalchemy.orm import joinedload
+
+        strategies = []
+        results = []
+
+        # Step 1: Try exact title match (fastest for known papers)
+        with get_session() as session:
+            db_query = session.query(Paper).options(
+                joinedload(Paper.authors),
+                joinedload(Paper.tags)
+            )
+
+            # Case-insensitive exact title match
+            db_query = db_query.filter(Paper.title.ilike(f"%{query}%"))
+
+            if year_min:
+                db_query = db_query.filter(Paper.year >= year_min)
+            if year_max:
+                db_query = db_query.filter(Paper.year <= year_max)
+
+            papers = db_query.order_by(Paper.year.desc()).limit(limit).all()
+
+            if papers:
+                strategies.append("exact_title_match")
+                # Score: prioritize exact matches, then contains
+                for i, paper in enumerate(papers):
+                    # Boost score if title starts with query or is exact match
+                    title_lower = paper.title.lower() if paper.title else ""
+                    query_lower = query.lower()
+                    if title_lower == query_lower:
+                        score = 1.0
+                    elif title_lower.startswith(query_lower):
+                        score = 0.95
+                    else:
+                        score = 0.9 - (i * 0.01)  # Slightly decrease for order
+
+                    results.append(SearchService.paper_to_result(paper, score=score))
+
+        # Step 2: If no results, try FTS5 phrase search
+        if not results:
+            try:
+                from literature_core.fts import search_fts_phrase, is_fts_available
+
+                if is_fts_available():
+                    fts_results = search_fts_phrase(
+                        phrase=query,
+                        limit=limit,
+                    )
+
+                    if fts_results:
+                        strategies.append("fts5_phrase")
+                        paper_ids = [r.paper_id for r in fts_results]
+                        score_map = {r.paper_id: r.bm25_score for r in fts_results}
+
+                        with get_session() as session:
+                            papers = (
+                                session.query(Paper)
+                                .options(joinedload(Paper.authors), joinedload(Paper.tags))
+                                .filter(Paper.id.in_(paper_ids))
+                                .all()
+                            )
+                            paper_map = {p.id: p for p in papers}
+
+                            for paper_id in paper_ids:
+                                if paper_id in paper_map:
+                                    results.append(SearchService.paper_to_result(
+                                        paper_map[paper_id],
+                                        score=score_map.get(paper_id)
+                                    ))
+
+            except Exception as e:
+                logger.warning(f"FTS5 phrase search failed: {e}")
+
+        # Step 3: If still no results, fall back to keyword search with AND logic
+        if not results:
+            try:
+                from literature_core.fts import search_fts, is_fts_available
+
+                if is_fts_available():
+                    # Use AND logic for multi-word queries (more precise)
+                    words = query.split()
+                    if len(words) > 1:
+                        and_query = " AND ".join(words)
+                    else:
+                        and_query = query
+
+                    fts_results = search_fts(
+                        query=and_query,
+                        limit=limit,
+                        year_min=year_min,
+                        year_max=year_max,
+                        use_or_for_multiword=False,  # Force AND logic
+                    )
+
+                    if fts_results:
+                        strategies.append("fts5_keyword_and")
+                        paper_ids = [r.paper_id for r in fts_results]
+                        score_map = {r.paper_id: r.bm25_score for r in fts_results}
+
+                        with get_session() as session:
+                            papers = (
+                                session.query(Paper)
+                                .options(joinedload(Paper.authors), joinedload(Paper.tags))
+                                .filter(Paper.id.in_(paper_ids))
+                                .all()
+                            )
+                            paper_map = {p.id: p for p in papers}
+
+                            for paper_id in paper_ids:
+                                if paper_id in paper_map:
+                                    results.append(SearchService.paper_to_result(
+                                        paper_map[paper_id],
+                                        score=score_map.get(paper_id)
+                                    ))
+
+            except Exception as e:
+                logger.warning(f"FTS5 AND search failed: {e}")
+
+        logger.info(
+            f"Exact search '{query}' returned {len(results)} results "
+            f"(strategies: {strategies})"
+        )
+
+        return UnifiedSearchResults(
+            query=query,
+            mode="exact",
+            results=results,
+            count=len(results),
+            search_type="exact",
+            strategies_used=strategies,
         )
 
 

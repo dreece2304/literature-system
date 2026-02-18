@@ -72,10 +72,13 @@ class SourceResult:
     year: int | None = None
     doi: str | None = None
     arxiv_id: str | None = None
+    pubmed_id: str | None = None
     abstract: str | None = None
     journal: str | None = None
     volume: str | None = None
+    issue: str | None = None
     pages: str | None = None
+    publisher: str | None = None
     citation_count: int | None = None
     pdf_url: str | None = None
     confidence: float = 0.0
@@ -91,16 +94,20 @@ class MergedMetadata:
     year: int | None
     doi: str | None
     arxiv_id: str | None
+    pubmed_id: str | None
     abstract: str | None
     journal: str | None
     volume: str | None
+    issue: str | None
     pages: str | None
+    publisher: str | None
     citation_count: int | None
     pdf_url: str | None
     primary_source: str
     confidence: float
     sources_used: list[str]
     missing_fields: list[str]
+    validation_warnings: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -257,12 +264,12 @@ class PaperImportService:
         # Step 5: Auto-chunk PDF if requested
         if pdf_path and auto_chunk_pdf:
             try:
-                from services.chunked_extraction_service import ChunkedExtractionService
+                from services.extraction_service import ExtractionService
 
-                result = ChunkedExtractionService.extract_and_store(paper_id=paper_dict["id"])
+                result = ExtractionService.extract_pdf_and_store(paper_id=paper_dict["id"])
                 if result.success:
-                    # Update enrichment status
-                    enrichment_status = EnrichmentStatus.COMPLETE
+                    # Update enrichment status - ready for quick extraction
+                    enrichment_status = EnrichmentStatus.NEEDS_EXTRACTION
                     cls._update_enrichment_status(paper_dict["id"], enrichment_status)
                 else:
                     warnings.append(f"PDF chunking failed: {result.error}")
@@ -305,17 +312,22 @@ class PaperImportService:
 
         # Determine lookup strategy based on input
         if doi:
-            # DOI lookup - most reliable
+            # DOI lookup - all sources use direct DOI endpoints (exact match only)
+            # Try all sources to get best metadata coverage (esp. abstract)
+            # but only accept results where DOI matches exactly
             for source in cls.SOURCE_PRIORITY:
                 if source == MetadataSource.ARXIV:
                     continue  # arXiv doesn't have DOI lookup
                 sources_checked.append(source)
                 result = await cls._lookup_by_doi(service, doi, source)
                 if result.success:
-                    results.append(result)
-                    # CrossRef is authoritative for DOI - can stop early if good result
-                    if source == MetadataSource.CROSSREF and result.confidence > 0.9:
-                        break
+                    # Verify DOI matches (case-insensitive)
+                    if result.doi and result.doi.lower() == doi.lower():
+                        results.append(result)
+                    else:
+                        logger.warning(
+                            f"{source} returned different DOI: expected {doi}, got {result.doi}"
+                        )
 
         elif arxiv_id:
             # arXiv ID lookup
@@ -350,60 +362,41 @@ class PaperImportService:
     async def _lookup_by_doi(
         cls, service, doi: str, source: str
     ) -> SourceResult:
-        """Look up paper by DOI from a specific source."""
+        """Look up paper by DOI from a specific source using direct DOI endpoints.
+
+        All sources use exact DOI lookup - never search. Returns the exact paper
+        for the DOI or nothing.
+        """
         try:
+            result = None
+
             if source == MetadataSource.CROSSREF:
-                result = await service.lookup_crossref_doi(doi)
-                if result:
-                    return SourceResult(
-                        source=MetadataSource.CROSSREF,
-                        success=True,
-                        title=result.title,
-                        authors=result.authors or [],
-                        year=result.year,
-                        doi=result.doi,
-                        abstract=result.abstract,
-                        journal=result.journal,
-                        citation_count=result.citation_count,
-                        confidence=1.0,  # DOI lookup is exact
-                    )
-
+                result = await service.lookup_by_doi(doi)
             elif source == MetadataSource.OPENALEX:
-                results = await service._search_openalex(doi, limit=1)
-                if results:
-                    r = results[0]
-                    return SourceResult(
-                        source=MetadataSource.OPENALEX,
-                        success=True,
-                        title=r.title,
-                        authors=r.authors or [],
-                        year=r.year,
-                        doi=r.doi,
-                        abstract=r.abstract,
-                        journal=r.journal,
-                        citation_count=r.citation_count,
-                        pdf_url=r.pdf_url,
-                        confidence=0.95,
-                    )
-
+                result = await service.lookup_openalex_doi(doi)
             elif source == MetadataSource.SEMANTIC_SCHOLAR:
-                results = await service._search_semantic_scholar_query(doi, limit=1)
-                if results and results[0].doi and results[0].doi.lower() == doi.lower():
-                    r = results[0]
-                    return SourceResult(
-                        source=MetadataSource.SEMANTIC_SCHOLAR,
-                        success=True,
-                        title=r.title,
-                        authors=r.authors or [],
-                        year=r.year,
-                        doi=r.doi,
-                        abstract=r.abstract,
-                        journal=r.journal,
-                        citation_count=r.citation_count,
-                        pdf_url=r.pdf_url,
-                        arxiv_id=r.arxiv_id,
-                        confidence=0.95,
-                    )
+                result = await service.lookup_semantic_scholar_doi(doi)
+
+            if result:
+                return SourceResult(
+                    source=source,
+                    success=True,
+                    title=result.title,
+                    authors=result.authors or [],
+                    year=result.year,
+                    doi=result.doi,
+                    abstract=result.abstract,
+                    journal=result.journal,
+                    volume=getattr(result, 'volume', None),
+                    issue=getattr(result, 'issue', None),
+                    pages=getattr(result, 'pages', None),
+                    publisher=getattr(result, 'publisher', None),
+                    citation_count=result.citation_count,
+                    pdf_url=result.pdf_url,
+                    arxiv_id=getattr(result, 'arxiv_id', None),
+                    pubmed_id=getattr(result, 'pubmed_id', None),
+                    confidence=1.0,  # Direct DOI lookup = exact match
+                )
 
         except Exception as e:
             logger.warning(f"DOI lookup failed for {source}: {e}")
@@ -430,6 +423,8 @@ class PaperImportService:
                         arxiv_id=r.arxiv_id,
                         abstract=r.abstract,
                         pdf_url=r.pdf_url,
+                        volume=getattr(r, 'volume', None),
+                        pages=getattr(r, 'pages', None),
                         confidence=1.0,  # Exact arXiv ID match
                     )
         except Exception as e:
@@ -457,6 +452,11 @@ class PaperImportService:
                     abstract=r.abstract,
                     citation_count=r.citation_count,
                     pdf_url=r.pdf_url,
+                    volume=getattr(r, 'volume', None),
+                    issue=getattr(r, 'issue', None),
+                    pages=getattr(r, 'pages', None),
+                    publisher=getattr(r, 'publisher', None),
+                    pubmed_id=getattr(r, 'pubmed_id', None),
                     confidence=0.9,
                 )
         except Exception as e:
@@ -518,8 +518,13 @@ class PaperImportService:
                         year=best_match.year,
                         doi=best_match.doi,
                         arxiv_id=getattr(best_match, "arxiv_id", None),
+                        pubmed_id=getattr(best_match, "pubmed_id", None),
                         abstract=best_match.abstract,
                         journal=best_match.journal,
+                        volume=getattr(best_match, "volume", None),
+                        issue=getattr(best_match, "issue", None),
+                        pages=getattr(best_match, "pages", None),
+                        publisher=getattr(best_match, "publisher", None),
                         citation_count=best_match.citation_count,
                         pdf_url=best_match.pdf_url,
                         confidence=best_confidence,
@@ -555,10 +560,13 @@ class PaperImportService:
             "year": primary.year,
             "doi": primary.doi,
             "arxiv_id": primary.arxiv_id,
+            "pubmed_id": primary.pubmed_id,
             "abstract": primary.abstract,
             "journal": primary.journal,
             "volume": primary.volume,
+            "issue": primary.issue,
             "pages": primary.pages,
+            "publisher": primary.publisher,
             "citation_count": primary.citation_count,
             "pdf_url": primary.pdf_url,
         }
@@ -577,6 +585,9 @@ class PaperImportService:
             if not merged["arxiv_id"] and result.arxiv_id:
                 merged["arxiv_id"] = result.arxiv_id
                 filled_any = True
+            if not merged["pubmed_id"] and result.pubmed_id:
+                merged["pubmed_id"] = result.pubmed_id
+                filled_any = True
             if not merged["citation_count"] and result.citation_count:
                 merged["citation_count"] = result.citation_count
                 filled_any = True
@@ -586,6 +597,12 @@ class PaperImportService:
             if not merged["journal"] and result.journal:
                 merged["journal"] = result.journal
                 filled_any = True
+            if not merged["issue"] and result.issue:
+                merged["issue"] = result.issue
+                filled_any = True
+            if not merged["publisher"] and result.publisher:
+                merged["publisher"] = result.publisher
+                filled_any = True
             if not merged["authors"] and result.authors:
                 merged["authors"] = result.authors
                 filled_any = True
@@ -594,6 +611,9 @@ class PaperImportService:
                 filled_any = True
             if filled_any:
                 sources_used.append(result.source)
+
+        # Validate and sanitize merged data
+        warnings = cls._validate_merged_metadata(merged)
 
         # Determine missing fields
         missing = []
@@ -612,17 +632,62 @@ class PaperImportService:
             year=merged["year"],
             doi=merged["doi"],
             arxiv_id=merged["arxiv_id"],
+            pubmed_id=merged["pubmed_id"],
             abstract=merged["abstract"],
             journal=merged["journal"],
             volume=merged["volume"],
+            issue=merged["issue"],
             pages=merged["pages"],
+            publisher=merged["publisher"],
             citation_count=merged["citation_count"],
             pdf_url=merged["pdf_url"],
             primary_source=primary.source,
             confidence=primary.confidence,
             sources_used=sources_used,
             missing_fields=missing,
+            validation_warnings=warnings,
         )
+
+    @classmethod
+    def _validate_merged_metadata(cls, merged: dict) -> list[str]:
+        """Validate and sanitize merged metadata, returning warnings."""
+        from datetime import datetime as dt
+        warnings = []
+        current_year = dt.now().year
+
+        # Validate year range (1900 to 2 years in the future)
+        if merged.get("year"):
+            year = merged["year"]
+            if year < 1900 or year > current_year + 2:
+                warnings.append(f"Suspicious year {year}, clearing")
+                merged["year"] = None
+
+        # Validate and truncate abstract (max 10000 chars)
+        if merged.get("abstract"):
+            abstract = merged["abstract"]
+            if len(abstract) > 10000:
+                warnings.append(f"Abstract truncated from {len(abstract)} chars")
+                merged["abstract"] = abstract[:10000] + "..."
+
+        # Validate author names (max 200 chars each)
+        if merged.get("authors"):
+            validated_authors = []
+            for author in merged["authors"]:
+                if len(author) > 200:
+                    warnings.append(f"Author name truncated: {author[:50]}...")
+                    validated_authors.append(author[:200])
+                else:
+                    validated_authors.append(author)
+            merged["authors"] = validated_authors
+
+        # Validate title (max 1000 chars)
+        if merged.get("title"):
+            title = merged["title"]
+            if len(title) > 1000:
+                warnings.append(f"Title truncated from {len(title)} chars")
+                merged["title"] = title[:1000]
+
+        return warnings
 
     # =========================================================================
     # Duplicate Detection
@@ -695,11 +760,11 @@ class PaperImportService:
         has_pdf: bool,
     ) -> str:
         """Determine what enrichment is still needed."""
-        # If no PDF, we need to acquire it first (abstract may come from PDF extraction)
+        # If no PDF, we need to acquire it first
         if not has_pdf:
             return EnrichmentStatus.NEEDS_PDF
-        # If we have PDF, we need AI extraction
-        return EnrichmentStatus.NEEDS_EXTRACTION
+        # If we have PDF, we need to extract/chunk it before AI extraction
+        return EnrichmentStatus.NEEDS_CHUNKING
 
     @classmethod
     def _update_enrichment_status(cls, paper_id: int, status: str) -> None:
@@ -708,7 +773,6 @@ class PaperImportService:
             paper = session.query(Paper).filter(Paper.id == paper_id).first()
             if paper:
                 paper.enrichment_status = status
-                session.commit()
 
     # =========================================================================
     # Paper Creation
@@ -731,9 +795,12 @@ class PaperImportService:
                 year=merged.year,
                 doi=merged.doi,
                 arxiv_id=merged.arxiv_id,
+                pubmed_id=merged.pubmed_id,
                 journal=merged.journal,
                 volume=merged.volume,
+                issue=merged.issue,
                 pages=merged.pages,
+                publisher=merged.publisher,
                 citation_count=merged.citation_count,
                 file_path=pdf_path,
                 # Provenance fields
@@ -785,8 +852,6 @@ class PaperImportService:
                     collection.papers.append(paper)
                 else:
                     logger.warning(f"Collection {collection_id} not found, skipping")
-
-            session.commit()
 
             logger.info(
                 f"Imported paper {paper.id}: {paper.title[:50]}... "
