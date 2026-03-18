@@ -43,8 +43,6 @@ from literature_core import (
 )
 from services.search_constants import (
     DEFAULT_RRF_K,
-    DEFAULT_ALPHA,
-    DEFAULT_MIN_SIMILARITY,
 )
 
 logger = get_logger(__name__)

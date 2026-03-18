@@ -107,10 +107,6 @@ class EmbeddingService:
             )
             status.papers_with_full_text = len(papers_with_chunks_db)
 
-            # Get all paper IDs for comparison
-            all_paper_ids = set(
-                p.id for p in session.query(Paper.id).all()
-            )
             papers_with_abstract_ids = set(
                 p.id
                 for p in session.query(Paper.id).filter(

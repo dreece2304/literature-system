@@ -331,8 +331,6 @@ async def _semantic_find(arguments: dict[str, Any]) -> list[TextContent]:
                     .filter(Paper.id.in_(paper_ids))
                     .all()
                 )
-                paper_map = {p.id: p for p in papers}
-
                 # Fetch extraction data
                 extractions = (
                     session.query(PaperContent)

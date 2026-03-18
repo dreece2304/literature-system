@@ -390,8 +390,6 @@ class CollectionService:
         Raises:
             CollectionNotFoundError: If collection doesn't exist
         """
-        from literature_core import Author
-
         with get_session() as session:
             # Eager load papers and their authors to avoid N+1 queries
             collection = session.query(Collection).options(

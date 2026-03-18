@@ -13,7 +13,6 @@ Note: search_by_author and search_by_tag removed - use list_papers(author=X) or 
 """
 from __future__ import annotations
 
-import json
 import sys
 from pathlib import Path
 from typing import Any

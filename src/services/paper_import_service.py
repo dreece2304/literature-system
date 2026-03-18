@@ -46,7 +46,6 @@ from literature_core import (
     Author,
     Tag,
     Collection,
-    PaperNotFoundError,
     ValidationError,
     MetadataSource,
     EnrichmentStatus,
@@ -864,7 +863,11 @@ class PaperImportService:
                 "doi": paper.doi,
                 "arxiv_id": paper.arxiv_id,
                 "year": paper.year,
-                "abstract": paper.abstract[:200] + "..." if paper.abstract and len(paper.abstract) > 200 else paper.abstract,
+                "abstract": (
+                    paper.abstract[:200] + "..."
+                    if paper.abstract and len(paper.abstract) > 200
+                    else paper.abstract
+                ),
                 "authors": [a.name for a in paper.authors],
                 "metadata_source": paper.metadata_source,
                 "metadata_confidence": paper.metadata_confidence,

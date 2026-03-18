@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from .database import get_engine, get_session
+from .database import get_engine
 
 logger = logging.getLogger(__name__)
 
@@ -274,8 +274,10 @@ def search_fts(
     # Only if query doesn't already contain FTS5 operators
     if use_or_for_multiword:
         fts5_operators = ["AND", "OR", "NOT", "NEAR", '"', "*", "(", ")"]
-        has_operators = any(op in safe_query.upper() for op in fts5_operators[:4]) or \
-                       any(op in safe_query for op in fts5_operators[4:])
+        has_operators = (
+            any(op in safe_query.upper() for op in fts5_operators[:4])
+            or any(op in safe_query for op in fts5_operators[4:])
+        )
 
         if not has_operators:
             # Split on whitespace and join with OR for multi-word queries

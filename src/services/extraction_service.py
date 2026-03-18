@@ -42,7 +42,6 @@ from .extraction_prompts import (
     get_consolidation_prompt,
     parse_extraction_response,
     validate_extraction,
-    EXTRACTION_SCHEMA,
 )
 
 logger = get_logger(__name__)
@@ -372,17 +371,14 @@ class OllamaClient(LLMClient):
             # Very long papers (>150K): aggressive extraction
             intro_chars = min(6000, max_chars // 5)
             end_chars = min(4000, max_chars // 6)
-            section_budget = 6000
         elif text_len > 100000:
             # Long papers (100K-150K)
             intro_chars = min(5000, max_chars // 4)
             end_chars = min(4000, max_chars // 5)
-            section_budget = 5000
         else:
             # Medium papers (40K-100K)
             intro_chars = min(6000, max_chars // 3)
             end_chars = min(5000, max_chars // 4)
-            section_budget = 4000
 
         # Always include beginning (abstract, intro)
         intro = full_text[:intro_chars]
@@ -1890,7 +1886,6 @@ class ExtractionService:
 
             return False
 
-
     # ILL/Library contamination patterns
     ILL_PATTERNS = [
         "interlibrary loan",
@@ -2474,8 +2469,8 @@ class ExtractionService:
             i = 1  # Skip first empty split
             while i < len(numbered_refs):
                 # Find the reference number
-                ref_num = numbered_refs[i] or numbered_refs[i+1] or numbered_refs[i+2]
-                i += 3  # Skip the three capture groups
+                # Skip the three capture groups for reference number
+                i += 3
                 if i < len(numbered_refs):
                     raw = numbered_refs[i].strip()
                     if raw and len(raw) > 20:  # Skip very short fragments
@@ -2632,7 +2627,7 @@ class ExtractionService:
             for pattern, section_name, confidence in ExtractionService.SECTION_PATTERNS:
                 if re.match(pattern, line_stripped, re.IGNORECASE):
                     # Calculate character position
-                    char_pos = sum(len(l) + 1 for l in lines[:i])
+                    char_pos = sum(len(line) + 1 for line in lines[:i])
                     structure.sections.append(SectionHint(
                         name=section_name,
                         start_position=char_pos,
@@ -3649,8 +3644,6 @@ class ExtractionService:
             for result in quant_results:
                 if isinstance(result, dict):
                     value = str(result.get("value", ""))
-                    metric = result.get("metric", "")
-                    unit = result.get("unit", "")
 
                     # Search for the numeric value in source
                     found = value in source_text

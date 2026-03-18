@@ -222,7 +222,7 @@ class RerankerService:
         if settings.reranker.enabled and _reranker_model is None:
             # Try to check if model can be loaded
             try:
-                from sentence_transformers import CrossEncoder
+                from sentence_transformers import CrossEncoder  # noqa: F401
                 status["model_available"] = True
             except ImportError:
                 status["model_available"] = False
