@@ -87,3 +87,7 @@ coverage.xml
 # Documentation build
 docs/_build/
 docs/.doctrees/
+
+# Local tool state
+.serena/
+**/data/vectorstore/**
