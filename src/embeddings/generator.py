@@ -426,13 +426,13 @@ class EmbeddingGenerator:
         if not chunks:
             return []
 
-        # Batch embed all chunks
+        # Batch embed all chunks. generate() is called with a list, so it always
+        # returns a 2D array of shape (n_chunks, dim) -- including the single-chunk
+        # case (1, dim). Iterating yields one flat (dim,) vector per chunk; do NOT
+        # re-wrap, or single-chunk papers get a 2D per-chunk embedding that breaks
+        # the vector store.
         texts = [c.text for c in chunks]
         embeddings = self.generate(texts, show_progress=False)
-
-        # Convert to list if single embedding
-        if len(chunks) == 1:
-            embeddings = [embeddings]
 
         # Create ChunkEmbedding objects
         chunk_embeddings = []
