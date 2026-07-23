@@ -58,6 +58,9 @@ class RichTerminalReporter:
         self.passed = 0
         self.failed = 0
         self.skipped = 0
+        self.errored = 0
+        self.failreprs = []      # (nodeid, longreprtext) for failures + errors
+        self.collect_errors = []  # (nodeid, longreprtext) from collection
         self.errors = []
         self.total_tests = 0
         self.current = 0
@@ -132,6 +135,12 @@ class RichTerminalReporter:
         if self.live:
             self.live.update(self._build_display(running=True))
 
+    def pytest_collectreport(self, report):
+        """Record collection failures so they are never silently dropped."""
+        if report.failed:
+            self.collect_errors.append(
+                (getattr(report, "nodeid", "?"), report.longreprtext))
+
     def pytest_runtest_logreport(self, report):
         """Called for each test phase."""
         if report.when == "call":
@@ -140,6 +149,16 @@ class RichTerminalReporter:
             # Handle setup-phase skips
             self.current += 1
             self.skipped += 1
+            if self.live:
+                self.live.update(self._build_display())
+        elif report.when in ("setup", "teardown") and report.failed:
+            # Fixture/teardown errors produce no "call" report — count them
+            # explicitly or they vanish from the summary entirely.
+            if report.when == "setup":
+                self.current += 1
+            self.errored += 1
+            self.errors.append(report.nodeid)
+            self.failreprs.append((report.nodeid, report.longreprtext))
             if self.live:
                 self.live.update(self._build_display())
 
@@ -153,6 +172,7 @@ class RichTerminalReporter:
         elif report.failed:
             self.failed += 1
             self.errors.append(report.nodeid)
+            self.failreprs.append((report.nodeid, report.longreprtext))
         elif report.skipped:
             self.skipped += 1
 
@@ -169,11 +189,31 @@ class RichTerminalReporter:
 
     def pytest_sessionfinish(self, session, exitstatus):
         """Called at end of session."""
-        elapsed = time.time() - self.start_time
+        elapsed = (time.time() - self.start_time) if self.start_time else 0.0
 
         # Stop live display
         if self.live:
             self.live.stop()
+
+        # Collection errors first — a run that never collected must scream
+        if self.collect_errors:
+            self.console.print()
+            self.console.print("[bold red]Collection errors:[/bold red]")
+            for nodeid, longrepr in self.collect_errors:
+                self.console.print(f"[red]• {nodeid}[/red]")
+                if longrepr:
+                    self.console.print(longrepr, markup=False, highlight=False)
+
+        # Tracebacks for failures and fixture/teardown errors
+        if self.failreprs:
+            self.console.print()
+            for nodeid, longrepr in self.failreprs[:10]:
+                self.console.print(f"[bold red]━━ {nodeid}[/bold red]")
+                if longrepr:
+                    self.console.print(longrepr, markup=False, highlight=False)
+            if len(self.failreprs) > 10:
+                self.console.print(
+                    f"[dim]... +{len(self.failreprs) - 10} more tracebacks omitted[/dim]")
 
         # Summary
         parts = []
@@ -181,13 +221,21 @@ class RichTerminalReporter:
             parts.append(f"[green]{self.passed} passed[/green]")
         if self.failed:
             parts.append(f"[red]{self.failed} failed[/red]")
+        if self.errored:
+            parts.append(f"[red]{self.errored} errored[/red]")
         if self.skipped:
             parts.append(f"[yellow]{self.skipped} skipped[/yellow]")
+        if self.collect_errors:
+            parts.append(f"[red]{len(self.collect_errors)} collection errors[/red]")
 
-        status = "[bold green]✓[/bold green]" if self.failed == 0 else "[bold red]✗[/bold red]"
+        # Green only when pytest itself says the run was clean
+        ok = exitstatus == 0
+        status = "[bold green]✓[/bold green]" if ok else "[bold red]✗[/bold red]"
+        if not parts:
+            parts.append("no tests ran" if not ok else "0 tests")
         self.console.print(f"{status} {', '.join(parts)} in {elapsed:.1f}s")
 
-        # Show failures
+        # Compact failure list for orientation
         if self.errors:
             self.console.print()
             self.console.print("[bold red]Failed:[/bold red]")
