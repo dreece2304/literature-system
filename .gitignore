@@ -38,6 +38,7 @@ htmlcov/
 **/data/pdfs/**
 **/data/cache/**
 **/data/exports/**
+**/data/consolidation/**
 **/temp/**
 *.db
 *.sqlite
