@@ -2,9 +2,7 @@
 from __future__ import annotations
 
 from literature_core import get_session
-from literature_core.models import (
-    ExtractionMetadata, Paper, PaperChunk, PaperContent,
-)
+from literature_core.models import Paper, PaperChunk, PaperContent
 from scripts.enrich_pipeline import parse_args, plan_backfill, plan_extract, plan_verify
 
 

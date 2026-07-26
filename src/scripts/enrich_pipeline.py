@@ -74,8 +74,13 @@ def _run_backfill(ids: list[int], dry_run: bool) -> dict:
             print(f"  [dry-run] would re-process PDF for paper {pid}")
             continue
         try:
-            ExtractionService.extract_pdf_and_store(pid)
-            stats["processed"] += 1
+            result = ExtractionService.extract_pdf_and_store(pid)
+            if getattr(result, "success", False):
+                stats["processed"] += 1
+            else:
+                logger.error("Backfill failed", extra={"paper_id": pid,
+                             "error": getattr(result, "error", "unknown")})
+                stats["errors"] += 1
         except Exception as e:
             logger.error("Backfill failed", extra={"paper_id": pid, "error": str(e)})
             stats["errors"] += 1
