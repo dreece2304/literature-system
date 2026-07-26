@@ -185,14 +185,17 @@ async def list_tools() -> list[Tool]:
         # =================================================================
         Tool(
             name="verify_extraction",
-            description="Verify extractions. scope: single, batch, report (quality check)",
+            description="Verify extractions. scope: single, batch, report (quality check), queue (review queue)",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "scope": {
                         "type": "string",
-                        "enum": ["single", "batch", "report"],
-                        "description": "Scope: single (one paper), batch (multiple), report (quality summary)",
+                        "enum": ["single", "batch", "report", "queue"],
+                        "description": (
+                            "Scope: single (one paper), batch (multiple), report (quality summary), "
+                            "queue (list papers with verification_score below accept threshold, worst first)"
+                        ),
                         "default": "single",
                     },
                     "paper_id": {
@@ -206,7 +209,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "For batch/report: max papers",
+                        "description": "For batch/report/queue: max papers",
                         "default": 50,
                     },
                 },
@@ -965,14 +968,46 @@ def _get_unmatched_references(arguments: dict[str, Any]) -> list[TextContent]:
 
 
 def _verify_paper_extraction(arguments: dict[str, Any]) -> list[TextContent]:
-    """Verify extraction against source text."""
+    """Verify extraction against source text, persisting the score via VerificationService."""
+    from literature_core import PaperNotFoundError
+    from services.verification_service import VerificationService
+
     paper_id = arguments["paper_id"]
-    result = ExtractionService.verify_extraction(paper_id)
+    try:
+        result = VerificationService.verify_paper(paper_id)
+    except PaperNotFoundError:
+        return _to_response(error(f"Paper {paper_id} not found", code="NOT_FOUND"))
 
     if "error" in result:
         return _to_response(error(result["error"], code="VERIFICATION_ERROR"))
 
     return _to_response(success(result))
+
+
+def _verification_queue(arguments: dict[str, Any]) -> list[TextContent]:
+    """List papers with verification_score below the accept threshold, worst first."""
+    from literature_core import get_session
+    from literature_core.models import Paper, PaperContent
+    from services.verification_service import VerificationService
+
+    limit = int(arguments.get("limit", 20))
+    with get_session() as session:
+        rows = (
+            session.query(Paper.id, Paper.title, PaperContent.verification_score,
+                          PaperContent.verification)
+            .join(PaperContent, PaperContent.paper_id == Paper.id)
+            .filter(PaperContent.verification_score.isnot(None))
+            .filter(PaperContent.verification_score < VerificationService.ACCEPT_THRESHOLD)
+            .order_by(PaperContent.verification_score.asc())
+            .limit(limit)
+            .all()
+        )
+        papers = [{
+            "paper_id": r.id, "title": r.title, "verification_score": r.verification_score,
+            "routing": (r.verification or {}).get("routing"),
+            "failures": (r.verification or {}).get("failures", []),
+        } for r in rows]
+    return _to_response(success({"papers": papers, "count": len(papers)}))
 
 
 def _batch_verify_extractions(arguments: dict[str, Any]) -> list[TextContent]:
@@ -1112,6 +1147,8 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
                 return _batch_verify_extractions(arguments)
             elif scope == "report":
                 return _get_quality_report(arguments)
+            elif scope == "queue":
+                return _verification_queue(arguments)
             else:
                 return _to_response(error(f"Unknown scope: {scope}"))
 
