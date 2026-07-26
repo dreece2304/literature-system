@@ -272,7 +272,8 @@ EXTRACT IN JSON FORMAT:
     "materials": ["<material1>", "<material2>", ...],
     "claim_citations": [
         {{"claim": "<claim text without citation>", "citation_numbers": [<n1>, <n2>], "claim_type": "<type>", "importance": "<level>"}}
-    ]
+    ],
+    "defined_terms": {{"<abbreviation>": "<expansion>"}}
 }}
 
 ================================================================================
@@ -322,6 +323,18 @@ claim_citations: Claims with explicit citation references [1], [17,23], (Smith 2
   - Generic citations without specific claims (e.g., "See methods in ref. [4]")
   - Citations in reference lists
   - Only extract 3-8 most significant cited claims per chunk
+
+defined_terms: Abbreviations, acronyms, or entities defined or expanded in THIS chunk.
+  - Map the short form to its full expansion as given in the text
+  - Example: {{"DEZ": "diethylzinc", "4-MP": "4-mercaptophenol"}}
+  - Use an empty object {{}} if nothing is defined in this chunk
+
+================================================================================
+GROUNDING REQUIREMENT:
+================================================================================
+facts and numbers MUST be captured VERBATIM (word-for-word quote) from the chunk
+text above, not paraphrased or reconstructed from memory. If you cannot point to
+the exact words in the chunk text supporting a fact or number, do not report it.
 
 ================================================================================
 RULES:
@@ -377,8 +390,8 @@ OUTPUT SCHEMA - Fill ALL fields comprehensively:
     "one_sentence_summary": "<WHAT was done + HOW + KEY RESULT with numbers>",
     
     "key_findings": [
-        "<finding with specific numbers/results>",
-        "<finding with specific numbers/results>",
+        {{"finding": "<finding with specific numbers/results>", "quote": "<verbatim excerpt from chunk text/facts supporting this finding, max ~30 words>"}},
+        {{"finding": "<finding with specific numbers/results>", "quote": "<verbatim excerpt from chunk text/facts supporting this finding, max ~30 words>"}},
         ...
     ],
     
@@ -424,6 +437,10 @@ key_findings: Synthesize facts from chunks into 5-10 distinct findings.
   - Combine related facts (e.g., if IMFP measured at multiple energies → one finding covering the range)
   - GOOD: "The IMFP ranged from 1-2 nm for kinetic energies 20-92 eV, increasing to 3-4 nm at higher energies"
   - BAD: "The mean free path was measured" (too vague)
+  - Each finding is an object with a "finding" field and a "quote" field
+  - "quote" MUST be copied verbatim (unchanged) from the chunk data (facts/numbers) that
+    supports the finding - do not paraphrase inside "quote"
+  - If no chunk data verbatim-supports a finding, do not include that finding
 
 quantitative_results: Consolidate ALL numbers from chunk extractions.
   - Deduplicate (same measurement mentioned twice → one entry)
@@ -462,7 +479,7 @@ RULES:
 - NEVER fabricate - only include information from the chunks
 - Preserve specific numbers exactly as extracted
 - When chunks disagree, prefer the more detailed/specific version
-
+{corrections_section}
 JSON:'''
 
 
@@ -865,6 +882,7 @@ def get_consolidation_prompt(
     journal: Optional[str] = None,
     authors: Optional[str] = None,
     year: Optional[int] = None,
+    corrections: Optional[str] = None,
 ) -> str:
     """Generate prompt for consolidating chunk extractions into final schema.
 
@@ -878,6 +896,9 @@ def get_consolidation_prompt(
         journal: Journal name
         authors: Author names
         year: Publication year
+        corrections: Optional feedback from a previous failed verification
+            attempt. When provided, a CORRECTIONS section listing the issues
+            is appended to the prompt so the model can fix them.
 
     Returns:
         Formatted prompt string for consolidation
@@ -894,6 +915,13 @@ def get_consolidation_prompt(
         chunk_sections.append(f"Chunk {i}:\n{chunk_json}")
     chunks_json = "\n\n".join(chunk_sections) if chunk_sections else "No chunk extractions available"
 
+    corrections_section = ""
+    if corrections:
+        corrections_section = (
+            "\nCORRECTIONS - a previous attempt failed verification. Fix these issues; "
+            "only report values you can support with a verbatim quote:\n" + corrections + "\n"
+        )
+
     return CONSOLIDATION_PROMPT.format(
         title=title,
         journal=journal or "Not specified",
@@ -902,6 +930,7 @@ def get_consolidation_prompt(
         abstract=abstract or "Not available",
         quick_extraction=quick_json,
         chunk_extractions=chunks_json,
+        corrections_section=corrections_section,
     )
 
 
