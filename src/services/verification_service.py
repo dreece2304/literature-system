@@ -22,6 +22,8 @@ logger = get_logger(__name__)
 
 FUZZY_THRESHOLD = 0.85
 
+NUM_RE = re.compile(r"\d+(?:[.,]\d+)?(?:[eE][+-]?\d+)?")
+
 
 @dataclass
 class QuoteMatch:
@@ -30,6 +32,14 @@ class QuoteMatch:
     method: str          # "exact" | "numeric" | "fuzzy" | "none"
     score: float         # 0-1 match quality
     excerpt: str = ""    # matched source window (for evidence)
+
+
+@dataclass
+class NumberCheck:
+    """One extracted number checked against source."""
+    value: str           # as written in the claim
+    matched: bool
+    context: str = ""    # source window around the match
 
 
 class VerificationService:
@@ -73,3 +83,38 @@ class VerificationService:
             return QuoteMatch(found=True, method="fuzzy", score=round(best, 3),
                               excerpt=s_norm[best_pos:best_pos + window])
         return QuoteMatch(found=False, method="none", score=round(best, 3))
+
+    @staticmethod
+    def _canonical_number(token: str) -> float | None:
+        try:
+            return float(token.replace(",", ""))
+        except ValueError:
+            return None
+
+    @classmethod
+    def _source_number_set(cls, source: str) -> dict[float, str]:
+        out: dict[float, str] = {}
+        for m in NUM_RE.finditer(source):
+            v = cls._canonical_number(m.group())
+            if v is not None and v not in out:
+                out[v] = source[max(0, m.start() - 60):m.end() + 60]
+        return out
+
+    @classmethod
+    def check_numbers(cls, claim_text: str, source: str) -> list[NumberCheck]:
+        """Every number in claim_text must exist in source (normalized compare)."""
+        source_nums = cls._source_number_set(source)
+        checks = []
+        for m in NUM_RE.finditer(claim_text):
+            v = cls._canonical_number(m.group())
+            if v is None:
+                continue
+            ctx = source_nums.get(v, "")
+            checks.append(NumberCheck(value=m.group(), matched=v in source_nums, context=ctx))
+        return checks
+
+    @staticmethod
+    def numeric_fidelity(checks: list[NumberCheck]) -> float:
+        if not checks:
+            return 1.0
+        return sum(1 for c in checks if c.matched) / len(checks)
