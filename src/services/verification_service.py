@@ -16,6 +16,9 @@ import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 
+import httpx
+
+from config.ai_settings import settings
 from literature_core import get_logger
 
 logger = get_logger(__name__)
@@ -40,6 +43,46 @@ class NumberCheck:
     value: str           # as written in the claim
     matched: bool
     context: str = ""    # source window around the match
+
+
+class MiniCheckClient:
+    """Ollama client for bespoke-minicheck fact checking.
+
+    bespoke-minicheck expects: "Document: {doc}\nClaim: {claim}" and answers Yes/No.
+    """
+
+    def __init__(self):
+        self.host = settings.ollama.host
+        self.model = settings.ollama.verifier_model
+        self.timeout = settings.ollama.timeout
+
+    def is_available(self) -> bool:
+        try:
+            with httpx.Client(timeout=5) as client:
+                r = client.get(f"{self.host}/api/tags")
+                return r.status_code == 200 and self.model.split(":")[0] in r.text
+        except Exception:
+            return False
+
+    def _generate(self, prompt: str) -> str | None:
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                r = client.post(f"{self.host}/api/generate", json={
+                    "model": self.model, "prompt": prompt, "stream": False,
+                    "options": {"temperature": 0.0, "num_predict": 4},
+                })
+                if r.status_code != 200:
+                    return None
+                return r.json().get("response", "")
+        except Exception as e:
+            logger.warning("MiniCheck call failed", extra={"error": str(e)})
+            return None
+
+    def check_claim(self, claim: str, document: str) -> bool | None:
+        resp = self._generate(f"Document: {document}\nClaim: {claim}")
+        if resp is None:
+            return None
+        return resp.strip().lower().startswith("yes")
 
 
 class VerificationService:
@@ -139,3 +182,31 @@ class VerificationService:
         if score >= cls.RETRY_THRESHOLD and not retried:
             return "reextract"
         return "review"
+
+    TOP_CHUNKS_PER_CLAIM = 3
+
+    @staticmethod
+    def _rank_chunks(claim: str, chunks: list[str]) -> list[str]:
+        claim_tokens = set(re.findall(r"[a-z0-9]+", claim.lower()))
+        scored = [(len(claim_tokens & set(re.findall(r"[a-z0-9]+", c.lower()))), c) for c in chunks]
+        scored.sort(key=lambda t: -t[0])
+        return [c for _, c in scored]
+
+    @classmethod
+    def claim_support(cls, claims: list[str], chunks: list[str],
+                      client: MiniCheckClient) -> tuple[float, list[dict]]:
+        """Fraction of claims supported by their best-matching chunks."""
+        if not claims:
+            return 1.0, []
+        evidence = []
+        supported = 0
+        for claim in claims:
+            verdict: bool | None = None
+            for chunk in cls._rank_chunks(claim, chunks)[:cls.TOP_CHUNKS_PER_CLAIM]:
+                verdict = client.check_claim(claim, chunk)
+                if verdict:
+                    break
+            if verdict:
+                supported += 1
+            evidence.append({"claim": claim, "supported": verdict})
+        return supported / len(claims), evidence
