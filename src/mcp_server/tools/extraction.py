@@ -1011,27 +1011,59 @@ def _verification_queue(arguments: dict[str, Any]) -> list[TextContent]:
 
 
 def _batch_verify_extractions(arguments: dict[str, Any]) -> list[TextContent]:
-    """Verify extractions for multiple papers."""
+    """Verify extractions for multiple papers via VerificationService (grounded-schema safe).
+
+    Routes through VerificationService.verify_paper so batch scope stays consistent
+    with single/queue/CLI verification and persists verification_score per paper.
+    """
+    from literature_core import PaperNotFoundError
+    from services.verification_service import VerificationService
+
     paper_ids = arguments.get("paper_ids")
-    limit = arguments.get("limit", 20)
+    limit = int(arguments.get("limit", 50))
 
-    results = ExtractionService.batch_verify(paper_ids=paper_ids, limit=limit)
+    if not paper_ids:
+        with get_session() as session:
+            rows = (
+                session.query(PaperContent.paper_id)
+                .filter(PaperContent.extraction_depth == "comprehensive")
+                .filter(PaperContent.verification_score.is_(None))
+                .order_by(PaperContent.paper_id)
+                .limit(limit)
+                .all()
+            )
+            paper_ids = [r.paper_id for r in rows]
 
-    # Summary stats
-    if results:
-        scores = [r.get("verification_score", 0) for r in results]
-        avg_score = sum(scores) / len(scores)
-        low_score_count = sum(1 for s in scores if s < 0.5)
-    else:
-        avg_score = 0
-        low_score_count = 0
+    results = []
+    errors = 0
+    for pid in paper_ids:
+        try:
+            result = VerificationService.verify_paper(pid)
+        except PaperNotFoundError:
+            errors += 1
+            continue
+        except Exception as e:
+            logger.warning("Batch verify failed for paper", extra={"paper_id": pid, "error": str(e)})
+            errors += 1
+            continue
+
+        if isinstance(result, dict) and "error" in result:
+            errors += 1
+            continue
+
+        results.append(result)
+
+    accepted = sum(1 for r in results if r.get("routing") == "accept")
+    needs_review = sum(1 for r in results if r.get("routing") in ("reextract", "review"))
+    avg_score = round(sum(r.get("score", 0) for r in results) / len(results), 2) if results else 0
 
     return _to_response(success({
         "count": len(results),
-        "average_score": round(avg_score, 2),
-        "papers_with_low_score": low_score_count,
+        "accepted": accepted,
+        "needs_review": needs_review,
+        "average_score": avg_score,
+        "errors": errors,
         "results": results,
-        "hint": "Papers with score < 0.5 may contain hallucinations - consider re-extraction"
     }))
 
 

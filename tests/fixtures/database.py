@@ -95,6 +95,8 @@ class DatabaseOverride:
             'services.pdf_service.get_session',
             'services.citation_service.get_session',
             'services.import_export_service.get_session',
+            'services.extraction_service.get_session',
+            'services.verification_service.get_session',
         ]
 
         modules_to_patch_engine = [

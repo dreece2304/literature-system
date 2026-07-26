@@ -359,7 +359,8 @@ class VerificationService:
         from services.extraction_service import ExtractionService
 
         async def _default_extractor(pid: int, corrections: str | None = None) -> dict:
-            extraction = await ExtractionService.extract_paper_deep(pid, corrections=corrections)
+            extraction = await ExtractionService.extract_paper_deep(
+                pid, corrections=corrections, force=corrections is not None)
             if hasattr(extraction, "success"):
                 return {"success": extraction.success, "error": getattr(extraction, "error", None)}
             return extraction
