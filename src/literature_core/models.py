@@ -273,6 +273,7 @@ class PaperContent(Base):
 
     # Verification (comparison of quick vs deep)
     verification = Column(JSON)  # {paper_type_matches, topics_overlap, notes}
+    verification_score = Column(Float, index=True)  # 0-1 composite; null = never verified
 
     updated_at = Column(DateTime, onupdate=func.now())
 
@@ -531,6 +532,7 @@ class ExtractionMetadata(Base):
     chunking_status = Column(String(20), default='none')  # none, pending, processing, complete, failed
     chunking_error = Column(Text)  # Error message if chunking failed
     chunking_queued_at = Column(DateTime)  # When queued for processing
+    extraction_checkpoint = Column(JSON)  # ChunkProcessingState snapshot for crash recovery
 
     # Relationships
     paper = relationship('Paper', backref=backref('extraction_metadata', uselist=False,
