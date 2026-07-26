@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 
 import httpx
 
 from config.ai_settings import settings
-from literature_core import get_logger
+from literature_core import PaperNotFoundError, get_logger, get_session
+from literature_core.models import Paper, PaperContent
 
 logger = get_logger(__name__)
 
@@ -258,3 +260,93 @@ class VerificationService:
             passed += ok
             answers.append({"question": question, "verdict": verdict, "pass": ok})
         return passed / len(cls.JUDGE_QUESTIONS), answers
+
+    @classmethod
+    def verify_paper(
+        cls, paper_id: int, minicheck: MiniCheckClient | None = None,
+        judge: JudgeClient | None = None, retried: bool = False,
+    ) -> dict:
+        """Run tiered verification for one paper's extraction; persist score + evidence."""
+        from services.extraction_service import ExtractionService
+
+        with get_session() as session:
+            paper = session.query(Paper).get(paper_id)
+            if not paper:
+                raise PaperNotFoundError(paper_id)
+            content = session.query(PaperContent).filter_by(paper_id=paper_id).first()
+            if not content:
+                return {"paper_id": paper_id, "error": "No extraction to verify"}
+            abstract = paper.abstract or ""
+            summary = content.deep_one_sentence_summary or content.one_sentence_summary or ""
+            findings = content.key_findings or []
+
+        chunks = [c["content"] for c in ExtractionService.get_all_chunks(paper_id)]
+        source = " ".join(chunks) or abstract
+        if not source:
+            return {"paper_id": paper_id, "error": "No source text (chunks or abstract)"}
+
+        failures: list[str] = []
+
+        # --- Tier 0 ---
+        grounded = [f for f in findings if isinstance(f, dict)]
+        legacy = [f for f in findings if isinstance(f, str)]
+        quote_results = [cls.match_quote(f.get("quote", ""), source) for f in grounded]
+        quote_grounding = (
+            sum(1 for q in quote_results if q.found) / len(quote_results)
+            if quote_results else 1.0
+        )
+        for f, q in zip(grounded, quote_results):
+            if not q.found:
+                failures.append(f"quote unmatched: {f.get('quote', '')[:80]}")
+
+        claim_texts = [f.get("finding", "") for f in grounded] + legacy
+        number_checks = [c for t in claim_texts for c in cls.check_numbers(t, source)]
+        numeric = cls.numeric_fidelity(number_checks)
+        failures += [f"number unmatched: {c.value}" for c in number_checks if not c.matched]
+
+        hard_gate = (
+            (quote_results and quote_grounding < 0.5)
+            or (retried and any(not c.matched for c in number_checks))
+        )
+
+        # --- Tier 1 ---
+        minicheck = minicheck or MiniCheckClient()
+        claim_frac, claim_evidence = cls.claim_support(
+            [t for t in claim_texts if t] + ([summary] if summary else []),
+            chunks or [source], minicheck)
+        failures += [f"claim unsupported: {e['claim'][:80]}"
+                     for e in claim_evidence if e["supported"] is False]
+
+        # --- Tier 2 (borderline only) ---
+        provisional = cls.composite_score(numeric, claim_frac, quote_grounding, 1.0, hard_gate)
+        judge_frac, judge_answers = 1.0, []
+        if cls.RETRY_THRESHOLD <= provisional < cls.ACCEPT_THRESHOLD:
+            judge_frac, judge_answers = cls.judge_pass(
+                summary, claim_texts, abstract, judge or JudgeClient())
+
+        score = cls.composite_score(numeric, claim_frac, quote_grounding, judge_frac, hard_gate)
+        routing = cls.route(score, retried)
+
+        result = {
+            "paper_id": paper_id, "score": score, "routing": routing,
+            "numeric_fidelity": round(numeric, 3), "claim_support": round(claim_frac, 3),
+            "quote_grounding": round(quote_grounding, 3), "judge_pass": round(judge_frac, 3),
+            "hard_gate_failed": hard_gate, "failures": failures,
+            "evidence": {"claims": claim_evidence, "judge": judge_answers},
+        }
+
+        with get_session() as session:
+            content = session.query(PaperContent).filter_by(paper_id=paper_id).first()
+            content.verification_score = score
+            content.verification = {
+                **result,
+                "verified_at": datetime.now(timezone.utc).isoformat(),
+                "retried": retried,
+            }
+            session.commit()
+
+        logger.info(
+            "Verified paper",
+            extra={"paper_id": paper_id, "score": score, "routing": routing},
+        )
+        return result
