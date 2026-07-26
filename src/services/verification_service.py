@@ -45,6 +45,11 @@ class NumberCheck:
 class VerificationService:
     """Stateless verification of extractions against source text."""
 
+    ACCEPT_THRESHOLD = 0.85
+    RETRY_THRESHOLD = 0.60
+
+    W_NUMERIC, W_CLAIMS, W_QUOTES, W_JUDGE = 0.45, 0.35, 0.10, 0.10
+
     @staticmethod
     def _normalize(text: str) -> str:
         return re.sub(r"\s+", " ", text.strip().lower())
@@ -118,3 +123,19 @@ class VerificationService:
         if not checks:
             return 1.0
         return sum(1 for c in checks if c.matched) / len(checks)
+
+    @classmethod
+    def composite_score(cls, numeric: float, claim_support: float, quote_grounding: float,
+                        judge_pass: float, hard_gate_failed: bool) -> float:
+        if hard_gate_failed:
+            return 0.0
+        return round(cls.W_NUMERIC * numeric + cls.W_CLAIMS * claim_support
+                     + cls.W_QUOTES * quote_grounding + cls.W_JUDGE * judge_pass, 3)
+
+    @classmethod
+    def route(cls, score: float, retried: bool) -> str:
+        if score >= cls.ACCEPT_THRESHOLD:
+            return "accept"
+        if score >= cls.RETRY_THRESHOLD and not retried:
+            return "reextract"
+        return "review"
