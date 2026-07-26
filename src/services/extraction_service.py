@@ -996,7 +996,8 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
         year: Optional[int] = None,
         paper_id: int = 0,
         verbose: bool = False,
-        progress_callback: Optional[ProgressCallback] = None
+        progress_callback: Optional[ProgressCallback] = None,
+        corrections: Optional[str] = None
     ) -> PaperExtraction:
         """Extract deep tier using 2-pass approach (chunks → consolidation).
 
@@ -1012,6 +1013,8 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
             verbose: If True, include detailed extraction info
             progress_callback: Optional callback (pass_num, current, total, message)
                 pass 1 = chunk extraction, pass 2 = consolidation
+            corrections: Optional feedback from a previous failed verification
+                attempt, passed through to the consolidation prompt.
 
         Returns:
             PaperExtraction with full deep schema
@@ -1063,6 +1066,7 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
             journal=journal,
             authors=authors,
             year=year,
+            corrections=corrections,
         )
 
         # Use deep model for full extraction
@@ -1545,7 +1549,8 @@ class ExtractionService:
         backend: Literal["ollama", "auto"] = "auto",
         force: bool = False,
         verbose: bool = False,
-        progress_callback: Optional[ProgressCallback] = None
+        progress_callback: Optional[ProgressCallback] = None,
+        corrections: Optional[str] = None
     ) -> PaperExtraction:
         """Extract deep tier using 2-pass approach (chunks → consolidation).
 
@@ -1563,6 +1568,8 @@ class ExtractionService:
             force: If True, re-extract even if deep extraction exists
             verbose: If True, include detailed extraction info
             progress_callback: Optional callback (pass_num, current, total, message)
+            corrections: Optional feedback from a previous failed verification
+                attempt, passed through to the consolidation prompt.
 
         Returns:
             PaperExtraction with full deep schema
@@ -1656,7 +1663,8 @@ class ExtractionService:
                 year=paper.year,
                 paper_id=paper_id,
                 verbose=verbose,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                corrections=corrections
             )
 
             # Store if successful (deep tier)

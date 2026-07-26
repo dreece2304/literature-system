@@ -350,3 +350,36 @@ class VerificationService:
             extra={"paper_id": paper_id, "score": score, "routing": routing},
         )
         return result
+
+    @classmethod
+    async def extract_and_verify(cls, paper_id: int, extractor=None,
+                                 minicheck: MiniCheckClient | None = None,
+                                 judge: JudgeClient | None = None) -> dict:
+        """Deep-extract then verify; auto re-extract once with corrective feedback."""
+        from services.extraction_service import ExtractionService
+
+        async def _default_extractor(pid: int, corrections: str | None = None) -> dict:
+            extraction = await ExtractionService.extract_paper_deep(pid, corrections=corrections)
+            if hasattr(extraction, "success"):
+                return {"success": extraction.success, "error": getattr(extraction, "error", None)}
+            return extraction
+
+        extractor = extractor or _default_extractor
+
+        first = await extractor(paper_id, corrections=None)
+        if not first.get("success", False):
+            return {"paper_id": paper_id, "error": first.get("error", "extraction failed"),
+                    "attempts": 1}
+
+        result = cls.verify_paper(paper_id, minicheck=minicheck, judge=judge, retried=False)
+        if result.get("routing") != "reextract":
+            return {**result, "attempts": 1}
+
+        corrections = "\n".join(result.get("failures", []))
+        logger.info("Re-extracting with corrections", extra={"paper_id": paper_id})
+        second = await extractor(paper_id, corrections=corrections)
+        if not second.get("success", False):
+            return {**result, "attempts": 2, "routing": "review"}
+
+        final = cls.verify_paper(paper_id, minicheck=minicheck, judge=judge, retried=True)
+        return {**final, "attempts": 2}
