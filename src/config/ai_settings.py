@@ -31,17 +31,35 @@ class OllamaSettings(BaseSettings):
     # Model specifications
     writer_model: str = Field(default="qwen:7b-q5_K_M", description="Model for writing assistance")
     triager_model: str = Field(default="qwen:7b-q4_K_M", description="Model for paper triage")
-    reader_model: str = Field(default="qwen2.5:7b-instruct-q5_K_M", description="Model for Q&A and extraction")
+    reader_model: str = Field(default="qwen3.5:9b", description="Model for Q&A and extraction")
 
     # Extraction-specific models (two-tier system)
     quick_extractor_model: str = Field(
-        default="qwen2.5:3b-instruct-q4_K_M",
+        default="qwen3:4b-instruct-2507-q4_K_M",
         description="Fast model for quick extraction (abstract-only: type, topics, summary)"
     )
     deep_extractor_model: str = Field(
-        default="qwen2.5:7b-instruct-q5_K_M",
+        default="qwen3.5:9b",
         description="Full model for deep extraction (PDF: findings, methodology, claims)"
     )
+
+    # Enrichment pipeline models (spec 2026-07-24)
+    verifier_model: str = Field(
+        default="bespoke-minicheck:7b",
+        description="NLI fact-checker for claim-vs-source verification (binary Yes/No)"
+    )
+    judge_model: str = Field(
+        default="llama3.1:8b",
+        description="Cross-family judge for borderline verification (binary questions only)"
+    )
+    vision_model: str = Field(
+        default="qwen3.5:9b",
+        description="Multimodal model for figure analysis (qwen3.5 accepts image input)"
+    )
+
+    # Context windows (Ollama silently truncates prompts beyond num_ctx)
+    chunk_num_ctx: int = Field(default=16384, description="num_ctx for per-chunk extraction calls")
+    consolidation_num_ctx: int = Field(default=32768, description="num_ctx for consolidation calls")
 
     # Model parameters
     writer_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
