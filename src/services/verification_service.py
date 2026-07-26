@@ -85,6 +85,34 @@ class MiniCheckClient:
         return resp.strip().lower().startswith("yes")
 
 
+class JudgeClient:
+    """Cross-family binary judge (llama3.1). Binary questions only - never rubric scores."""
+
+    def __init__(self):
+        self.host = settings.ollama.host
+        self.model = settings.ollama.judge_model
+        self.timeout = settings.ollama.timeout
+
+    def ask_binary(self, question: str, summary: str, abstract: str) -> bool | None:
+        prompt = (
+            "You are checking a machine-generated summary of a scientific paper.\n"
+            f"Paper abstract:\n{abstract}\n\nGenerated summary and findings:\n{summary}\n\n"
+            f"Question: {question}\nAnswer with exactly one word: Yes or No."
+        )
+        try:
+            with httpx.Client(timeout=self.timeout) as client:
+                r = client.post(f"{self.host}/api/generate", json={
+                    "model": self.model, "prompt": prompt, "stream": False,
+                    "options": {"temperature": 0.0, "num_predict": 4},
+                })
+                if r.status_code != 200:
+                    return None
+                return r.json().get("response", "").strip().lower().startswith("yes")
+        except Exception as e:
+            logger.warning("Judge call failed", extra={"error": str(e)})
+            return None
+
+
 class VerificationService:
     """Stateless verification of extractions against source text."""
 
@@ -210,3 +238,23 @@ class VerificationService:
                 supported += 1
             evidence.append({"claim": claim, "supported": verdict})
         return supported / len(claims), evidence
+
+    # (question, verdict_that_means_pass)
+    JUDGE_QUESTIONS = [
+        ("Does the summary state the paper's main finding?", True),
+        ("Is the summary consistent with the abstract?", True),
+        ("Does the summary contain any conclusion that is absent from the abstract and findings?", False),
+    ]
+
+    @classmethod
+    def judge_pass(cls, summary: str, key_findings: list[str], abstract: str,
+                   client: JudgeClient) -> tuple[float, list[dict]]:
+        text = summary + "\nFindings:\n" + "\n".join(f"- {f}" for f in key_findings)
+        answers = []
+        passed = 0
+        for question, pass_verdict in cls.JUDGE_QUESTIONS:
+            verdict = client.ask_binary(question, text, abstract)
+            ok = verdict is None or verdict == pass_verdict  # fail-open on call failure
+            passed += ok
+            answers.append({"question": question, "verdict": verdict, "pass": ok})
+        return passed / len(cls.JUDGE_QUESTIONS), answers
