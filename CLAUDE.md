@@ -28,7 +28,7 @@ research/
 │   │   ├── fts.py              # Full-text search
 │   │   └── config.py           # Path configuration
 │   ├── embeddings/             # Vector search (ChromaDB)
-│   ├── extractors/             # Zotero sync
+│   ├── extractors/             # UNUSED legacy (metadata_extractor.py, pdf_extractor.py)
 │   ├── config/                 # AI settings
 │   │   └── ai_settings.py      # Ollama configuration
 │   └── alembic/                # Database migrations
@@ -37,10 +37,10 @@ research/
 │   ├── integration/            # Integration tests
 │   └── fixtures/               # Shared fixtures
 ├── data/                       # Runtime data (git-ignored)
-│   ├── literature.db           # SQLite database (~493 papers)
+│   ├── literature.db           # SQLite database (~600 papers)
 │   ├── pdfs/                   # PDF storage
 │   ├── vectorstore/            # ChromaDB embeddings
-│   └── config/                 # Runtime config (credentials.yml)
+│   └── config/                 # LEGACY yml files (unused; real config = LITCORE_* env vars)
 ├── docs/                       # Documentation
 │   ├── ARCHITECTURE.md         # Technical deep-dive
 │   ├── WORKFLOWS.md            # Import & Query workflows
@@ -68,6 +68,12 @@ cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m mcp_server.
 ### Database Migrations
 ```bash
 cd src && /home/dreece23/miniforge3/bin/mamba run -n litai alembic upgrade head
+```
+
+### Enrichment Batch Runner
+Backfill chunks, deep-extract, and verify in one resumable pass (`--dry-run` available):
+```bash
+cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.enrich_pipeline --stage all --limit 20
 ```
 
 ## Code Style
@@ -209,6 +215,7 @@ from literature_core import (
 | `PDFService` | PDF download, text extraction |
 | `CitationService` | BibTeX, manuscript scanning |
 | `ValidationService` | Paper verification against external sources |
+| `VerificationService` | Tiered extraction verification (quotes, numbers, NLI, judge), scoring, review queue |
 
 ## Key MCP Tools
 
@@ -217,9 +224,9 @@ from literature_core import (
 | `papers.py` | Paper CRUD, `store_extraction`, `get_paper_content` |
 | `search.py` | Unified `search` with mode parameter |
 | `extraction.py` | AI extraction, PDF processing queue |
-| `discovery.py` | `find_similar_papers`, `suggest_citations_for_text` |
+| `discovery.py` | `semantic_find` (similar papers, text match, citation suggestions), `manage_embeddings` |
 | `citation_network.py` | Citation graph, references |
-| `browser_pdf.py` | Windows PDF download queue |
+| `browser_pdf.py` | Internal helpers for `pdf.py` browser queue (exposes no tools) |
 
 ## Git Conventions
 
@@ -235,7 +242,7 @@ refactor/services      # Code improvements
 <scope>: <type>: <description>
 
 Examples:
-- mcp: feat: Add pagination to export_papers tool
+- mcp: feat: Add pagination to export tool
 - mcp: fix: Handle missing DOI in search results
 - services: refactor: Extract embedding logic
 - tests: feat: Add citation service tests

@@ -2,6 +2,9 @@
 
 This document covers the two main workflows for the Literature Management System.
 
+Tool names below match the current consolidated tool set — see `docs/TOOL_REFERENCE.md`
+for exact signatures.
+
 ---
 
 ## 1. Import & Update Pipeline
@@ -10,12 +13,12 @@ This document covers the two main workflows for the Literature Management System
 
 | Source | Primary Tools | Auto Steps |
 |--------|---------------|------------|
-| **DOI** | `import_from_external(doi=)` | Enrich, find PDF, embed |
-| **arXiv ID** | `import_from_external(arxiv_id=)` | Enrich, download PDF, embed |
-| **Title only** | `search_external_papers` → select → `import_from_external` | Enrich, embed |
-| **PDF file** | `process_downloaded_pdfs()` | Extract text, chunk, embed |
-| **BibTeX** | `import_bibtex(content)` | Enrich each entry |
-| **Zotero** | `sync_from_zotero()` | Process new papers with PDFs |
+| **DOI** | `import_paper(doi=)` | Duplicate check, enrich, embed |
+| **arXiv ID** | `import_paper(arxiv_id=)` | Duplicate check, enrich, download PDF, embed |
+| **Title only** | `search_external_papers` → select → `import_paper(doi=)` | Enrich, embed |
+| **PDF file** | `import_paper(pdf_path=)` or `manage_pdf(action="process")` | Extract text, chunk, embed |
+| **BibTeX** | `import_paper(source="bibtex", bibtex_content=)` or `manage_bibtex(action="import")` | Enrich each entry |
+| **Zotero** | `src/scripts/zotero_import.py` (offline CLI, see below) | Reads zotero.sqlite snapshot |
 
 ### Standard Import Flow
 
@@ -23,10 +26,11 @@ This document covers the two main workflows for the Literature Management System
 1. Entry Point (DOI/arXiv/title/PDF)
        ↓
 2. Duplicate Check
-   - find_duplicates(method="title")  # or "hash" for PDFs
+   - Automatic with import_paper(source="wizard")  # the default
+   - Or manual: find_duplicates(method="title")    # or "hash" for PDFs
        ↓
 3. Create Paper Entry
-   - import_from_external() or add_paper()
+   - import_paper() or add_paper()
        ↓
 4. Metadata Enrichment
    - enrich_paper(paper_id)
@@ -34,16 +38,17 @@ This document covers the two main workflows for the Literature Management System
        ↓
 5. PDF Acquisition
    - find_open_access_pdf(doi=)
-   - acquire_paper_pdf(paper_id)
-   - Or: queue_pdf_download() for browser automation
+   - acquire_pdf(paper_id)                          # open access download
+   - Or: acquire_pdf(paper_id, method="browser_queue")  # Windows browser automation
        ↓
 6. Text Extraction & Chunking
-   - Automatic when PDF is processed
+   - manage_pdf_processing(action="add", paper_id=)  # queue for chunking
+   - manage_pdf_processing(action="process")         # run the queue
    - Creates PaperChunk records
        ↓
 7. Embedding Generation
-   - embed_paper(paper_id)
-   - Or: process_embedding_queue() for batch
+   - manage_embeddings(action="embed", paper_id=)
+   - Or: manage_embeddings(action="process")  # batch
        ↓
 8. Paper Complete
 ```
@@ -52,26 +57,26 @@ This document covers the two main workflows for the Literature Management System
 
 | Method | Tool | When to Use |
 |--------|------|-------------|
-| Open Access | `acquire_paper_pdf(paper_id)` | Unpaywall finds OA version |
-| arXiv | Auto with `import_from_external(arxiv_id)` | Has arXiv ID |
-| VPN | `acquire_paper_pdf(paper_id, use_vpn=True)` | Connected to institutional VPN |
-| Browser | `queue_pdf_download(paper_id)` | Need manual browser login |
+| Open Access | `acquire_pdf(paper_id)` | Unpaywall finds OA version |
+| arXiv | Auto with `import_paper(arxiv_id=)` | Has arXiv ID |
+| VPN | `acquire_pdf(paper_id, use_vpn=True)` | Connected to institutional VPN |
+| Browser | `acquire_pdf(paper_id, method="browser_queue")` | Need manual browser login |
 
 ### Batch Import
 
 ```python
 # BibTeX file
-parse_bib_file(file_path="refs.bib")  # Preview entries
-import_bibtex(bibtex_content, tags=["project-x"])
+manage_bibtex(action="parse", file_path="refs.bib")  # Preview entries
+manage_bibtex(action="import", file_path="refs.bib", tags=["project-x"])
 
-# Zotero sync
-check_zotero_connection()
-sync_from_zotero()
+# Zotero (offline snapshot import — no MCP tool; run the CLI)
+# cd src && mamba run -n litai python -m scripts.zotero_import          # dry-run report
+# cd src && mamba run -n litai python -m scripts.zotero_import --execute
 
-# Batch PDF download
-queue_batch_pdf_download(paper_ids=[...])
-get_download_queue_status()
-process_downloaded_pdfs()
+# Batch PDF download via Windows browser queue
+acquire_pdf(paper_ids=[...], method="browser_queue")
+manage_pdf(action="queue_status")
+manage_pdf(action="process")  # import downloaded PDFs
 ```
 
 ### Enrichment Status Values
@@ -79,11 +84,11 @@ process_downloaded_pdfs()
 | Status | Meaning | Next Action |
 |--------|---------|-------------|
 | `pending` | Just added, needs triage | `enrich_paper()` |
-| `needs_pdf` | Has metadata, waiting for PDF | `acquire_paper_pdf()` |
-| `needs_chunking` | Has PDF, needs text extraction | `queue_pdf_processing()` |
-| `needs_extraction` | Has chunks, queued for quick extraction | `extract_paper_quick()` |
+| `needs_pdf` | Has metadata, waiting for PDF | `acquire_pdf()` |
+| `needs_chunking` | Has PDF, needs text extraction | `manage_pdf_processing(action="add")` |
+| `needs_extraction` | Has chunks, queued for quick extraction | `extract_paper(tier="quick")` |
 | `complete` | Quick extraction done (or deep complete) | None (or flag for deep) |
-| `needs_deep_extraction` | Flagged for deep extraction | `extract_paper_deep()` |
+| `needs_deep_extraction` | Flagged for deep extraction | `extract_paper(tier="deep")` |
 | `needs_review` | Auto-process found issue | Manual review |
 | `failed` | Unrecoverable error | Manual fix |
 
@@ -109,7 +114,7 @@ flag_for_deep_extraction(paper_ids=[1, 2, 3, 4, 5])
 
 ---
 
-## 3. Two-Tier Extraction Pipeline
+## 2. Two-Tier Extraction Pipeline
 
 ### Overview
 
@@ -129,7 +134,6 @@ store_extraction(
     paper_type="research_article",
     topics=["atomic layer deposition", "thin films", "HfO2"],
     one_sentence_summary="This paper demonstrates...",
-    is_quick=True  # Default for Claude
 )
 ```
 
@@ -209,7 +213,51 @@ Quick and deep extractions are stored separately (not overwritten):
 
 ---
 
-## 2. Query & Cite Pipeline
+## Enrichment Batch (Overnight)
+
+Backfills chunks, deep-extracts, and verifies extractions in one resumable
+pass — designed to run unattended overnight, one Ollama model resident per
+stage.
+
+```bash
+# 1. Pull the models used across stages (once, or after an upgrade)
+ollama pull qwen3.5:9b                        # deep extraction + judge fallback vision
+ollama pull qwen3:4b-instruct-2507-q4_K_M     # quick extraction
+ollama pull bespoke-minicheck:7b              # Tier 1 NLI claim verification
+ollama pull llama3.1:8b                       # Tier 2 cross-family judge
+
+# 2. Run the pipeline (chunk backfill → deep extraction → verification)
+cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.enrich_pipeline --stage all --limit 20
+
+# Dry run first to see what would be processed, with no writes:
+cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.enrich_pipeline --stage all --dry-run
+```
+
+```python
+# 3. Inspect the review queue — papers with verification_score below the
+#    accept threshold, worst first
+verify_extraction(scope="queue", limit=20)
+# → [{paper_id, title, verification_score, routing, failures}, ...]
+```
+
+**Routing thresholds** (`VerificationService`):
+
+| Score | Routing | Meaning |
+|-------|---------|---------|
+| ≥ 0.85 | `accept` | Extraction trusted as-is |
+| 0.60 – 0.85 | `reextract` | One automatic re-extraction attempt |
+| < 0.60 (or still below 0.85 after retry) | `review` | Needs manual review via the queue |
+
+**Calibration note**: before trusting auto-accept on a new corpus or after a
+prompt/model change, spot-check roughly 30-50 papers via
+`verify_extraction(scope="queue")` (and a similar sample of accepted papers)
+to confirm the score bands line up with actual extraction quality. Adjust
+expectations — not the thresholds — unless a systematic bias shows up across
+many papers.
+
+---
+
+## 3. Query & Cite Pipeline
 
 ### Search Modes
 
@@ -219,18 +267,19 @@ Quick and deep extractions are stored separately (not overwritten):
 | `keyword` | Exact phrase matching | `search("hafnium oxide", mode="keyword")` |
 | `semantic` | Conceptual search | `search("how atoms deposit", mode="semantic")` |
 | `hybrid` | Balanced keyword + semantic | `search(query, mode="hybrid", alpha=0.65)` |
+| `exact` | Fast known-paper lookup | `search("exact title", mode="exact")` |
 
 ### Finding Papers
 
 ```python
 # Search library
 search(query="topic", mode="smart", limit=20)
-search_by_author(author_name="Smith")
-search_by_tag(tag="methods")
+list_papers(author="Smith")   # filter by author
+list_papers(tag="methods")    # filter by tag
 
 # Expand from good results
-find_similar_papers(paper_id, limit=10)
-find_papers_like_text(text="paragraph describing need")
+semantic_find(input_type="paper", paper_id=42, limit=10)
+semantic_find(input_type="text", text="paragraph describing need")
 
 # Search external databases
 search_external_papers(query="topic", sources=["crossref", "semantic_scholar"])
@@ -240,13 +289,16 @@ search_external_papers(query="topic", sources=["crossref", "semantic_scholar"])
 
 ```python
 # Who cited this paper?
-get_paper_citations(paper_id)
+get_citations(direction="incoming", paper_id=42)
 
 # What does it cite?
-get_paper_references(paper_id)
+get_citations(direction="outgoing", paper_id=42)
+
+# Local citation graph (no API calls)
+get_local_citations(paper_id=42)
 
 # Papers citing same sources
-find_common_references(paper_id)
+find_common_references(paper_id=42)
 
 # Build network visualization
 build_citation_graph(paper_ids=[...], depth=1)
@@ -256,10 +308,12 @@ build_citation_graph(paper_ids=[...], depth=1)
 
 ```python
 # Get suggestions for a paragraph
-suggest_citations_for_text(
+semantic_find(
+    input_type="citation",
     text="Your paragraph needing citations",
     limit=5,
-    include_bibtex=True
+    include_bibtex=True,
+    prefer_type="review",  # or "primary" for specific claims
 )
 ```
 
@@ -267,10 +321,11 @@ suggest_citations_for_text(
 
 ```python
 # Setup project
-set_project_config(
+manage_project(
+    action="set",
     project_path="/path/to/thesis",
     bib_files=["thesis.bib"],
-    tex_paths=["chapters/"]
+    tex_paths=["chapters/"],
 )
 
 # Full health check
@@ -278,33 +333,37 @@ citation_health_check(bib_path="thesis.bib", tex_path="chapters/")
 # Returns: missing citations, orphan entries, incomplete entries, duplicates
 
 # Individual checks
-find_missing_citations(bib_path, tex_path)      # Keys in \cite{} but not in .bib
-find_orphan_citations(bib_path, tex_path)       # Entries never cited
-find_incomplete_bib_entries(bib_path)           # Missing required fields
-find_duplicate_bib_entries(bib_path)            # Duplicate entries
+citation_health_check(check="missing", bib_path=..., tex_path=...)     # \cite{} not in .bib
+citation_health_check(check="orphans", bib_path=..., tex_path=...)     # Entries never cited
+citation_health_check(check="incomplete", bib_path=...)                # Missing required fields
+citation_health_check(check="duplicates", bib_path=...)                # Duplicate entries
+
+# Scan manuscript for citation keys
+scan_citations(file_path="chapters/", mode="scan")
 
 # Sync database to bib
-sync_bib_from_database(bib_path, dry_run=True)  # Preview changes
-sync_bib_from_database(bib_path, dry_run=False) # Apply changes
+manage_bibtex(action="sync", file_path="thesis.bib", dry_run=True)   # Preview changes
+manage_bibtex(action="sync", file_path="thesis.bib", dry_run=False)  # Apply changes
 ```
 
 ### Bibliography Generation
 
 ```python
 # Export by IDs
-export_papers(paper_ids=[1,2,3], format='bibtex')
+export(paper_ids=[1, 2, 3], format="bibtex")
 
-# Export by tag
-export_papers(tag='thesis-ch3', format='bibtex')
+# Export a collection
+export(source="collection", collection_id=5, format="bibtex",
+       include_subcollections=True)
 
-# Export collection
-export_collection(collection_id=5, format='bibtex', include_subcollections=True)
+# Export by tag (BibTeX file)
+manage_bibtex(action="export", tag="thesis-ch3", output_path="ch3.bib")
 
 # Generate formatted bibliography
-format_bibliography(papers, style='apa')  # or 'mla', 'chicago', 'bibtex'
+format_citation(action="bibliography", papers=[...], style="apa")  # or 'mla', 'chicago'
 
 # Generate citation key
-suggest_citation_key(title="...", authors="Smith, John")
+format_citation(action="suggest_key", title="...", authors="Smith, John")
 ```
 
 ---
@@ -321,7 +380,7 @@ update_paper(paper_id, read_status='read', rating=4)  # Complete
 
 # Note-taking
 create_note(paper_id, content="Key finding...", note_type='highlight', page_number=5)
-get_paper_notes(paper_id)
+list_notes(paper_id=paper_id)
 ```
 
 **Read status values**: `unread`, `reading`, `read`
@@ -345,6 +404,7 @@ get_paper_notes(paper_id)
 
 **API rate limited**: Wait 60 seconds, retry with different source
 
-**PDF not accessible**: Try `find_open_access_pdf()`, then `queue_pdf_download()` for browser
+**PDF not accessible**: Try `find_open_access_pdf()`, then
+`acquire_pdf(paper_id, method="browser_queue")` for browser download
 
-**Search returns wrong results**: Try different mode, use more specific terms, search by author
+**Search returns wrong results**: Try different mode, use more specific terms, filter by author

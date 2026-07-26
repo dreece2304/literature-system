@@ -2,9 +2,15 @@
 
 Quick reference for all MCP tools with exact parameter signatures.
 
+Generated from the actual tool definitions in `src/mcp_server/tools/` (66 tools across 13 modules).
+To regenerate the raw list, iterate `TOOL_MODULES` in `src/mcp_server/server.py` and call each
+module's `list_tools()`.
+
+Note: `browser_pdf.py` exposes no tools — it holds internal helpers used by `pdf.py`.
+
 ---
 
-## Papers
+## Papers (`papers.py`)
 
 ### list_papers
 List papers with optional filtering and pagination.
@@ -17,8 +23,6 @@ Parameters:
   year: int | None         # Filter by publication year
   tag: str | None          # Filter by tag name
   read_status: str | None  # "unread", "reading", "read"
-
-Returns: {success, data: [{id, title, authors, year, read_status, rating}], pagination}
 ```
 
 ### get_paper
@@ -27,8 +31,6 @@ Get detailed information about a specific paper.
 ```
 Parameters:
   paper_id: int  # Required
-
-Returns: {success, data: {id, title, abstract, authors, tags, year, doi, ...}}
 ```
 
 ### add_paper
@@ -37,45 +39,45 @@ Add a new paper to the database.
 ```
 Parameters:
   title: str               # Required
-  authors: list[str]       # List of author names
+  abstract: str | None
   year: int | None
   doi: str | None
   arxiv_id: str | None
-  abstract: str | None
-  journal: str | None
+  authors: list[str]       # List of author names
   tags: list[str]          # Tags to apply
-
-Returns: {success, data: paper}
+  journal: str | None
 ```
 
 ### update_paper
-Update an existing paper's metadata.
+Update an existing paper's metadata (can also attach a local PDF).
 
 ```
 Parameters:
   paper_id: int            # Required
-  read_status: str | None  # "unread", "reading", "read"
+  title: str | None
+  abstract: str | None
+  year: int | None
+  doi: str | None
   rating: int | None       # 1-5
+  read_status: str | None  # "unread", "reading", "read"
   tags: list[str] | None   # Replace all tags
-
-Returns: {success, data: paper}
+  file_path: str | None    # Local path to PDF file to attach
 ```
 
 ### get_paper_content
-Get full paper content for AI analysis.
+Get paper content + LLM extraction. Set `include_full_text=true` only if extraction missing.
 
 ```
 Parameters:
-  paper_id: int              # Required
-  include_full_text: bool = true
-  max_chars: int = 50000     # Limit full text length
-  offset: int = 0            # Start position for pagination
-
-Returns: {success, data: {title, abstract, full_text, word_count, has_more}}
+  paper_id: int                    # Required
+  include_full_text: bool = false  # Default false for token efficiency
+  max_chars: int = 50000           # Max chars for full text (0 = unlimited)
+  offset: int = 0                  # Start position in full text for pagination
+  include_verification: bool = false  # Include verification score for the extraction
 ```
 
 ### store_extraction
-Store AI-extracted content for a paper (basic and extended fields).
+Store AI-extracted content (type, topics, summary, findings, methodology, etc.).
 
 ```
 Parameters:
@@ -85,18 +87,16 @@ Parameters:
   one_sentence_summary: str | None
   key_findings: list[str] | None
   methodology_summary: str | None
-  # Extended fields (stored in structured_data):
-  research_context: dict | None        # {problem_addressed, novelty, limitations, significance}
   discussion_summary: str | None
   future_directions: list[str] | None
   quantitative_results: list[dict] | None   # [{metric, value, unit, conditions}]
   citable_claims: list[str] | None
   techniques_used: list[dict] | None        # [{technique, purpose, specifics}]
-  experimental_conditions: dict | None      # {materials, temperature_range, etc.}
+  experimental_conditions: dict | None      # {materials, temperature_range, ...}
   prior_work_comparison: list[dict] | None  # [{reference_claim, this_work, improvement}]
+  research_context: dict | None             # {problem_addressed, novelty, limitations, significance}
   citation_contexts: dict | None            # {introduction, methods, results, discussion}
-
-Returns: {success, data: {paper_id, extended_fields_stored?}}
+  project_relevance: dict | None            # {project_name: {relevance, reason, primary_use}}
 ```
 
 ### batch_update_papers
@@ -105,12 +105,10 @@ Bulk update tags, read_status, or rating for multiple papers.
 ```
 Parameters:
   paper_ids: list[int]     # Required
-  read_status: str | None
-  rating: int | None
   tags_to_add: list[str]
   tags_to_remove: list[str]
-
-Returns: {success, data: {updated_count}}
+  read_status: str | None
+  rating: int | None
 ```
 
 ### batch_delete_papers
@@ -119,46 +117,40 @@ Bulk delete papers (requires confirmation).
 ```
 Parameters:
   paper_ids: list[int]  # Required
-  confirm: bool         # Required - Must be true
+  confirm: bool         # Required - must be true
+```
 
-Returns: {success, data: {deleted_count}}
+### get_papers_summary
+Batch fetch summaries (one_sentence_summary, paper_type, topics) for paper IDs.
+
+```
+Parameters:
+  paper_ids: list[int]           # Required
+  include_abstract: bool = false
 ```
 
 ---
 
-## Search
+## Search (`search.py`)
 
-### search (Unified)
-Primary search tool with multiple modes. Recommended for most searches.
+### search
+Search papers. Modes: smart (default), keyword (FTS5), semantic, hybrid, exact.
 
 ```
 Parameters:
   query: str                     # Required
-  mode: str = "smart"            # "smart", "keyword", "semantic", "hybrid"
   limit: int = 20
-  alpha: float = 0.65            # Semantic weight for hybrid mode (0-1)
-  min_similarity: float = 0.35   # Minimum for semantic results
-  search_level: str = "chunk"    # "chunk" (full-text) or "paper" (title+abstract)
-  year_min: int | None
-  year_max: int | None
+  mode: str = "smart"            # "smart", "keyword", "semantic", "hybrid", "exact"
   correct_spelling: bool = true  # Smart mode: auto-correct typos
   expand_acronyms: bool = true   # Smart mode: expand ALD, EUV, etc.
-  add_synonyms: bool = false     # Smart mode: add scientific synonyms
-
-Returns: {
-  success,
-  data: [{id, title, year, authors, score}],
-  count,
-  mode,
-  diagnostics: {
-    query_expanded?,           # For smart mode
-    corrections?,              # Spelling corrections applied
-    fts_available,
-    semantic_available,
-    keyword_results_count,
-    semantic_results_count
-  }
-}
+  add_synonyms: bool = false     # Smart mode: add synonyms (can increase noise)
+  alpha: float = 0.65            # Semantic weight for hybrid mode (0-1)
+  search_level: str = "chunk"    # "chunk" (full-text) or "paper" (title+abstract)
+  min_similarity: float = 0.35   # Minimum similarity score (0-1)
+  rerank: bool | None            # Cross-encoder re-ranking (default: RERANKER_ENABLED setting)
+  year_min: int | None
+  year_max: int | None
+  include_summary: bool = false  # Include one_sentence_summary and paper_type
 ```
 
 **Search Modes:**
@@ -166,166 +158,130 @@ Returns: {
 - `keyword`: FTS5 full-text search with BM25 ranking
 - `semantic`: Embedding-based similarity search
 - `hybrid`: Balanced keyword + semantic with RRF fusion
-
-### search_by_author
-Find all papers by a specific author.
-
-```
-Parameters:
-  author_name: str   # Required (partial match supported)
-  limit: int = 20
-
-Returns: {success, data: papers[]}
-```
-
-### search_by_tag
-Find all papers with a specific tag.
-
-```
-Parameters:
-  tag: str              # Required (partial match by default)
-  limit: int = 20
-  exact_match: bool = false
-
-Returns: {success, data: papers[]}
-```
+- `exact`: Fast known-paper lookup
 
 ### get_search_status
-Get search system health status and diagnostics.
+Search system health (FTS5, ChromaDB, embedding coverage).
 
 ```
 Parameters:
-  detailed: bool = false
-
-Returns: {
-  success,
-  healthy: bool,
-  keyword_search: "available" | "unavailable",
-  semantic_search: "available" | "unavailable",
-  papers_indexed: int,
-  embedding_coverage: "85%",
-  recommendations?: []  # If detailed=true
-}
+  detailed: bool = false  # If true, return full diagnostics
 ```
 
 ---
 
-## Discovery
+## External APIs (`external.py`)
 
-### semantic_find (Consolidated)
-Unified semantic search with three modes: find similar papers, match text descriptions, or suggest citations.
-
-```
-Parameters:
-  input_type: str          # Required: "paper", "text", or "citation"
-  paper_id: int            # Required for input_type=paper
-  text: str                # Required for input_type=text or citation
-  limit: int = 10
-  min_similarity: float = 0.5
-  include_summary: bool = false   # Include extraction summaries
-  include_bibtex: bool = false    # Include BibTeX (citation mode)
-  prefer_type: str = "any"        # Citation mode: "any", "review", "primary"
-
-Returns for input_type=paper|text:
-  {success, results: [{id, title, score, summary?, paper_type?, topics?}]}
-
-Returns for input_type=citation:
-  {success, results: [{id, title, score, summary, paper_type, topics,
-                       key_findings, citation_hint?, bibtex?, citation_key?}]}
-
-Examples:
-  # Find similar papers
-  semantic_find(input_type="paper", paper_id=42, limit=5)
-
-  # Match text description
-  semantic_find(input_type="text", text="plasma ALD of silicon nitride")
-
-  # Suggest citations (prefer reviews for background)
-  semantic_find(input_type="citation", text="ALD enables conformal coatings",
-                prefer_type="review", include_bibtex=true)
-```
-
-### manage_embeddings (Consolidated)
-Embedding status, batch processing, or single paper embedding.
+### lookup_paper_metadata
+Lookup metadata from CrossRef/OpenAlex/Semantic Scholar/arXiv.
 
 ```
 Parameters:
-  action: str = "status"   # "status", "process", or "embed"
-  paper_id: int            # Required for action=embed
-  limit: int = 50          # Max papers for action=process
-  include_ids: bool = false           # Include paper IDs needing embeddings
-  include_paper_embeddings: bool = true
-  include_chunk_embeddings: bool = true
-
-Returns for action=status:
-  {success, total_papers, paper_embeddings: {count, coverage_percent},
-   chunk_embeddings: {count, coverage_percent}, paper_ids_needing_*?}
-
-Returns for action=process|embed:
-  {success, papers_processed, paper_embeddings_created, chunks_created}
-```
-
-### suggest_paper_tags
-Suggest tags for a paper based on similar papers' tags.
-
-```
-Parameters:
-  paper_id: int    # Required
-  limit: int = 5
-
-Returns: {success, data: {suggestions: [{tag, frequency}], based_on_papers}}
-```
-
-### get_reading_queue
-Get reading queue of unread papers sorted by rating and date added.
-
-```
-Parameters:
-  limit: int = 20
-  min_rating: int | None   # Filter by minimum rating (1-5)
-  tag: str | None          # Filter by tag
-
-Returns: {success, data: {count, papers: [], filters}}
-```
-
----
-
-## PDF Management
-
-### get_pdf_status
-Check PDF status for papers.
-
-```
-Parameters:
-  filter: str = "all"  # "all", "has_pdf", "needs_pdf"
-  limit: int = 50
-
-Returns: {success, data: [{paper_id, has_pdf, path?}]}
-```
-
-### acquire_paper_pdf
-Attempt to download PDF for a paper.
-
-```
-Parameters:
-  paper_id: int           # Required
-  use_vpn: bool = false   # Try direct publisher URLs
-  use_openurl: bool = false
-  use_proxy: bool = false
-
-Returns: {success, data: {path?, source?, error?}}
+  title: str | None
+  doi: str | None      # Most reliable
+  authors: str | None
+  year: int | None
 ```
 
 ### find_open_access_pdf
-Find open access PDF URLs.
+Find open access PDF via Unpaywall/arXiv/publishers.
+
+```
+Parameters:
+  doi: str | None       # Required for best results
+  title: str | None     # Fallback if no DOI
+  arxiv_id: str | None
+```
+
+### enrich_paper
+Enrich paper with missing metadata (abstract, DOI, citations, PDF).
+
+```
+Parameters:
+  paper_id: int | None  # Paper ID in the local database
+  title: str | None     # If not using paper_id
+  doi: str | None
+```
+
+### search_external_papers
+Search CrossRef/OpenAlex/Semantic Scholar/arXiv for new papers.
+
+```
+Parameters:
+  query: str            # Required
+  limit: int = 5        # Max results per source
+  sources: list[str]    # Default: all
+```
+
+### get_citation_count
+Get citation count for a paper from Semantic Scholar.
 
 ```
 Parameters:
   doi: str | None
-  arxiv_id: str | None
-  title: str | None
+  title: str | None  # Fallback
+```
 
-Returns: {success, data: {url?, source?}}
+---
+
+## Citations (`citations.py`)
+
+### manuscript_tools
+Manuscript analysis. Actions: scan (parse structure), check (citations vs library).
+
+```
+Parameters:
+  action: str = "scan"           # "scan" or "check"
+  file_path: str | None          # For scan: path to .tex/.md file
+  content: str | None            # For scan: manuscript content (if no file_path)
+  format: str = "latex"          # For scan: "latex" or "markdown"
+  manuscript_citations: list | None  # For check: citation keys from manuscript
+  library_papers: list | None        # For check: papers from library
+```
+
+### format_citation
+Citation formatting. Actions: bibtex, suggest_key, validate, bibliography.
+
+```
+Parameters:
+  action: str = "bibtex"      # "bibtex", "suggest_key", "validate", "bibliography"
+  papers: list | None         # For bibtex/validate/bibliography
+  title: str | None           # For suggest_key
+  authors: str | None         # For suggest_key
+  year: int | None            # For suggest_key
+  entry_type: str = "article" # For bibtex: "article", "inproceedings", "book", "misc"
+  style: str = "apa"          # For bibliography: "apa", "mla", "chicago", "bibtex"
+  sort: bool = true           # For bibliography: sort by author
+```
+
+---
+
+## PDF (`pdf.py`)
+
+### acquire_pdf
+Get PDF. method: open_access (try download), browser_queue (queue for Windows).
+
+```
+Parameters:
+  paper_id: int                # Required
+  paper_ids: list[int] | None  # For browser_queue: batch paper IDs
+  method: str = "open_access"  # "open_access" or "browser_queue"
+  use_vpn: bool = false        # open_access: try direct publisher URLs (UW VPN)
+  use_openurl: bool = false    # open_access: use UW Primo OpenURL resolver
+  use_proxy: bool = false      # open_access: use UW EZProxy URLs
+```
+
+### manage_pdf
+PDF management. action: status (papers with/without PDFs), queue_status, process, clear.
+
+```
+Parameters:
+  action: str = "status"   # "status", "queue_status", "process", "clear"
+  filter: str = "all"      # For status: "all", "has_pdf", "needs_pdf"
+  limit: int = 50
+  paper_id: int | None     # For queue_status: check specific paper
+  auto_match: bool = true  # For process: match PDFs by DOI in filename
+  clear_all: bool = false  # For clear: remove all including pending
 ```
 
 ### find_duplicates
@@ -333,478 +289,545 @@ Find duplicate papers by file hash or title similarity.
 
 ```
 Parameters:
-  method: str = "title"         # "hash" or "title"
-  threshold: float = 0.85       # Title similarity threshold
-
-Returns: {success, data: duplicate_groups[]}
+  method: str = "title"    # "hash" (exact file match) or "title" (similar)
+  threshold: float = 0.85  # Title similarity threshold (0.0-1.0)
 ```
 
 ---
 
-## PDF Processing & Extraction
-
-### get_pdf_processing_status
-Get status of PDF processing queue.
-
-```
-Parameters: none
-
-Returns: {success, data: {
-  total_papers, papers_with_pdf, papers_with_chunks,
-  pending_processing, processing_errors
-}}
-```
-
-### queue_pdf_processing
-Queue a paper's PDF for text extraction and chunking.
-
-```
-Parameters:
-  paper_id: int  # Required
-
-Returns: {success, data: {queued}}
-```
-
-### process_pdf_queue
-Process queued PDFs (extract text, create chunks).
-
-```
-Parameters:
-  limit: int = 10
-
-Returns: {success, data: {processed, errors}}
-```
-
-### extract_paper
-Extract structured content from a paper using AI.
-
-```
-Parameters:
-  paper_id: int              # Required
-  backend: str = "auto"      # "ollama" or "auto"
-  force: bool = false        # Re-extract even if exists
-
-Returns: {success, data: {extraction}}
-```
-
-### prepare_extraction
-Prepare paper content for Claude-powered extraction.
-
-```
-Parameters:
-  paper_id: int             # Required
-  tier: str = "quick"       # "quick" (abstract) or "deep" (full text)
-  max_chars: int = 80000    # Deep tier only
-
-Returns: {success, data: {paper_text, project_context, already_cited_in}}
-```
-
-### get_extraction_queue
-Get papers needing AI extraction.
-
-```
-Parameters:
-  limit: int = 20
-
-Returns: {success, data: papers[]}
-```
-
----
-
-## Browser PDF Download (Windows)
-
-### queue_pdf_download
-Queue a PDF for download via browser automation.
-
-```
-Parameters:
-  paper_id: int  # Required
-
-Returns: {success, data: {queued}}
-```
-
-### queue_batch_pdf_download
-Queue multiple papers for PDF download.
-
-```
-Parameters:
-  paper_ids: list[int]  # Required
-
-Returns: {success, data: {queued_count}}
-```
-
-### get_download_queue_status
-Get status of the download queue.
-
-```
-Parameters:
-  paper_id: int | None  # Check specific paper
-
-Returns: {success, data: {pending, completed, failed, items?}}
-```
-
-### process_downloaded_pdfs
-Process PDFs downloaded by browser fetcher.
-
-```
-Parameters:
-  auto_match: bool = true  # Match by DOI in filename
-
-Returns: {success, data: {processed, matched, errors}}
-```
-
----
-
-## Collections
+## Collections (`collections.py`)
 
 ### list_collections
+List all collections (optionally filter by parent_id for hierarchy).
+
 ```
 Parameters:
-  parent_id: int | None  # Filter to children
-  all: bool = false      # List all ignoring hierarchy
+  parent_id: int | None  # Filter to children of this collection
+  all: bool | None       # If true, list all collections ignoring hierarchy
+```
 
-Returns: {success, data: {count, collections: [{id, name, paper_count}]}}
+### get_collection
+Get a collection by ID with paper count and paper IDs.
+
+```
+Parameters:
+  collection_id: int  # Required
 ```
 
 ### create_collection
+Create a new collection.
+
 ```
 Parameters:
   name: str               # Required
   description: str | None
-  parent_id: int | None
+  parent_id: int | None   # Parent collection ID for nesting
+```
 
-Returns: {success, data: collection}
+### update_collection
+Update a collection's name, description, or parent.
+
+```
+Parameters:
+  collection_id: int      # Required
+  name: str | None
+  description: str | None
+  parent_id: int | None
+```
+
+### delete_collection
+Delete a collection (papers are NOT deleted, just unlinked).
+
+```
+Parameters:
+  collection_id: int  # Required
 ```
 
 ### add_papers_to_collection
+Add one or more papers to a collection.
+
 ```
 Parameters:
   collection_id: int    # Required
   paper_ids: list[int]  # Required
-
-Returns: {success, data: {added_count}}
 ```
 
 ### remove_papers_from_collection
+Remove one or more papers from a collection.
+
 ```
 Parameters:
-  collection_id: int
-  paper_ids: list[int]
+  collection_id: int    # Required
+  paper_ids: list[int]  # Required
+```
 
-Returns: {success, data: {removed_count}}
+### get_collection_children
+Get child collections of a collection.
+
+```
+Parameters:
+  collection_id: int  # Required (the parent collection)
 ```
 
 ---
 
-## Notes
+## Notes (`notes.py`)
+
+### list_notes
+List notes with optional filtering by paper_id or note_type.
+
+```
+Parameters:
+  paper_id: int | None
+  note_type: str | None  # "highlight", "comment", "summary"
+  limit: int = 50
+  offset: int = 0
+```
+
+### get_note
+Get a note by ID.
+
+```
+Parameters:
+  note_id: int  # Required
+```
 
 ### create_note
+Create a new note on a paper.
+
 ```
 Parameters:
   paper_id: int              # Required
   content: str               # Required
   note_type: str = "comment" # "highlight", "comment", "summary"
   page_number: int | None
-
-Returns: {success, data: note}
+  position: str | None       # Position coordinates (JSON string)
 ```
 
-### get_paper_notes
+### update_note
+Update a note's content or metadata.
+
 ```
 Parameters:
-  paper_id: int
+  note_id: int           # Required
+  content: str | None
   note_type: str | None
+  page_number: int | None
+  position: str | None
+```
 
-Returns: {success, data: notes[]}
+### delete_note
+Delete a note.
+
+```
+Parameters:
+  note_id: int  # Required
+```
+
+### delete_paper_notes
+Delete all notes for a paper (optionally filtered by type).
+
+```
+Parameters:
+  paper_id: int          # Required
+  note_type: str | None  # Only delete notes of this type
 ```
 
 ---
 
-## External APIs
+## Import/Export (`import_export.py`)
 
-### lookup_paper_metadata
-Look up metadata from CrossRef, OpenAlex, Semantic Scholar, arXiv.
-
-```
-Parameters:
-  doi: str | None
-  title: str | None
-  authors: str | None
-  year: int | None
-
-Returns: {success, data: {source, metadata}}
-```
-
-### search_external_papers
-Search external databases for papers not in library.
+### import_paper
+Import papers. source: wizard (smart, default), bibtex, external.
 
 ```
 Parameters:
-  query: str
-  sources: list[str]   # ["crossref", "openalex", "semantic_scholar", "arxiv"]
+  source: str = "wizard"       # "wizard" (duplicate check), "bibtex", "external" (DOI/arXiv)
+  doi: str | None              # Most reliable
+  arxiv_id: str | None         # e.g. "2301.12345"
+  title: str | None            # Paper title for lookup
+  authors: str | None          # For disambiguation (wizard)
+  year: int | None             # For disambiguation (wizard)
+  bibtex_content: str | None   # Raw BibTeX content (source=bibtex)
+  tags: list[str] | None
+  collection_id: int | None
+  pdf_path: str | None         # Local PDF path (wizard)
+  skip_duplicate_check: bool = false  # (wizard)
+  auto_chunk_pdf: bool = true  # Auto-chunk PDF text (wizard)
+```
+
+### export
+Export papers. source: papers (by IDs, default), collection.
+
+```
+Parameters:
+  source: str = "papers"       # "papers" (by paper_ids) or "collection"
+  paper_ids: list[int] | None  # source=papers, omit for all
+  limit: int = 50              # source=papers, max 500
+  offset: int = 0
+  collection_id: int | None    # source=collection
+  include_subcollections: bool = false
+  format: str = "bibtex"       # "bibtex", "json", "csv"
+  include_abstract: bool = true
+  include_notes: bool = false  # JSON only
+```
+
+### get_enrichment_queue
+Papers needing enrichment (missing abstract, PDF, or chunks).
+
+```
+Parameters:
+  status: str | None  # "needs_abstract", "needs_pdf", "needs_chunks", "pending", "failed"
+  limit: int = 20
+```
+
+---
+
+## Project (`project.py`)
+
+### manage_bibtex
+BibTeX operations. Actions: parse, link, import, export, sync.
+
+```
+Parameters:
+  action: str = "parse"        # "parse" (.bib), "link" (match to DB), "import", "export", "sync"
+  file_path: str | None        # Path to .bib file (parse/link/import/sync)
+  content: str | None          # BibTeX content (alternative to file_path)
+  min_similarity: float = 0.8  # For link: minimum title similarity
+  skip_existing: bool = true   # For import: skip entries already in DB
+  tags: list[str] | None       # For import
+  paper_ids: list[int] | None  # For export (omit for all)
+  output_path: str | None      # For export: output .bib path
+  tag: str | None              # For export: filter by tag
+  dry_run: bool = true         # For sync: preview changes without writing
+```
+
+### citation_health_check
+Check citation health. Checks: all (default), orphans, missing, incomplete, duplicates.
+
+```
+Parameters:
+  check: str = "all"                 # "all", "orphans", "missing", "incomplete", "duplicates"
+  bib_path: str                      # Required
+  tex_path: str | None               # For all/orphans/missing
+  similarity_threshold: float = 0.9  # For duplicates
+```
+
+### scan_citations
+Scan TeX files for citations. Mode: scan (all keys), locate (specific key).
+
+```
+Parameters:
+  mode: str = "scan"        # "scan" (find all \cite{}) or "locate" (find specific key)
+  file_path: str            # Required: .tex file or directory
+  citation_key: str | None  # For locate
+  recursive: bool = true    # For scan
+```
+
+### manage_project
+Project citation config. Actions: get, set.
+
+```
+Parameters:
+  action: str = "get"          # "get" (read config) or "set" (update config)
+  project_path: str            # Required: path to project root
+  bib_files: list[str] | None  # For set
+  tex_paths: list[str] | None  # For set
+```
+
+---
+
+## Discovery (`discovery.py`)
+
+### semantic_find
+Semantic search. input: paper (by ID), text (description), citation (suggest refs).
+
+```
+Parameters:
+  input_type: str          # Required: "paper", "text", or "citation"
+  paper_id: int | None     # input_type=paper
+  text: str | None         # input_type=text or citation
+  limit: int = 10
+  min_similarity: float = 0.5
+  include_summary: bool = false  # Include extraction summaries
+  include_bibtex: bool = false   # Citation mode
+  prefer_type: str = "any"       # Citation mode: "any", "review", "primary"
+```
+
+### manage_embeddings
+Embeddings. action: status, process (batch), embed (single paper).
+
+```
+Parameters:
+  action: str = "status"   # "status", "process", "embed"
+  paper_id: int | None     # action=embed
+  limit: int = 50          # action=process
+  include_ids: bool = false           # action=status: include paper IDs needing embeddings
+  include_paper_embeddings: bool = true
+  include_chunk_embeddings: bool = true
+```
+
+### get_reading_queue
+Unread papers sorted by rating and date added.
+
+```
+Parameters:
+  limit: int = 20
+  tag: str | None
+  min_rating: int | None  # 1-5
+```
+
+### suggest_paper_tags
+Suggest tags based on similar papers' tags.
+
+```
+Parameters:
+  paper_id: int   # Required
   limit: int = 5
-
-Returns: {success, data: {source: papers[]}}
-```
-
-### enrich_paper
-Auto-fill missing metadata from external sources.
-
-```
-Parameters:
-  paper_id: int | None
-  doi: str | None
-  title: str | None
-
-Returns: {success, data: enriched_paper}
-```
-
-### get_citation_count
-Get citation count from Semantic Scholar.
-
-```
-Parameters:
-  doi: str | None
-  title: str | None
-
-Returns: {success, data: {citation_count, source}}
 ```
 
 ---
 
-## Citation Network
+## Citation Network (`citation_network.py`)
 
-### get_paper_citations
-Get papers that cite a given paper (via Semantic Scholar).
-
-```
-Parameters:
-  paper_id: int | None
-  doi: str | None
-  title: str | None
-  limit: int = 50
-
-Returns: {success, data: {citations: [], total_count}}
-```
-
-### get_paper_references
-Get papers that a given paper references.
+### get_citations
+Get citations. direction: incoming (who cites this), outgoing (what this cites).
 
 ```
 Parameters:
-  paper_id: int | None
-  doi: str | None
-  title: str | None
+  direction: str        # Required: "incoming" or "outgoing"
+  paper_id: int | None  # Database paper ID (will use DOI/title to lookup)
+  doi: str | None       # Preferred for accuracy
+  title: str | None     # Fallback
   limit: int = 50
-
-Returns: {success, data: {references: [], total_count}}
 ```
 
 ### find_common_references
-Find papers that share common references.
+Papers sharing references with a given paper (related work).
 
 ```
 Parameters:
-  paper_id: int         # Required
+  paper_id: int        # Required
+  min_shared: int = 2  # Minimum number of shared references
   limit: int = 10
-  min_shared: int = 2   # Minimum shared references
-
-Returns: {success, data: [{paper, shared_count, shared_refs}]}
 ```
 
 ### build_citation_graph
-Build citation graph for visualization.
+Build citation graph (nodes/edges) for visualization.
 
 ```
 Parameters:
-  paper_ids: list[int]      # Required
-  depth: int = 1            # 1-2
+  paper_ids: list[int]           # Required
   include_external: bool = false
-
-Returns: {success, data: {nodes: [], edges: []}}
+  depth: int = 1                 # 1-2
 ```
 
----
+### import_references_from_paper
+Import paper's references into library (from review papers).
 
-## Import/Export
-
-### import_bibtex
 ```
 Parameters:
-  bibtex_content: str        # Required
-  collection_id: int | None
-  tags: list[str]
-
-Returns: {success, data: {imported, skipped, errors}}
+  paper_id: int          # Required (the citing paper, e.g. a review)
+  min_year: int | None   # Only import papers from this year or later
+  max_imports: int = 50
+  tags: list[str] | None
 ```
 
-### import_from_external
-```
-Parameters:
-  doi: str | None
-  arxiv_id: str | None
-  title: str | None
-  collection_id: int | None
-  tags: list[str]
+### get_local_citations
+Local citation graph query (no API calls).
 
-Returns: {success, data: paper}
-```
-
-### export_papers
 ```
 Parameters:
-  paper_ids: list[int] | None
-  format: str = "bibtex"      # "bibtex", "json", "csv"
-  include_abstract: bool = true
-  include_notes: bool = false
+  paper_id: int           # Required
+  direction: str = "both" # "citing", "cited", "both"
+```
+
+### link_papers_citation
+Create citation link between two papers.
+
+```
+Parameters:
+  citing_paper_id: int  # Required
+  cited_paper_id: int   # Required
+```
+
+### get_claim_citations
+Get claims from a paper with their cited references.
+
+```
+Parameters:
+  paper_id: int           # Required
+  section: str | None     # "introduction", "methods", "results", "discussion", "conclusion"
+  claim_type: str | None  # "fact", "method", "comparison", "limitation", "background"
+  importance: str | None  # "high", "medium", "low"
   limit: int = 50
-  offset: int = 0
-
-Returns: {success, data: export_string, pagination}
 ```
 
-### export_collection
-```
-Parameters:
-  collection_id: int
-  format: str = "bibtex"
-  include_subcollections: bool = false
-
-Returns: {success, data: export_string}
-```
-
----
-
-## Project & Citations
-
-### citation_health_check
-Comprehensive check: orphans, missing, incomplete, duplicates.
+### find_claims_citing_paper
+Find all claims in library that cite a specific paper.
 
 ```
 Parameters:
-  bib_path: str  # Required
-  tex_path: str  # Required
-
-Returns: {success, data: {orphans, missing, incomplete, duplicates}}
-```
-
-### scan_tex_citations
-Scan TeX files for all \cite{} commands.
-
-```
-Parameters:
-  file_path: str         # Required
-  recursive: bool = true
-
-Returns: {success, data: {citations: [{key, file, line}]}}
-```
-
-### sync_bib_from_database
-Update bib entries with database metadata.
-
-```
-Parameters:
-  bib_path: str
-  dry_run: bool = true
-
-Returns: {success, data: {updates: [], would_update?}}
-```
-
----
-
-## Validation
-
-### validate_paper
-Validate paper against external databases.
-
-```
-Parameters:
-  paper_id: int  # Required
-
-Returns: {success, data: {verified, confidence, issues?}}
-```
-
-### validate_papers_batch
-```
-Parameters:
-  paper_ids: list[int] | None  # None = use queue
-  limit: int = 20
-
-Returns: {success, data: {verified, failed, errors}}
-```
-
-### get_validation_queue
-Get papers needing validation.
-
-```
-Parameters:
-  limit: int = 20
-  prioritize_with_doi: bool = true
-
-Returns: {success, data: papers[]}
-```
-
----
-
-## Zotero
-
-### check_zotero_connection
-```
-Returns: {success, data: {local_available, web_api_available}}
-```
-
-### sync_from_zotero
-```
-Returns: {success, data: {added, updated, total}}
-```
-
-### sync_to_zotero
-```
-Parameters:
-  create_new_items: bool = false
-
-Returns: {success, data: {updated, created?, errors}}
-```
-
----
-
-## Embeddings
-
-### get_embedding_status
-Get embedding coverage status.
-
-```
-Parameters:
-  include_ids: bool = false
-
-Returns: {success, data: {
-  total_papers, papers_with_embeddings,
-  papers_needing_embeddings, coverage_percent
-}}
-```
-
-### process_embedding_queue
-Generate embeddings for papers missing them.
-
-```
-Parameters:
+  paper_id: int   # Required (the paper being cited)
   limit: int = 50
-  include_paper_embeddings: bool = true
-  include_chunk_embeddings: bool = true
-
-Returns: {success, data: {processed, errors}}
 ```
 
-### embed_paper
-Generate embeddings for a single paper.
+### get_unmatched_claim_references
+List unmatched references from claims (potential imports).
 
 ```
 Parameters:
-  paper_id: int
-  include_paper_embedding: bool = true
-  include_chunk_embedding: bool = true
+  paper_id: int | None  # Omit for all papers
+  limit: int = 50
+```
 
-Returns: {success}
+### get_citation_chain
+Trace citation chains: claim -> cited paper -> that paper's claims -> etc.
+
+```
+Parameters:
+  paper_id: int             # Required: starting paper
+  claim_id: int | None      # Trace from specific claim
+  depth: int = 2            # 1-3 citation hops
+  direction: str = "forward"  # "forward" or "backward"
+```
+
+---
+
+## Validation (`validation.py`)
+
+### get_validation_status
+Validation coverage stats (verified, not found, errors).
+
+```
+Parameters: none
+```
+
+### validate_papers
+Validate, queue, or reset paper validation. Actions: validate (default), queue, reset.
+
+```
+Parameters:
+  action: str = "validate"     # "validate", "queue", "reset"
+  paper_ids: list[int] | None  # Omit to use queue (validate) or reset ALL (reset)
+  limit: int = 20
+  prioritize_with_doi: bool = true  # For queue
+  confirm: bool | None         # For reset without paper_ids: must be true
+```
+
+---
+
+## Extraction (`extraction.py`)
+
+### extract_paper
+AI extraction. tier: quick (abstract -> type/topics/summary) or deep (full-text -> findings/methods/claims).
+
+```
+Parameters:
+  paper_id: int          # Required
+  tier: str = "quick"    # "quick" (abstract-only) or "deep" (full-text, requires PDF)
+  backend: str = "auto"  # "ollama" or "auto"
+  force: bool = false    # Re-extract even if exists
+```
+
+### get_extraction_status
+Extraction info. view: status (coverage), llm (backend), queue (needs extraction), reextraction.
+
+```
+Parameters:
+  view: str = "status"          # "status", "llm", "queue", "reextraction"
+  limit: int = 50               # For queue/reextraction
+  older_than_days: int | None   # For reextraction: filter by age
+```
+
+### manage_pdf_processing
+PDF text chunking. action: status, queue_status, add, process, retry.
+
+```
+Parameters:
+  action: str = "queue_status"  # "status", "queue_status", "add", "process", "retry"
+  paper_id: int | None          # For status/add/retry
+  limit: int = 20               # For queue_status/process/retry
+  force: bool = false           # For add/process: re-process even if exists
+  status_filter: str | None     # For queue_status: "pending", "processing", "failed",
+                                # "needs_processing"
+```
+
+### manage_references
+PDF-extracted references. action: list, unmatched, match, import.
+
+```
+Parameters:
+  action: str = "list"        # "list", "unmatched", "match", "import"
+  paper_id: int | None        # For list
+  reference_id: int | None    # For match/import
+  limit: int = 50             # For unmatched
+  status_filter: str = "all"  # For list: "all", "unmatched", "matched", "imported"
+  with_doi_only: bool = false # For unmatched
+  tags: list[str] | None      # For import
+  collection_id: int | None   # For import
+```
+
+### verify_extraction
+Verify extractions. scope: single, batch, report (quality check), queue (review queue).
+
+```
+Parameters:
+  scope: str = "single"        # "single", "batch", "report", "queue"
+  paper_id: int | None         # For single
+  paper_ids: list[int] | None  # For batch (omit for all)
+  limit: int = 50              # For batch/report/queue (queue default: 20)
+```
+
+`scope: "queue"` returns papers with `verification_score` below the accept
+threshold (0.85), worst score first:
+
+```json
+{
+  "success": true,
+  "data": {
+    "papers": [
+      {
+        "paper_id": 123,
+        "title": "Example Paper Title",
+        "verification_score": 0.42,
+        "routing": "review",
+        "failures": ["unsupported_claim: ...", "number_mismatch: ..."]
+      }
+    ],
+    "count": 1
+  }
+}
+```
+
+### extract_papers_batch
+Batch extraction with rate limiting. Uses queue if no paper_ids.
+
+```
+Parameters:
+  paper_ids: list[int] | None  # Omit to use queue
+  limit: int = 10              # Max papers from queue
+  delay: float = 1.0           # Seconds between extractions
+  force: bool = false
+```
+
+### prepare_extraction
+Get paper content for Claude extraction. tier: quick or deep.
+
+```
+Parameters:
+  paper_id: int           # Required
+  tier: str = "quick"     # "quick" or "deep"
+  max_chars: int = 80000  # Deep tier
+```
+
+### flag_for_deep_extraction
+Flag paper(s) for deep extraction.
+
+```
+Parameters:
+  paper_id: int | None         # Single paper
+  paper_ids: list[int] | None  # Batch
 ```
 
 ---
@@ -828,7 +851,7 @@ List operations include pagination:
   "success": true,
   "data": [...],
   "pagination": {
-    "total": 418,
+    "total": 601,
     "limit": 20,
     "offset": 0,
     "has_more": true
