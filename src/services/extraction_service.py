@@ -155,16 +155,52 @@ class ChunkProcessingState:
     quantitative_results: list[dict] = field(default_factory=list)
     cited_claims: list[dict] = field(default_factory=list)
 
+    # Facts-only forward context carried between chunks (never findings/summaries)
+    glossary: dict[str, str] = field(default_factory=dict)
+
+    def update_from_chunk(self, chunk_result: dict) -> None:
+        """Accumulate FACTS only (sections, glossary) - never findings/summaries."""
+        self.chunks_processed += 1
+        for section in chunk_result.get("sections_in_chunk", []) or []:
+            if section not in self.sections_seen:
+                self.sections_seen.append(section)
+            self.current_section = section
+        terms = chunk_result.get("defined_terms") or {}
+        if isinstance(terms, dict):
+            self.glossary.update({str(k): str(v) for k, v in terms.items()})
+
     def save_checkpoint(self) -> None:
         """Save state to database for crash recovery."""
-        # TODO: Implement checkpoint saving to ExtractionMetadata or similar
-        pass
+        from literature_core import get_session
+        from literature_core.models import ExtractionMetadata
+        with get_session() as session:
+            meta = session.query(ExtractionMetadata).filter_by(paper_id=self.paper_id).first()
+            if meta:
+                meta.extraction_checkpoint = {
+                    "chunks_processed": self.chunks_processed,
+                    "sections_seen": self.sections_seen,
+                    "glossary": self.glossary,
+                    "current_section": self.current_section,
+                }
+                session.commit()
 
     @classmethod
     def load_checkpoint(cls, paper_id: int) -> Optional["ChunkProcessingState"]:
         """Load state from database for crash recovery."""
-        # TODO: Implement checkpoint loading
-        return None
+        from literature_core import get_session
+        from literature_core.models import ExtractionMetadata
+        with get_session() as session:
+            meta = session.query(ExtractionMetadata).filter_by(paper_id=paper_id).first()
+            if not meta or not meta.extraction_checkpoint:
+                return None
+            cp = meta.extraction_checkpoint
+            return cls(
+                paper_id=paper_id,
+                chunks_processed=cp.get("chunks_processed", 0),
+                sections_seen=cp.get("sections_seen", []),
+                glossary=cp.get("glossary", {}),
+                current_section=cp.get("current_section", "unknown"),
+            )
 
     def to_prompt_context(self) -> str:
         """Format accumulated state for next chunk's prompt."""
@@ -176,6 +212,9 @@ class ChunkProcessingState:
                 lines.append(f"Sections seen so far: {', '.join(self.sections_seen)}")
             if self.document_type != "unknown":
                 lines.append(f"Document type (from earlier chunks): {self.document_type}")
+        if self.glossary:
+            terms = "; ".join(f"{k} = {v}" for k, v in sorted(self.glossary.items()))
+            lines.append(f"Terms defined earlier in this paper: {terms}")
         return "\n".join(lines) if lines else ""
 
 
@@ -891,6 +930,7 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
         chunk_text: str,
         chunk_number: int,
         total_chunks: int,
+        state: Optional["ChunkProcessingState"] = None,
     ) -> dict:
         """Extract information from a single chunk (deep extraction pass 1).
 
@@ -899,6 +939,9 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
             chunk_text: Text content of this chunk
             chunk_number: 1-indexed chunk number
             total_chunks: Total number of chunks
+            state: Optional accumulated state from earlier chunks (facts-only
+                forward context - glossary, sections seen). None means no
+                prior context is injected into the prompt.
 
         Returns:
             Parsed chunk extraction dict or empty dict on failure
@@ -908,6 +951,7 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
             chunk_text=chunk_text,
             chunk_number=chunk_number,
             total_chunks=total_chunks,
+            prior_context=state.to_prompt_context() if state else "",
         )
 
         # Use deep model for chunk extraction (part of deep pipeline)
@@ -924,7 +968,7 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
                         "options": {
                             "temperature": self.temperature,
                             "num_predict": 1024,
-                            "num_ctx": 4096,  # Reduced from 16K for speed
+                            "num_ctx": settings.ollama.chunk_num_ctx,
                         }
                     }
                 )
@@ -975,6 +1019,12 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
         import time
         start_time = time.time()
 
+        # Load any prior checkpoint (facts-only glossary/sections carry forward);
+        # chunk *results* are never persisted, so we always reprocess every chunk -
+        # only chunks_processed is reset, glossary/sections_seen are kept.
+        state = ChunkProcessingState.load_checkpoint(paper_id) or ChunkProcessingState(paper_id=paper_id)
+        state.chunks_processed = 0
+
         # Pass 1: Extract from each chunk
         logger.info(f"Deep extraction pass 1: processing {len(chunks)} chunks")
         if progress_callback:
@@ -990,8 +1040,12 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
                 chunk_text=chunk_text,
                 chunk_number=i,
                 total_chunks=len(chunks),
+                state=state,
             )
             chunk_extractions.append(chunk_result)
+            state.update_from_chunk(chunk_result)
+            if paper_id:
+                state.save_checkpoint()
             # Log progress for long extractions
             if i % 5 == 0:
                 logger.info(f"Processed {i}/{len(chunks)} chunks")
@@ -1014,6 +1068,17 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
         # Use deep model for full extraction
         model = self.deep_model or self.model
 
+        est_tokens = len(prompt) // 3
+        if est_tokens > settings.ollama.consolidation_num_ctx:
+            logger.warning(
+                "Consolidation prompt may exceed num_ctx",
+                extra={
+                    "paper_id": paper_id,
+                    "est_tokens": est_tokens,
+                    "num_ctx": settings.ollama.consolidation_num_ctx,
+                },
+            )
+
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
                 response = await client.post(
@@ -1025,7 +1090,7 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
                         "options": {
                             "temperature": self.temperature,
                             "num_predict": 2048,  # Deep tier output
-                            "num_ctx": 8192,  # Reduced from 32K for speed
+                            "num_ctx": settings.ollama.consolidation_num_ctx,
                         }
                     }
                 )
@@ -1079,6 +1144,23 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
                 if verbose:
                     extraction.raw_response = response_text
                     extraction.prompt_used = prompt
+
+                # Extraction succeeded end-to-end - clear the checkpoint so a
+                # future run doesn't carry stale state forward.
+                if paper_id:
+                    try:
+                        from literature_core import get_session as _get_session
+                        from literature_core.models import ExtractionMetadata as _ExtractionMetadata
+                        with _get_session() as _session:
+                            _meta = _session.query(_ExtractionMetadata).filter_by(paper_id=paper_id).first()
+                            if _meta:
+                                _meta.extraction_checkpoint = None
+                                _session.commit()
+                    except Exception as clear_exc:
+                        logger.warning(
+                            "Failed to clear extraction checkpoint",
+                            extra={"paper_id": paper_id, "error": str(clear_exc)},
+                        )
 
                 return extraction
 

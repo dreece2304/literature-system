@@ -20,7 +20,8 @@ Usage:
 
     # Deep extraction - Pass 1: Process each chunk
     for i, chunk in enumerate(chunks, 1):
-        prompt = get_chunk_extraction_prompt(title, chunk, i, len(chunks))
+        prompt = get_chunk_extraction_prompt(title, chunk, i, len(chunks),
+                                              prior_context=state.to_prompt_context())
         chunk_result = llm(prompt)
         chunk_extractions.append(chunk_result)
 
@@ -52,7 +53,7 @@ EXTRACTION_SCHEMA = {
     },
     "chunk": {
         "required": ["section_type", "facts"],
-        "optional": ["numbers", "methods", "materials", "claim_citations"],
+        "optional": ["numbers", "methods", "materials", "claim_citations", "defined_terms", "sections_in_chunk"],
         "description": "Per-chunk raw data extraction for deep extraction pass 1",
         "section_types": [
             "introduction", "methods", "results", "discussion",
@@ -255,6 +256,11 @@ This is chunk {chunk_number} of {total_chunks}.
 PAPER: {title}
 
 ================================================================================
+CONTEXT FROM EARLIER CHUNKS (facts only - do not repeat, use for continuity):
+================================================================================
+{prior_context}
+
+================================================================================
 CHUNK TEXT:
 ================================================================================
 {chunk_text}
@@ -264,6 +270,7 @@ EXTRACT IN JSON FORMAT:
 ================================================================================
 {{
     "section_type": "<type>",
+    "sections_in_chunk": ["<section name(s) covered in this chunk>"],
     "facts": ["<fact1>", "<fact2>", ...],
     "numbers": [
         {{"value": "<number>", "unit": "<unit>", "what": "<what was measured>", "conditions": "<when/how>"}}
@@ -282,6 +289,9 @@ FIELD INSTRUCTIONS:
 
 section_type: What part of the paper is this? One of:
   "introduction", "methods", "results", "discussion", "conclusion", "mixed", "other"
+
+sections_in_chunk: Named section heading(s) that appear in this chunk (e.g., ["Introduction"], ["Results", "Discussion"]).
+  - Use the paper's own heading text when available; use an empty array [] if no clear heading is present.
 
 facts: Main statements and findings. Extract ALL significant statements.
   - Quote directly or near-verbatim when possible
@@ -852,6 +862,7 @@ def get_chunk_extraction_prompt(
     chunk_text: str,
     chunk_number: int,
     total_chunks: int,
+    prior_context: str = "",
 ) -> str:
     """Generate prompt for extracting information from a single paper chunk.
 
@@ -862,6 +873,9 @@ def get_chunk_extraction_prompt(
         chunk_text: Text content of this chunk
         chunk_number: 1-indexed chunk number
         total_chunks: Total number of chunks in the paper
+        prior_context: Facts-only context accumulated from earlier chunks
+            (e.g., glossary of defined terms, sections seen so far).
+            Empty string when there is no prior context.
 
     Returns:
         Formatted prompt string for chunk extraction
@@ -871,6 +885,7 @@ def get_chunk_extraction_prompt(
         chunk_text=chunk_text,
         chunk_number=chunk_number,
         total_chunks=total_chunks,
+        prior_context=prior_context,
     )
 
 
