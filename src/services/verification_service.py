@@ -1,4 +1,3 @@
-# src/services/verification_service.py
 """Verification Service - scores LLM extractions against source text.
 
 Tiered design (spec 2026-07-24): Tier 0 deterministic (quotes, numbers),
@@ -14,7 +13,7 @@ Usage:
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from difflib import SequenceMatcher
 
 from literature_core import get_logger
@@ -54,13 +53,14 @@ class VerificationService:
         idx = s_norm.find(q_norm)
         if idx != -1:
             return QuoteMatch(found=True, method="exact", score=1.0,
-                              excerpt=source[max(0, idx - 50):idx + len(quote) + 50])
+                              excerpt=s_norm[max(0, idx - 50):idx + len(q_norm) + 50])
 
         nums = cls._numbers_in(quote)
-        if nums and all(n in s_norm for n in nums):
-            first = s_norm.find(nums[0])
+        if nums and all(re.search(rf"(?<![\d.]){re.escape(n)}(?![\d.])", s_norm) for n in nums):
+            m = re.search(rf"(?<![\d.]){re.escape(nums[0])}(?![\d.])", s_norm)
+            first = m.start() if m else 0
             return QuoteMatch(found=True, method="numeric", score=0.9,
-                              excerpt=source[max(0, first - 100):first + 150])
+                              excerpt=s_norm[max(0, first - 100):first + 150])
 
         best, best_pos = 0.0, 0
         window = max(len(q_norm), 40)
@@ -71,5 +71,5 @@ class VerificationService:
                 best, best_pos = ratio, pos
         if best >= FUZZY_THRESHOLD:
             return QuoteMatch(found=True, method="fuzzy", score=round(best, 3),
-                              excerpt=source[best_pos:best_pos + window])
+                              excerpt=s_norm[best_pos:best_pos + window])
         return QuoteMatch(found=False, method="none", score=round(best, 3))
