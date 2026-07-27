@@ -69,10 +69,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def _run_backfill(ids: list[int], dry_run: bool) -> dict:
     from services.extraction_service import ExtractionService
     stats = {"processed": 0, "errors": 0}
-    for pid in ids:
+    total = len(ids)
+    for i, pid in enumerate(ids, 1):
         if dry_run:
             print(f"  [dry-run] would re-process PDF for paper {pid}")
             continue
+        print(f"  [{i}/{total}] backfilling paper {pid}...", flush=True)
         try:
             result = ExtractionService.extract_pdf_and_store(pid)
             if getattr(result, "success", False):
@@ -90,10 +92,12 @@ def _run_backfill(ids: list[int], dry_run: bool) -> dict:
 async def _run_extract_verify(ids: list[int], dry_run: bool) -> dict:
     from services.verification_service import VerificationService
     stats = {"processed": 0, "accepted": 0, "reextracted": 0, "review": 0, "errors": 0}
-    for pid in ids:
+    total = len(ids)
+    for i, pid in enumerate(ids, 1):
         if dry_run:
             print(f"  [dry-run] would extract+verify paper {pid}")
             continue
+        print(f"  [{i}/{total}] extracting+verifying paper {pid}...", flush=True)
         try:
             result = await VerificationService.extract_and_verify(pid)
             stats["processed"] += 1
@@ -115,10 +119,12 @@ async def _run_extract_verify(ids: list[int], dry_run: bool) -> dict:
 def _run_verify_only(ids: list[int], dry_run: bool) -> dict:
     from services.verification_service import VerificationService
     stats = {"processed": 0, "accepted": 0, "review": 0, "errors": 0}
-    for pid in ids:
+    total = len(ids)
+    for i, pid in enumerate(ids, 1):
         if dry_run:
             print(f"  [dry-run] would verify paper {pid}")
             continue
+        print(f"  [{i}/{total}] verifying paper {pid}...", flush=True)
         try:
             result = VerificationService.verify_paper(pid)
             stats["processed"] += 1

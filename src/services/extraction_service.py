@@ -25,8 +25,16 @@ from abc import ABC, abstractmethod
 # Progress callback type: (pass_num, current, total, message)
 ProgressCallback = Callable[[int, int, int, str], Any]
 
+import logging as _logging
+
 import httpx
 import pdfplumber
+
+# pdfplumber's backend (pdfminer.six) logs a WARNING for every malformed color
+# operator it encounters in a PDF content stream (e.g. "Cannot set gray stroke
+# color because /'P11' is an invalid float value"). These are harmless to text
+# extraction but flood batch-run output; quiet them to ERROR.
+_logging.getLogger("pdfminer").setLevel(_logging.ERROR)
 
 from literature_core import (
     get_session, get_logger, Paper, PaperContent, PaperChunk,
@@ -703,6 +711,10 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
                         "model": self.model,
                         "prompt": prompt,
                         "stream": False,
+                        # qwen3.5 is a reasoning model: without this it spends the
+                        # whole num_predict budget in the 'thinking' field and returns
+                        # an empty 'response'. Disable thinking so it emits the answer.
+                        "think": False,
                         "options": {
                             "temperature": self.temperature,
                             "num_predict": 2048,  # Tokens for response
@@ -965,6 +977,8 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
                         "model": model,
                         "prompt": prompt,
                         "stream": False,
+                        "think": False,  # deep model (qwen3.5) reasons into a separate
+                        # field and returns empty 'response' unless thinking is disabled
                         "options": {
                             "temperature": self.temperature,
                             "num_predict": 1024,
@@ -1091,6 +1105,8 @@ Respond ONLY with valid JSON, no markdown formatting or explanation."""
                         "model": model,
                         "prompt": prompt,
                         "stream": False,
+                        "think": False,  # deep model (qwen3.5) reasons into a separate
+                        # field and returns empty 'response' unless thinking is disabled
                         "options": {
                             "temperature": self.temperature,
                             "num_predict": 2048,  # Deep tier output
