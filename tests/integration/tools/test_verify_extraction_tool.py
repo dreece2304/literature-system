@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 
@@ -76,10 +77,17 @@ class TestVerifyBatch:
         rather than the legacy ExtractionService.batch_verify/_find_evidence path,
         which crashes (re.findall on a dict) whenever key_findings are grounded dicts.
         """
-        out = await extraction_tools.call_tool(
-            "verify_extraction",
-            {"scope": "batch", "paper_ids": unverified_comprehensive_papers},
-        )
+        # Patch the LLM clients so the batch runs hermetically (verify_paper
+        # instantiates them internally; the MCP layer can't inject mocks, and a
+        # live/busy Ollama would otherwise make this test hang).
+        with patch("services.verification_service.MiniCheckClient.check_claim",
+                   return_value=True), \
+             patch("services.verification_service.JudgeClient.ask_binary",
+                   return_value=True):
+            out = await extraction_tools.call_tool(
+                "verify_extraction",
+                {"scope": "batch", "paper_ids": unverified_comprehensive_papers},
+            )
         data = json.loads(out[0].text)
         assert data["success"] is True
         payload = data["data"]
@@ -96,7 +104,11 @@ class TestVerifyBatch:
     async def test_batch_without_paper_ids_selects_unverified_comprehensive(
         self, unverified_comprehensive_papers
     ):
-        out = await extraction_tools.call_tool("verify_extraction", {"scope": "batch"})
+        with patch("services.verification_service.MiniCheckClient.check_claim",
+                   return_value=True), \
+             patch("services.verification_service.JudgeClient.ask_binary",
+                   return_value=True):
+            out = await extraction_tools.call_tool("verify_extraction", {"scope": "batch"})
         data = json.loads(out[0].text)
         assert data["success"] is True
         assert data["data"]["count"] == 2
