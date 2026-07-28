@@ -26,15 +26,27 @@ from literature_core.models import Paper, PaperContent
 logger = get_logger(__name__)
 
 FUZZY_THRESHOLD = 0.85
+# 9B extractors paraphrase "quotes" rather than copying verbatim (reworded,
+# de-hyphenated, sentence fragments joined). A quote whose content words are
+# overwhelmingly present in the source is real grounding, not a fabrication;
+# this fraction is the acceptance bar for the paraphrase fallback.
+PARAPHRASE_THRESHOLD = 0.75
 
 NUM_RE = re.compile(r"\d+(?:[.,]\d+)?(?:[eE][+-]?\d+)?")
+
+# bespoke-minicheck is trained for documents up to 32K tokens. Send each claim
+# against as much of the paper as fits (not 3 small fragments) so synthesized
+# review-level findings can be supported. num_ctx must be set explicitly or
+# Ollama silently truncates to the model default.
+VERIFIER_NUM_CTX = 32768
+VERIFIER_DOC_CHAR_BUDGET = 95000  # ~29K tokens of scientific text, leaves headroom
 
 
 @dataclass
 class QuoteMatch:
     """Result of matching a grounding quote against source text."""
     found: bool
-    method: str          # "exact" | "numeric" | "fuzzy" | "none"
+    method: str          # "exact" | "numeric" | "fuzzy" | "paraphrase" | "none"
     score: float         # 0-1 match quality
     excerpt: str = ""    # matched source window (for evidence)
 
@@ -71,7 +83,10 @@ class MiniCheckClient:
             with httpx.Client(timeout=self.timeout) as client:
                 r = client.post(f"{self.host}/api/generate", json={
                     "model": self.model, "prompt": prompt, "stream": False,
-                    "options": {"temperature": 0.0, "num_predict": 4},
+                    # Without an explicit num_ctx Ollama truncates the document to
+                    # the model default, defeating whole-paper claim checking.
+                    "options": {"temperature": 0.0, "num_predict": 4,
+                                "num_ctx": VERIFIER_NUM_CTX},
                 })
                 if r.status_code != 200:
                     return None
@@ -125,6 +140,12 @@ class VerificationService:
 
     @staticmethod
     def _normalize(text: str) -> str:
+        # Strip the literal quotation marks 9B models wrap quotes in, and remove
+        # hyphens/dashes so "metal-organic" (model) matches "metalorganic"
+        # (PDF-extracted source) and vice versa. Applied to both sides, so it
+        # only ever makes matching more lenient symmetrically.
+        text = re.sub(r"[\"'‘’“”«»]", "", text)
+        text = re.sub(r"[-‐-―]", "", text)
         return re.sub(r"\s+", " ", text.strip().lower())
 
     @staticmethod
@@ -160,6 +181,18 @@ class VerificationService:
         if best >= FUZZY_THRESHOLD:
             return QuoteMatch(found=True, method="fuzzy", score=round(best, 3),
                               excerpt=s_norm[best_pos:best_pos + window])
+
+        # Paraphrase fallback: the model reworded the quote but it still reflects
+        # real source content. Accept if the quote's content words (>=4 chars) are
+        # overwhelmingly present in the source. A fabricated quote about content
+        # not in the paper still fails this.
+        content = set(re.findall(r"[a-z0-9]{4,}", q_norm))
+        if content:
+            src_words = set(re.findall(r"[a-z0-9]{4,}", s_norm))
+            overlap = len(content & src_words) / len(content)
+            if overlap >= PARAPHRASE_THRESHOLD:
+                return QuoteMatch(found=True, method="paraphrase", score=round(overlap, 3))
+
         return QuoteMatch(found=False, method="none", score=round(best, 3))
 
     @staticmethod
@@ -213,29 +246,35 @@ class VerificationService:
             return "reextract"
         return "review"
 
-    TOP_CHUNKS_PER_CLAIM = 3
-
     @staticmethod
-    def _rank_chunks(claim: str, chunks: list[str]) -> list[str]:
-        claim_tokens = set(re.findall(r"[a-z0-9]+", claim.lower()))
-        scored = [(len(claim_tokens & set(re.findall(r"[a-z0-9]+", c.lower()))), c) for c in chunks]
-        scored.sort(key=lambda t: -t[0])
-        return [c for _, c in scored]
+    def _build_document(chunks: list[str]) -> str:
+        """Concatenate chunks into one document up to the verifier's budget.
+
+        MiniCheck is trained to judge a claim against a whole document, so we
+        give it as much of the paper as fits rather than isolated fragments —
+        essential for synthesized (review-level) findings that no single chunk
+        states outright.
+        """
+        doc = ""
+        for chunk in chunks:
+            if len(doc) + len(chunk) > VERIFIER_DOC_CHAR_BUDGET:
+                doc += chunk[:VERIFIER_DOC_CHAR_BUDGET - len(doc)]
+                break
+            doc += chunk + "\n"
+        return doc
 
     @classmethod
     def claim_support(cls, claims: list[str], chunks: list[str],
                       client: MiniCheckClient) -> tuple[float, list[dict]]:
-        """Fraction of claims supported by their best-matching chunks."""
+        """Fraction of claims supported by the paper, each checked against the
+        full document (up to the verifier budget)."""
         if not claims:
             return 1.0, []
+        document = cls._build_document(chunks)
         evidence = []
         supported = 0
         for claim in claims:
-            verdict: bool | None = None
-            for chunk in cls._rank_chunks(claim, chunks)[:cls.TOP_CHUNKS_PER_CLAIM]:
-                verdict = client.check_claim(claim, chunk)
-                if verdict:
-                    break
+            verdict = client.check_claim(claim, document)
             if verdict:
                 supported += 1
             evidence.append({"claim": claim, "supported": verdict})
