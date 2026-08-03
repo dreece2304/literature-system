@@ -11,7 +11,7 @@ Verifies data integrity across the literature database:
 
 Run with:
     cd /home/dreece23/projects/research/misc/research
-    /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.check_paper_health
+    cd src && mamba run -n litai python -m scripts.paper_health_check
 
 Options:
     --fix           Attempt to fix issues where possible
@@ -24,9 +24,10 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from collections import defaultdict
 
-# Add src to path for imports
-src_path = Path(__file__).parent.parent / "src"
-sys.path.insert(0, str(src_path))
+# Add src to path
+src_path = Path(__file__).parent.parent
+if str(src_path) not in sys.path:
+    sys.path.insert(0, str(src_path))
 
 from sqlalchemy import text, func
 from literature_core import (
@@ -263,17 +264,17 @@ def check_inconsistent_enrichment_status(session, verbose: bool = False) -> Heal
                 "issue": "marked complete but has PDF without chunks"
             })
 
-    # Papers marked 'needs_chunks' but already have chunks
-    needs_chunks = session.query(Paper.id, Paper.title).filter(
-        Paper.enrichment_status == EnrichmentStatus.NEEDS_CHUNKS
+    # Papers marked 'needs_chunking' but already have chunks
+    needs_chunking = session.query(Paper.id, Paper.title).filter(
+        Paper.enrichment_status == EnrichmentStatus.NEEDS_CHUNKING
     ).all()
 
-    for p in needs_chunks:
+    for p in needs_chunking:
         if p.id in papers_with_chunks:
             issues.append({
                 "id": p.id,
                 "title": p.title[:40] if p.title else None,
-                "issue": "marked needs_chunks but already has chunks"
+                "issue": "marked needs_chunking but already has chunks"
             })
 
     if issues:
