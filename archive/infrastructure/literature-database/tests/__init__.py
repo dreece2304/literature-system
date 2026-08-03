@@ -1,1 +1,0 @@
-# Literature Database Tests

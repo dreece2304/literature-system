@@ -145,7 +145,7 @@ AI/embedding configuration lives in `src/config/ai_settings.py` (env prefixes `O
 `EMBEDDING_`, `RERANKER_`).
 
 **Legacy config note**: `data/config/settings.yml` and `data/config/credentials.yml` are
-leftovers from the pre-refactor Zotero sync (archive/zotero) and are read by NO current code.
+leftovers from the pre-refactor Zotero sync and are read by NO current code.
 Do not edit them expecting behavior changes — real configuration is `LITCORE_*` env vars plus
 `src/config/ai_settings.py`. The files are kept in place because credentials live there.
 

@@ -1,9 +1,0 @@
-{
-  "testCommand": "cd /home/dreece23/projects/research/misc/research && PYTHONPATH=/home/dreece23/projects/research/misc/research/src /home/dreece23/miniforge3/bin/mamba run -n litai python -m pytest src/tests/ -q",
-  "lintCommand": "/home/dreece23/miniforge3/bin/mamba run -n litai python -m flake8 /home/dreece23/projects/research/misc/research/src/ --max-line-length=120",
-  "requireCoverage": false,
-  "autoFix": false,
-  "maxAttempts": 50,
-  "stopOnMorning": true,
-  "morningHour": 7
-}
