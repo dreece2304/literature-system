@@ -8,11 +8,18 @@ import sqlite3
 import pytest
 
 from scripts.zotero_import import (
+    ImportDecision,
     ZoteroAttachment,
+    ZoteroItemMeta,
+    _execute_plan,
+    build_paper_lookup,
+    find_existing_paper,
+    normalize_doi,
     plan_import,
     plan_localize,
     read_item_metadata,
     read_pdf_attachments,
+    title_key,
 )
 
 
@@ -346,3 +353,185 @@ class TestPlanLocalize:
         plan = plan_localize(papers, managed_root=tmp_path / "pdfs")
 
         assert plan == []
+
+
+# =============================================================================
+# normalize_doi / title_key
+# =============================================================================
+
+class TestNormalizeDoi:
+
+    def test_strips_https_prefix_and_lowercases(self):
+        assert normalize_doi("https://doi.org/10.1021/ACS.Xyz") == "10.1021/acs.xyz"
+
+    def test_strips_http_and_doi_prefixes(self):
+        assert normalize_doi("http://doi.org/10.1/A") == "10.1/a"
+        assert normalize_doi("doi:10.1/A") == "10.1/a"
+
+    def test_returns_none_for_missing_or_empty(self):
+        assert normalize_doi(None) is None
+        assert normalize_doi("") is None
+        assert normalize_doi("   ") is None
+
+
+class TestTitleKey:
+
+    def test_case_and_whitespace_insensitive(self):
+        assert title_key("  The   ALD Paper ") == title_key("the ald paper")
+
+    def test_returns_none_for_missing_or_empty(self):
+        assert title_key(None) is None
+        assert title_key("   ") is None
+
+
+# =============================================================================
+# find_existing_paper (dedupe decision for new_import)
+# =============================================================================
+
+class TestFindExistingPaper:
+
+    def test_matches_prefixed_zotero_doi_against_bare_db_doi(self):
+        by_doi, by_title = build_paper_lookup(
+            [{"id": 7, "doi": "10.1021/xyz", "title": "Stored Title"}])
+        meta = ZoteroItemMeta(
+            key="K", title="Different Title", doi="https://doi.org/10.1021/XYZ")
+
+        assert find_existing_paper(meta, by_doi, by_title) == 7
+
+    def test_matches_bare_zotero_doi_against_prefixed_db_doi(self):
+        by_doi, by_title = build_paper_lookup(
+            [{"id": 9, "doi": "https://doi.org/10.1021/XYZ", "title": "T"}])
+        meta = ZoteroItemMeta(key="K", title="Other", doi="10.1021/xyz")
+
+        assert find_existing_paper(meta, by_doi, by_title) == 9
+
+    def test_matches_exact_title_when_no_doi(self):
+        by_doi, by_title = build_paper_lookup(
+            [{"id": 3, "doi": None, "title": "A Thesis  On Zincones"}])
+        meta = ZoteroItemMeta(key="K", title="a thesis on zincones", doi=None)
+
+        assert find_existing_paper(meta, by_doi, by_title) == 3
+
+    def test_doi_match_takes_precedence_over_title(self):
+        by_doi, by_title = build_paper_lookup([
+            {"id": 1, "doi": "10.1/a", "title": "Title A"},
+            {"id": 2, "doi": "10.1/b", "title": "Title B"},
+        ])
+        meta = ZoteroItemMeta(key="K", title="Title B", doi="10.1/a")
+
+        assert find_existing_paper(meta, by_doi, by_title) == 1
+
+    def test_returns_none_when_nothing_matches(self):
+        by_doi, by_title = build_paper_lookup(
+            [{"id": 1, "doi": "10.1/a", "title": "Title A"}])
+        meta = ZoteroItemMeta(key="K", title="Brand New", doi="10.9/zzz")
+
+        assert find_existing_paper(meta, by_doi, by_title) is None
+
+    def test_no_title_match_on_missing_titles(self):
+        by_doi, by_title = build_paper_lookup([{"id": 1, "doi": None, "title": None}])
+        meta = ZoteroItemMeta(key="K", title=None, doi=None)
+
+        assert find_existing_paper(meta, by_doi, by_title) is None
+
+
+# =============================================================================
+# _execute_plan new_import dedupe (integration, in-memory DB)
+# =============================================================================
+
+class TestExecutePlanDedupe:
+    """new_import decisions must not re-create papers already in the DB."""
+
+    def _make_storage(self, tmp_path, attachment_key="ATT1"):
+        storage_dir = tmp_path / "storage"
+        pdf = storage_dir / attachment_key / "paper.pdf"
+        pdf.parent.mkdir(parents=True)
+        pdf.write_bytes(b"%PDF-1.4 fake zotero pdf")
+        return storage_dir
+
+    def _patch_pdf_store(self, monkeypatch, tmp_path):
+        from services.pdf_service import PDFService
+        store = tmp_path / "pdfs"
+        monkeypatch.setattr(PDFService, "get_storage_path", lambda: store)
+        return store
+
+    def test_new_import_attaches_to_existing_paper_with_doi_variant(
+            self, db, zotero_db, tmp_path, monkeypatch):
+        from literature_core.models import Paper
+        from services.paper_service import PaperService
+
+        self._patch_pdf_store(monkeypatch, tmp_path)
+        existing = PaperService.create(title="Known Paper", doi="10.1021/xyz")
+
+        zotero_db.add_item(
+            "ZKEY1234", title="Known Paper (Zotero copy)",
+            doi="https://doi.org/10.1021/XYZ")
+        snapshot = zotero_db.finish()
+        storage_dir = self._make_storage(tmp_path)
+
+        decision = ImportDecision(
+            make_attachment(parent_key="ZKEY1234", attachment_key="ATT1"),
+            "new_import", None, "hash1")
+        report = {"attached": [], "imported": [], "errors": []}
+
+        _execute_plan([decision], snapshot, storage_dir, report)
+
+        assert report["errors"] == []
+        assert report["imported"] == []
+        assert len(report["attached"]) == 1
+        assert report["attached"][0]["paper_id"] == existing["id"]
+        with db.get_session() as session:
+            assert session.query(Paper).count() == 1
+            paper = session.query(Paper).first()
+            assert paper.file_path is not None
+            assert paper.zotero_key == "ZKEY1234"
+
+    def test_new_import_attaches_to_existing_paper_by_title_when_no_doi(
+            self, db, zotero_db, tmp_path, monkeypatch):
+        from literature_core.models import Paper
+        from services.paper_service import PaperService
+
+        self._patch_pdf_store(monkeypatch, tmp_path)
+        existing = PaperService.create(title="A Thesis On Zincones")
+
+        zotero_db.add_item("ZKEY1234", title="a thesis  on zincones")
+        snapshot = zotero_db.finish()
+        storage_dir = self._make_storage(tmp_path)
+
+        decision = ImportDecision(
+            make_attachment(parent_key="ZKEY1234", attachment_key="ATT1"),
+            "new_import", None, "hash1")
+        report = {"attached": [], "imported": [], "errors": []}
+
+        _execute_plan([decision], snapshot, storage_dir, report)
+
+        assert report["errors"] == []
+        assert report["imported"] == []
+        assert report["attached"][0]["paper_id"] == existing["id"]
+        with db.get_session() as session:
+            assert session.query(Paper).count() == 1
+
+    def test_new_import_creates_paper_with_normalized_doi(
+            self, db, zotero_db, tmp_path, monkeypatch):
+        from literature_core.models import Paper
+
+        self._patch_pdf_store(monkeypatch, tmp_path)
+
+        zotero_db.add_item(
+            "ZKEY1234", title="Fresh Paper",
+            doi="https://doi.org/10.1021/NEW.Paper")
+        snapshot = zotero_db.finish()
+        storage_dir = self._make_storage(tmp_path)
+
+        decision = ImportDecision(
+            make_attachment(parent_key="ZKEY1234", attachment_key="ATT1"),
+            "new_import", None, "hash1")
+        report = {"attached": [], "imported": [], "errors": []}
+
+        _execute_plan([decision], snapshot, storage_dir, report)
+
+        assert report["errors"] == []
+        assert len(report["imported"]) == 1
+        with db.get_session() as session:
+            paper = session.query(Paper).first()
+            assert paper.doi == "10.1021/new.paper"

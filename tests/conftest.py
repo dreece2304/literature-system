@@ -288,7 +288,6 @@ from tests.fixtures.sample_data import (
     get_sample_child_collection,
     get_sample_note,
     get_sample_notes,
-    get_sample_bibtex,
     get_sample_tex_content,
     get_multiple_papers_data,
 )
@@ -296,8 +295,6 @@ from tests.fixtures.mocks import (
     MockEmbeddingGenerator,
     MockVectorStore,
     MockChunkVectorStore,
-    create_mock_external_service,
-    create_mock_httpx_client,
 )
 
 
@@ -415,12 +412,6 @@ def sample_notes() -> list[dict]:
 
 
 @pytest.fixture
-def sample_bibtex() -> str:
-    """Sample BibTeX content for testing import/export."""
-    return get_sample_bibtex()
-
-
-@pytest.fixture
 def sample_tex_content() -> str:
     """Sample LaTeX content with citations for testing."""
     return get_sample_tex_content()
@@ -430,143 +421,6 @@ def sample_tex_content() -> str:
 def multiple_papers_data() -> list[dict]:
     """Generate 5 paper data entries for batch testing."""
     return get_multiple_papers_data(5)
-
-
-# ============================================================================
-# MODEL INSTANCE FIXTURES
-# ============================================================================
-
-@pytest.fixture
-def created_paper(test_session, sample_paper_data):
-    """Create and return a Paper instance in the test database.
-
-    Args:
-        test_session: Database session
-        sample_paper_data: Paper data dict
-
-    Returns:
-        Paper: Created paper instance
-    """
-    from literature_core.models import Paper
-
-    paper = Paper(**sample_paper_data)
-    test_session.add(paper)
-    test_session.commit()
-    test_session.refresh(paper)
-    return paper
-
-
-@pytest.fixture
-def created_paper_with_authors(test_session, sample_paper_data, sample_authors):
-    """Create a paper with associated authors.
-
-    Args:
-        test_session: Database session
-        sample_paper_data: Paper data dict
-        sample_authors: Author data list
-
-    Returns:
-        Paper: Created paper with authors
-    """
-    from literature_core.models import Paper, Author
-
-    paper = Paper(**sample_paper_data)
-    for author_data in sample_authors:
-        author = Author(**author_data)
-        paper.authors.append(author)
-    test_session.add(paper)
-    test_session.commit()
-    test_session.refresh(paper)
-    return paper
-
-
-@pytest.fixture
-def created_paper_with_tags(test_session, sample_paper_data, sample_tags):
-    """Create a paper with associated tags.
-
-    Args:
-        test_session: Database session
-        sample_paper_data: Paper data dict
-        sample_tags: Tag data list
-
-    Returns:
-        Paper: Created paper with tags
-    """
-    from literature_core.models import Paper, Tag
-
-    paper = Paper(**sample_paper_data)
-    for tag_data in sample_tags:
-        tag = Tag(**tag_data)
-        paper.tags.append(tag)
-    test_session.add(paper)
-    test_session.commit()
-    test_session.refresh(paper)
-    return paper
-
-
-@pytest.fixture
-def created_collection(test_session, sample_collection):
-    """Create and return a Collection instance.
-
-    Args:
-        test_session: Database session
-        sample_collection: Collection data dict
-
-    Returns:
-        Collection: Created collection instance
-    """
-    from literature_core.models import Collection
-
-    collection = Collection(**sample_collection)
-    test_session.add(collection)
-    test_session.commit()
-    test_session.refresh(collection)
-    return collection
-
-
-@pytest.fixture
-def created_note(test_session, created_paper, sample_note):
-    """Create and return a Note attached to a paper.
-
-    Args:
-        test_session: Database session
-        created_paper: Paper to attach note to
-        sample_note: Note data dict
-
-    Returns:
-        Note: Created note instance
-    """
-    from literature_core.models import Note
-
-    note = Note(paper_id=created_paper.id, **sample_note)
-    test_session.add(note)
-    test_session.commit()
-    test_session.refresh(note)
-    return note
-
-
-@pytest.fixture
-def multiple_papers(test_session, multiple_papers_data):
-    """Create multiple papers for batch operation testing.
-
-    Args:
-        test_session: Database session
-        multiple_papers_data: List of paper data dicts
-
-    Returns:
-        list[Paper]: List of created paper instances
-    """
-    from literature_core.models import Paper
-
-    papers = []
-    for data in multiple_papers_data:
-        paper = Paper(**data)
-        test_session.add(paper)
-        papers.append(paper)
-    test_session.commit()
-    for paper in papers:
-        test_session.refresh(paper)
-    return papers
 
 
 # ============================================================================
@@ -633,85 +487,6 @@ def mock_chunk_store():
 
 
 # ============================================================================
-# EXTERNAL API MOCK FIXTURES
-# ============================================================================
-
-@pytest.fixture
-def mock_external_apis():
-    """Mock all external API calls (CrossRef, Semantic Scholar, etc.).
-
-    Returns a dictionary of AsyncMock objects for each API that can be
-    configured per-test:
-        - crossref: _search_crossref_multi
-        - openalex: _search_openalex
-        - semantic_scholar: _search_semantic_scholar_query
-        - arxiv: _search_arxiv
-        - unpaywall: _search_unpaywall
-
-    Yields:
-        dict: Mock API methods that can be configured per test
-    """
-    from unittest.mock import patch, AsyncMock, MagicMock
-    from tests.fixtures.mocks import create_mock_external_api_dict
-
-    mock_apis = create_mock_external_api_dict()
-
-    # Create a mock service that uses our configurable mocks
-    def create_patched_service():
-        mock_service = MagicMock()
-        # Search methods (return lists)
-        mock_service._search_crossref_multi = mock_apis["crossref"]
-        mock_service._search_openalex = mock_apis["openalex"]
-        mock_service._search_semantic_scholar_query = mock_apis["semantic_scholar"]
-        mock_service._search_arxiv = mock_apis["arxiv"]
-        mock_service._search_unpaywall = mock_apis["unpaywall"]
-        mock_service._title_similarity = MagicMock(return_value=0.9)
-
-        # Direct DOI lookup methods (async, return single result or None)
-        # These use the crossref mock's first result if available
-        async def lookup_by_doi_mock(doi):
-            results = mock_apis["crossref"].return_value
-            return results[0] if results else None
-
-        async def lookup_openalex_doi_mock(doi):
-            results = mock_apis["openalex"].return_value
-            return results[0] if results else None
-
-        async def lookup_semantic_scholar_doi_mock(doi):
-            results = mock_apis["semantic_scholar"].return_value
-            return results[0] if results else None
-
-        async def resolve_ss_id_mock(paper_id=None, doi=None, title=None):
-            return "mock-ss-id" if doi or title else None
-
-        mock_service.lookup_by_doi = lookup_by_doi_mock
-        mock_service.lookup_crossref_doi = lookup_by_doi_mock  # Alias
-        mock_service.lookup_openalex_doi = lookup_openalex_doi_mock
-        mock_service.lookup_semantic_scholar_doi = lookup_semantic_scholar_doi_mock
-        mock_service._resolve_semantic_scholar_id = resolve_ss_id_mock
-        return mock_service
-
-    # Patch where ExternalSearchService is USED (in external.py), not where it's defined
-    with patch('mcp_server.tools.external.ExternalSearchService', create_patched_service):
-        yield mock_apis
-
-
-@pytest.fixture
-def mock_httpx():
-    """Mock httpx for all HTTP requests.
-
-    Yields:
-        MagicMock: Mock httpx client
-    """
-    from unittest.mock import patch
-
-    mock_client = create_mock_httpx_client()
-
-    with patch('httpx.AsyncClient', return_value=mock_client):
-        yield mock_client
-
-
-# ============================================================================
 # FILE SYSTEM FIXTURES
 # ============================================================================
 
@@ -728,59 +503,3 @@ def temp_pdf_dir(tmp_path) -> Path:
     pdf_dir = tmp_path / "pdfs"
     pdf_dir.mkdir()
     return pdf_dir
-
-
-@pytest.fixture
-def temp_bibtex_file(tmp_path, sample_bibtex) -> Path:
-    """Create a temporary BibTeX file for testing.
-
-    Args:
-        tmp_path: Pytest tmp_path fixture
-        sample_bibtex: BibTeX content string
-
-    Returns:
-        Path: Path to temporary BibTeX file
-    """
-    bib_file = tmp_path / "references.bib"
-    bib_file.write_text(sample_bibtex)
-    return bib_file
-
-
-@pytest.fixture
-def temp_tex_file(tmp_path, sample_tex_content) -> Path:
-    """Create a temporary TeX file with citations.
-
-    Args:
-        tmp_path: Pytest tmp_path fixture
-        sample_tex_content: LaTeX content string
-
-    Returns:
-        Path: Path to temporary TeX file
-    """
-    tex_file = tmp_path / "paper.tex"
-    tex_file.write_text(sample_tex_content)
-    return tex_file
-
-
-# ============================================================================
-# UTILITY FIXTURES
-# ============================================================================
-
-@pytest.fixture
-def clean_environment(monkeypatch):
-    """Ensure clean environment without production config.
-
-    Args:
-        monkeypatch: Pytest monkeypatch fixture
-    """
-    env_vars = [
-        "LITERATURE_DATABASE_PATH",
-        "LITERATURE_PDF_PATH",
-        "CROSSREF_MAILTO",
-        "SEMANTIC_SCHOLAR_API_KEY",
-        "UNPAYWALL_EMAIL",
-        "ZOTERO_API_KEY",
-    ]
-    for var in env_vars:
-        monkeypatch.delenv(var, raising=False)
-    yield
