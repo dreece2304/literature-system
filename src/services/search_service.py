@@ -272,7 +272,9 @@ class SearchService:
         # Fallback to SQL LIKE if FTS5 unavailable or no results
         with get_session() as session:
             search_pattern = f"%{query}%"
-            db_query = session.query(Paper).filter(
+            db_query = session.query(Paper).options(
+                joinedload(Paper.authors), joinedload(Paper.tags)
+            ).filter(
                 (Paper.title.ilike(search_pattern))
                 | (Paper.abstract.ilike(search_pattern))
                 # Note: Full-text search on chunks uses FTS5, not LIKE queries
@@ -542,10 +544,13 @@ class SearchService:
         Returns:
             SearchResults with matching papers
         """
+        from sqlalchemy.orm import joinedload
+
         with get_session() as session:
             papers = (
                 session.query(Paper)
                 .join(Paper.authors)
+                .options(joinedload(Paper.authors), joinedload(Paper.tags))
                 .filter(Author.name.ilike(f"%{author_name}%"))
                 .order_by(Paper.year.desc())
                 .limit(limit)
@@ -578,8 +583,12 @@ class SearchService:
         Returns:
             SearchResults with matching papers
         """
+        from sqlalchemy.orm import joinedload
+
         with get_session() as session:
-            query = session.query(Paper).join(Paper.tags)
+            query = session.query(Paper).join(Paper.tags).options(
+                joinedload(Paper.authors), joinedload(Paper.tags)
+            )
 
             if exact_match:
                 query = query.filter(Tag.name == tag_name)
@@ -612,8 +621,15 @@ class SearchService:
         Returns:
             Paper dict if found, None otherwise
         """
+        from sqlalchemy.orm import joinedload
+
         with get_session() as session:
-            paper = session.query(Paper).filter(Paper.doi == doi).first()
+            paper = (
+                session.query(Paper)
+                .options(joinedload(Paper.authors), joinedload(Paper.tags))
+                .filter(Paper.doi == doi)
+                .first()
+            )
             if paper:
                 return cls.paper_to_result(paper)
             return None

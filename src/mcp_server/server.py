@@ -77,6 +77,9 @@ ToolHandler = Callable[[str, dict[str, Any]], Awaitable[list[TextContent]]]
 # Registry mapping tool names to handlers
 TOOL_REGISTRY: dict[str, ToolHandler] = {}
 
+# Cached tool list, populated on first build_tool_registry() call
+_ALL_TOOLS: list[Tool] | None = None
+
 # All tool modules with their list_tools and call_tool functions
 TOOL_MODULES = [
     (papers, "papers"),
@@ -102,10 +105,17 @@ async def build_tool_registry() -> list[Tool]:
 
     Iterates through all tool modules, calls their list_tools() function,
     and registers each tool name with its module's call_tool handler.
+    The result is cached: subsequent calls return the cached tool list
+    without re-iterating the modules (which would also emit spurious
+    duplicate-name warnings).
 
     Returns:
         List of all Tool objects for the list_tools handler.
     """
+    global _ALL_TOOLS
+    if _ALL_TOOLS is not None:
+        return _ALL_TOOLS
+
     all_tools: list[Tool] = []
 
     for module, module_name in TOOL_MODULES:
@@ -129,6 +139,7 @@ async def build_tool_registry() -> list[Tool]:
             logger.error(f"Failed to load tools from {module_name}: {e}")
 
     logger.info(f"Tool registry built: {len(TOOL_REGISTRY)} tools registered")
+    _ALL_TOOLS = all_tools
     return all_tools
 
 

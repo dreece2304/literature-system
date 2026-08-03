@@ -273,10 +273,16 @@ def search_fts(
     # Convert multi-word queries to OR logic for better recall
     # Only if query doesn't already contain FTS5 operators
     if use_or_for_multiword:
-        fts5_operators = ["AND", "OR", "NOT", "NEAR", '"', "*", "(", ")"]
+        # Detect word operators as whole tokens only — substring matching would
+        # disable OR-conversion for any word merely containing them (e.g. 'OR'
+        # in 'corrosion', 'AND' in 'brand'). Special syntax characters are
+        # still detected anywhere in the query.
+        upper_query = safe_query.upper()
+        tokens = upper_query.split()
         has_operators = (
-            any(op in safe_query.upper() for op in fts5_operators[:4])
-            or any(op in safe_query for op in fts5_operators[4:])
+            any(token in ("AND", "OR", "NOT") for token in tokens)
+            or "NEAR(" in upper_query
+            or any(ch in safe_query for ch in ('"', "*", "(", ")"))
         )
 
         if not has_operators:

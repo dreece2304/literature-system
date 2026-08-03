@@ -81,6 +81,23 @@ class EmbeddingResult:
 class EmbeddingService:
     """Service for managing paper embeddings."""
 
+    @staticmethod
+    def _paper_ids_from_chunk_ids(chunk_ids) -> set[int]:
+        """Derive distinct paper IDs from chunk IDs.
+
+        Chunk IDs are formatted as "{paper_id}_{chunk_index}"
+        (see literature_core.chunks.TextChunk.chunk_id), so paper coverage can
+        be computed from IDs alone — no metadata scan needed.
+        """
+        paper_ids: set[int] = set()
+        for chunk_id in chunk_ids:
+            prefix = str(chunk_id).rsplit("_", 1)[0]
+            try:
+                paper_ids.add(int(prefix))
+            except ValueError:
+                continue
+        return paper_ids
+
     @classmethod
     def get_embedding_status(cls, include_ids: bool = False) -> EmbeddingStatus:
         """Get current embedding coverage status.
@@ -140,20 +157,16 @@ class EmbeddingService:
         # Get chunk-level embedding status
         try:
             chunk_store = get_chunk_store()
-            chunk_stats = chunk_store.get_stats()
-            status.chunk_embeddings_count = chunk_stats.get("total_chunks", 0)
-            status.papers_with_chunks = chunk_stats.get("papers_indexed", 0)
+            # Single IDs-only fetch (no metadata deserialization): chunk IDs
+            # encode the paper ID, so one cheap scan yields both the chunk
+            # count and the distinct-paper coverage. Previously this did two
+            # full metadata scans (get_stats + a second collection.get).
+            result = chunk_store.collection.get(include=[])
+            chunk_ids = (result or {}).get("ids") or []
+            status.chunk_embeddings_count = len(chunk_ids)
 
-            # Get IDs of papers with chunk embeddings
-            chunked_paper_ids = set()
-            if status.papers_with_chunks > 0:
-                result = chunk_store.collection.get(include=["metadatas"])
-                if result and result.get("metadatas"):
-                    chunked_paper_ids = set(
-                        m.get("paper_id")
-                        for m in result["metadatas"]
-                        if m.get("paper_id")
-                    )
+            chunked_paper_ids = cls._paper_ids_from_chunk_ids(chunk_ids)
+            status.papers_with_chunks = len(chunked_paper_ids)
 
             # Papers needing chunk embedding: have text chunks but no embeddings
             needing_chunks = papers_with_chunks_db - chunked_paper_ids
@@ -467,16 +480,13 @@ class EmbeddingService:
         except Exception as e:
             logger.warning(f"Could not check paper embeddings: {e}")
 
-        # Check chunk-level embeddings
+        # Check chunk-level embeddings (IDs only — no metadata scan)
         try:
             chunk_store = get_chunk_store()
-            result = chunk_store.collection.get(include=["metadatas"])
-            if result and result.get("metadatas"):
-                chunk_paper_ids = set(
-                    m.get("paper_id")
-                    for m in result["metadatas"]
-                    if m.get("paper_id")
-                )
+            result = chunk_store.collection.get(include=[])
+            chunk_ids = (result or {}).get("ids") or []
+            if chunk_ids:
+                chunk_paper_ids = cls._paper_ids_from_chunk_ids(chunk_ids)
                 issues["orphaned_chunks"] = sorted(
                     chunk_paper_ids - db_paper_ids
                 )

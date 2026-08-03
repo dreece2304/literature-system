@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Literal
 
 from literature_core import DEFAULT_SEARCH_LIMIT
@@ -98,6 +99,9 @@ class UnifiedSearchService:
                 cls._spell_checker = SpellChecker()
                 # Add scientific terms to dictionary
                 scientific_terms = set()
+                # Acronym keys themselves must be known words, otherwise the
+                # corrector rewrites them (e.g. xps -> ups, dft -> dot)
+                scientific_terms.update(ACRONYM_EXPANSIONS.keys())
                 for terms in ACRONYM_EXPANSIONS.values():
                     for term in terms:
                         scientific_terms.update(term.lower().split())
@@ -132,8 +136,24 @@ class UnifiedSearchService:
         return query
 
     @classmethod
+    def _is_indexed_term(cls, word: str) -> bool:
+        """Check whether a word already appears in the FTS index (domain vocabulary)."""
+        try:
+            from literature_core.fts import is_fts_available, search_fts
+
+            if not is_fts_available():
+                return False
+            return bool(search_fts(word, limit=1, use_or_for_multiword=False))
+        except Exception:
+            return False
+
+    @classmethod
     def correct_spelling(cls, query: str) -> tuple[str, list[str]]:
         """Correct spelling mistakes in query.
+
+        Known scientific acronyms (any case), short technical tokens (mixed
+        case or containing digits, e.g. GaAs, TiO2), and words already present
+        in the FTS index are never corrected.
 
         Returns:
             Tuple of (corrected_query, list of corrections made)
@@ -152,10 +172,27 @@ class UnifiedSearchService:
                 corrected_words.append(word)
                 continue
 
-            # Check if word is misspelled
             word_lower = word.lower()
+
+            # Never correct known scientific acronyms, regardless of case
+            if word_lower in ACRONYM_EXPANSIONS:
+                corrected_words.append(word)
+                continue
+
+            # Skip short mixed-case tokens (GaAs, InP) and tokens with digits
+            # (TiO2, Al2O3) — these are technical terms, not typos
+            if (len(word) <= 4 and word != word_lower) or any(c.isdigit() for c in word):
+                corrected_words.append(word)
+                continue
+
+            # Check if word is misspelled
             if word_lower not in spell:
-                correction = spell.correction(word_lower)
+                # Words already in the FTS index are valid domain vocabulary
+                if cls._is_indexed_term(word_lower):
+                    corrected_words.append(word)
+                    continue
+
+                correction = _cached_correction(word_lower)
                 if correction and correction != word_lower:
                     corrected_words.append(correction)
                     corrections.append(f"{word} -> {correction}")
@@ -170,6 +207,12 @@ class UnifiedSearchService:
     def expand_acronyms(cls, query: str) -> tuple[str, list[str]]:
         """Expand acronyms in query.
 
+        Each acronym and its expansions are joined with explicit OR in a
+        parenthesized group so FTS5 broadens recall instead of applying
+        implicit AND across all terms. When any expansion is made, the
+        top-level terms are also OR-joined so expansion never narrows recall
+        (the explicit operators disable search_fts's own OR-conversion).
+
         Returns:
             Tuple of (expanded_query, list of expansions)
         """
@@ -179,19 +222,22 @@ class UnifiedSearchService:
 
         for word in words:
             if word in ACRONYM_EXPANSIONS:
-                # Add original acronym
-                expanded_terms.append(word.upper())
+                # Acronym plus its expansions as an OR group
+                alternatives = [word.upper()]
                 for expansion in ACRONYM_EXPANSIONS[word]:
                     # Quote multi-word expansions and escape hyphens for FTS5
                     safe_expansion = expansion.replace("-", " ")
                     if " " in safe_expansion:
-                        expanded_terms.append(f'"{safe_expansion}"')
+                        alternatives.append(f'"{safe_expansion}"')
                     else:
-                        expanded_terms.append(safe_expansion)
+                        alternatives.append(safe_expansion)
                     expansions_made.append(f"{word.upper()} -> {expansion}")
+                expanded_terms.append("(" + " OR ".join(alternatives) + ")")
             else:
                 expanded_terms.append(word)
 
+        if expansions_made:
+            return " OR ".join(expanded_terms), expansions_made
         return " ".join(expanded_terms), expansions_made
 
     @classmethod
@@ -920,6 +966,15 @@ class UnifiedSearchService:
             search_type="exact",
             strategies_used=strategies,
         )
+
+
+@lru_cache(maxsize=4096)
+def _cached_correction(word: str) -> str | None:
+    """LRU-cached pyspellchecker correction (edit-distance search is expensive)."""
+    spell = UnifiedSearchService._get_spell_checker()
+    if spell is None:
+        return None
+    return spell.correction(word)
 
 
 # Convenience function

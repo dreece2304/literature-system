@@ -208,11 +208,7 @@ class PaperService:
             raise ValidationError("read_status", f"Must be one of: {ReadStatus.ALL}")
 
         with get_session() as session:
-            # Use joinedload to prevent N+1 queries on authors/tags
-            query = session.query(Paper).options(
-                joinedload(Paper.authors),
-                joinedload(Paper.tags),
-            )
+            query = session.query(Paper)
 
             # Apply filters
             if author:
@@ -229,13 +225,33 @@ class PaperService:
             # Get total count before pagination (use subquery for accuracy with joins)
             total = query.with_entities(Paper.id).distinct().count()
 
-            # Apply pagination
-            papers = (
-                query.order_by(Paper.date_added.desc())
+            # Paginate over DISTINCT paper ids: author/tag joins can produce
+            # multiple rows per paper, so limit/offset must not operate on raw
+            # join rows (short pages, duplicated/skipped papers across pages).
+            # Order includes Paper.id as a tiebreaker for stable pagination.
+            id_rows = (
+                query.with_entities(Paper.id, Paper.date_added)
+                .distinct()
+                .order_by(Paper.date_added.desc(), Paper.id.desc())
                 .offset(offset)
                 .limit(limit)
                 .all()
             )
+            page_ids = [row[0] for row in id_rows]
+
+            papers = []
+            if page_ids:
+                # Fetch full entities for the page with eager-loaded relations
+                papers = (
+                    session.query(Paper)
+                    .options(
+                        joinedload(Paper.authors),
+                        joinedload(Paper.tags),
+                    )
+                    .filter(Paper.id.in_(page_ids))
+                    .order_by(Paper.date_added.desc(), Paper.id.desc())
+                    .all()
+                )
 
             return PaperListResult(
                 papers=[cls.paper_to_summary(p) for p in papers],

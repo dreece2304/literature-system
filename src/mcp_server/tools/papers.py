@@ -405,6 +405,17 @@ def _update_paper(arguments: dict[str, Any]) -> list[TextContent]:
         from services.pdf_service import PDFService
         pdf_result = PDFService.link_local_pdf(paper_id, file_path)
 
+        # Queue for chunking so batch processing picks the PDF up, matching
+        # PaperService.update's file_path branch (audit finding: link_local_pdf
+        # alone leaves the paper in NEEDS_CHUNKING limbo with no PENDING row).
+        try:
+            from services import ExtractionService
+            ExtractionService.queue_extraction(paper_id)
+            logger.info(f"Queued paper {paper_id} for extraction after PDF attach")
+        except Exception as e:
+            # Don't fail the update if queuing fails
+            logger.warning(f"Failed to queue extraction for paper {paper_id}: {e}")
+
     # Update other fields via PaperService
     paper = PaperService.update(
         paper_id=paper_id,
@@ -513,6 +524,16 @@ def _store_extraction(arguments: dict[str, Any]) -> list[TextContent]:
         if field in arguments and arguments[field] is not None:
             structured_data[field] = arguments[field]
 
+    # Derive extraction tier: any deep field present means this is a deep
+    # extraction. Without is_quick=False, PaperService.store_extraction's
+    # quick branch silently discards key_findings/methodology_summary/
+    # structured_data (audit finding).
+    has_deep_fields = bool(
+        arguments.get("key_findings")
+        or arguments.get("methodology_summary")
+        or structured_data
+    )
+
     PaperService.store_extraction(
         paper_id=paper_id,
         paper_type=arguments.get("paper_type"),
@@ -521,6 +542,7 @@ def _store_extraction(arguments: dict[str, Any]) -> list[TextContent]:
         key_findings=arguments.get("key_findings"),
         methodology_summary=arguments.get("methodology_summary"),
         structured_data=structured_data if structured_data else None,
+        is_quick=not has_deep_fields,
     )
 
     # Store project relevance scores if provided
@@ -562,7 +584,10 @@ def _store_extraction(arguments: dict[str, Any]) -> list[TextContent]:
 
                 projects_stored.append(project_name)
 
-    response = {"paper_id": paper_id}
+    response = {
+        "paper_id": paper_id,
+        "extraction_tier": "deep" if has_deep_fields else "quick",
+    }
     if structured_data:
         response["extended_fields_stored"] = list(structured_data.keys())
     if projects_stored:

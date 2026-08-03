@@ -122,6 +122,10 @@ class PDFService:
     # Configuration
     # =========================================================================
 
+    # Maximum PDF download size (bytes). Downloads beyond this are aborted to
+    # prevent a hostile/misbehaving endpoint from exhausting memory or disk.
+    MAX_PDF_SIZE_BYTES = 200 * 1024 * 1024  # 200 MB
+
     @staticmethod
     def get_storage_path() -> Path:
         """Get the PDF storage path from settings."""
@@ -266,21 +270,40 @@ class PDFService:
             return "", 0
 
     @staticmethod
-    def generate_filename(paper: dict) -> str:
+    def _sanitize_filename_component(value: str) -> str:
+        """Sanitize a string for safe use as a single filename component.
+
+        Replaces path separators and colons with underscores (matching the
+        historical DOI behavior so filenames for benign identifiers are
+        unchanged and existing files still resolve), strips control
+        characters, and removes leading dots. With separators replaced,
+        '..' sequences can no longer traverse directories.
+        """
+        sanitized = str(value).replace("/", "_").replace("\\", "_").replace(":", "_")
+        sanitized = "".join(c for c in sanitized if c.isprintable())
+        return sanitized.lstrip(".")
+
+    @classmethod
+    def generate_filename(cls, paper: dict) -> str:
         """Generate a unique filename for a paper's PDF.
 
         Uses DOI or arXiv ID if available, falls back to paper ID.
+        All components are sanitized so untrusted identifiers (e.g. an
+        arxiv_id from an external API) cannot escape the storage directory.
         """
         paper_id = paper.get("id", "unknown")
         doi = paper.get("doi", "")
         arxiv_id = paper.get("arxiv_id", "")
 
-        if doi:
-            base = doi.replace("/", "_").replace(":", "_")
-        elif arxiv_id:
-            base = f"arxiv_{arxiv_id}"
+        doi_part = cls._sanitize_filename_component(doi) if doi else ""
+        arxiv_part = cls._sanitize_filename_component(arxiv_id) if arxiv_id else ""
+
+        if doi_part:
+            base = doi_part
+        elif arxiv_part:
+            base = f"arxiv_{arxiv_part}"
         else:
-            base = f"paper_{paper_id}"
+            base = f"paper_{cls._sanitize_filename_component(str(paper_id)) or 'unknown'}"
 
         return f"{base}.pdf"
 
@@ -661,6 +684,19 @@ class PDFService:
             storage_path = cls.get_storage_path()
             filename = cls.generate_filename(paper_dict)
             file_path = storage_path / filename
+
+            # Defense in depth: never write outside the storage directory
+            if not file_path.resolve().is_relative_to(storage_path.resolve()):
+                logger.error(
+                    f"Refusing to write PDF outside storage directory for paper {paper_id}: {filename!r}"
+                )
+                return AcquireResult(
+                    status="error",
+                    paper_id=paper_id,
+                    tried_sources=tried_sources,
+                    message="Generated PDF filename resolved outside storage directory",
+                )
+
             storage_path.mkdir(parents=True, exist_ok=True)
 
             success = await cls._download_pdf(pdf_url, file_path)
@@ -929,6 +965,10 @@ class PDFService:
     async def _download_pdf(url: str, output_path: Path) -> bool:
         """Download a PDF from a URL.
 
+        Streams the response with a size cap (MAX_PDF_SIZE_BYTES) so a
+        hostile or misbehaving endpoint cannot exhaust memory or disk.
+        Only http(s) URLs are fetched - resolver-scraped URLs are untrusted.
+
         Args:
             url: URL to download from
             output_path: Path to save PDF
@@ -937,6 +977,14 @@ class PDFService:
             True if download succeeded, False otherwise
         """
         import httpx
+        from urllib.parse import urlparse
+
+        scheme = urlparse(url).scheme.lower()
+        if scheme not in ("http", "https"):
+            logger.warning(f"Refusing to download PDF from non-http(s) URL scheme: {scheme or 'none'}")
+            return False
+
+        max_bytes = PDFService.MAX_PDF_SIZE_BYTES
 
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
@@ -948,25 +996,47 @@ class PDFService:
             headers=headers,
         ) as client:
             try:
-                response = await client.get(url)
-
-                if response.status_code in (401, 403):
-                    logger.debug(f"Access denied (HTTP {response.status_code})")
-                    return False
-
-                if response.status_code != 200:
-                    logger.warning(f"Failed to download PDF: HTTP {response.status_code}")
-                    return False
-
-                content_type = response.headers.get("content-type", "")
-                if "pdf" not in content_type.lower() and not url.endswith(".pdf"):
-                    if "html" in content_type.lower():
-                        logger.debug("Got HTML instead of PDF")
+                async with client.stream("GET", url) as response:
+                    if response.status_code in (401, 403):
+                        logger.debug(f"Access denied (HTTP {response.status_code})")
                         return False
-                    logger.warning(f"Not a PDF: {content_type}")
-                    return False
 
-                content = response.content
+                    if response.status_code != 200:
+                        logger.warning(f"Failed to download PDF: HTTP {response.status_code}")
+                        return False
+
+                    content_type = response.headers.get("content-type", "")
+                    if "pdf" not in content_type.lower() and not url.endswith(".pdf"):
+                        if "html" in content_type.lower():
+                            logger.debug("Got HTML instead of PDF")
+                            return False
+                        logger.warning(f"Not a PDF: {content_type}")
+                        return False
+
+                    content_length = response.headers.get("content-length")
+                    if content_length:
+                        try:
+                            if int(content_length) > max_bytes:
+                                logger.warning(
+                                    f"PDF download rejected: Content-Length {content_length} "
+                                    f"exceeds cap of {max_bytes} bytes"
+                                )
+                                return False
+                        except ValueError:
+                            pass  # Ignore malformed Content-Length; the streaming cap still applies
+
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > max_bytes:
+                            logger.warning(
+                                f"PDF download aborted: response exceeded cap of {max_bytes} bytes"
+                            )
+                            return False
+                        chunks.append(chunk)
+
+                content = b"".join(chunks)
                 if not content.startswith(b"%PDF"):
                     logger.warning("Downloaded file is not a valid PDF")
                     return False

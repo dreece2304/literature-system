@@ -14,7 +14,6 @@ Consolidated tools:
     - clear_download_queue: Clear completed/failed items
 """
 
-import hashlib
 import json
 import os
 import shutil
@@ -34,6 +33,7 @@ if str(_src_path) not in sys.path:
     sys.path.insert(0, str(_src_path))
 
 from literature_core import get_session, Paper, serialize
+from services.pdf_service import PDFService
 
 
 # Paths for Windows-side fetcher (accessible from WSL via /mnt/c/)
@@ -238,7 +238,7 @@ def _process_downloaded_pdfs(arguments: dict[str, Any]) -> list[TextContent]:
 
                 # Check for duplicates
                 if paper.file_path and Path(paper.file_path).exists():
-                    new_hash = _compute_file_hash(pdf_path)
+                    new_hash = PDFService.compute_file_hash(pdf_path)
                     if new_hash == paper.file_hash:
                         results["already_imported"].append({"paper_id": paper_id})
                         pdf_path.unlink()
@@ -253,7 +253,7 @@ def _process_downloaded_pdfs(arguments: dict[str, Any]) -> list[TextContent]:
                 # Extract text and update paper
                 full_text, word_count = _extract_text_from_pdf(dest_path)
                 paper.file_path = str(dest_path)
-                paper.file_hash = _compute_file_hash(dest_path)
+                paper.file_hash = PDFService.compute_file_hash(dest_path)
                 paper.word_count = word_count
 
                 results["processed"].append({"paper_id": paper_id, "file_path": str(dest_path), "word_count": word_count})
@@ -330,14 +330,6 @@ def _get_pdf_url_for_doi(doi: str) -> str:
     if doi.startswith("10.1039"):
         return f"https://pubs.rsc.org/en/content/articlepdf/{doi}"
     return f"https://doi.org/{doi}"
-
-
-def _compute_file_hash(file_path: Path) -> str:
-    sha256 = hashlib.sha256()
-    with open(file_path, "rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            sha256.update(chunk)
-    return sha256.hexdigest()
 
 
 def _extract_text_from_pdf(file_path: Path) -> tuple[str, int]:

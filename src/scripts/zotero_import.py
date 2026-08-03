@@ -130,6 +130,68 @@ def read_item_metadata(sqlite_path: str, keys: list[str]) -> dict[str, ZoteroIte
     return metas
 
 
+def normalize_doi(doi: Optional[str]) -> Optional[str]:
+    """Normalize a DOI for comparison: strip resolver prefixes, lowercase.
+
+    Mirrors PaperService._normalize_doi so Zotero DOIs like
+    'https://doi.org/10.1021/XYZ' compare equal to a stored '10.1021/xyz'.
+    """
+    if not doi:
+        return None
+    doi = doi.strip().lower()
+    for prefix in ("https://doi.org/", "http://doi.org/", "doi:"):
+        if doi.startswith(prefix):
+            doi = doi[len(prefix):]
+    return doi or None
+
+
+def title_key(title: Optional[str]) -> Optional[str]:
+    """Case/whitespace-insensitive key for exact title matching."""
+    if not title:
+        return None
+    key = " ".join(title.split()).lower()
+    return key or None
+
+
+def build_paper_lookup(papers: list[dict]) -> tuple[dict[str, int], dict[str, int]]:
+    """Build normalized DOI and title lookups from {'id', 'doi', 'title'} dicts.
+
+    Returns (papers_by_doi, papers_by_title); first paper wins on collisions.
+    """
+    papers_by_doi: dict[str, int] = {}
+    papers_by_title: dict[str, int] = {}
+    for paper in papers:
+        doi = normalize_doi(paper.get("doi"))
+        if doi and doi not in papers_by_doi:
+            papers_by_doi[doi] = paper["id"]
+        title = title_key(paper.get("title"))
+        if title and title not in papers_by_title:
+            papers_by_title[title] = paper["id"]
+    return papers_by_doi, papers_by_title
+
+
+def find_existing_paper(
+    meta: ZoteroItemMeta,
+    papers_by_doi: dict[str, int],
+    papers_by_title: dict[str, int],
+) -> Optional[int]:
+    """Return the id of an existing paper matching meta, or None.
+
+    Matches by normalized DOI first, then by exact (case/whitespace-
+    insensitive) title. Guards the new_import path against re-creating
+    papers imported earlier without a zotero_key (e.g. DOI stored with a
+    'https://doi.org/' prefix or different casing, or DOI-less items that
+    share a title).
+    """
+    doi = normalize_doi(meta.doi)
+    if doi is not None and doi in papers_by_doi:
+        return papers_by_doi[doi]
+    title = title_key(meta.title)
+    if title is not None and title in papers_by_title:
+        return papers_by_title[title]
+    return None
+
+
 def plan_import(
     attachments: list[ZoteroAttachment],
     papers_by_key: dict[str, dict],
@@ -322,6 +384,14 @@ def _execute_plan(decisions, snapshot, storage_dir, report) -> None:
     new_keys = [d.attachment.parent_key for d in decisions if d.action == "new_import"]
     metas = read_item_metadata(snapshot, new_keys) if new_keys else {}
 
+    papers_by_doi: dict[str, int] = {}
+    papers_by_title: dict[str, int] = {}
+    if new_keys:
+        with get_session() as session:
+            existing_rows = session.query(Paper.id, Paper.doi, Paper.title).all()
+        papers_by_doi, papers_by_title = build_paper_lookup(
+            [{"id": r.id, "doi": r.doi, "title": r.title} for r in existing_rows])
+
     imported_ids = []
     for decision in decisions:
         att = decision.attachment
@@ -341,8 +411,15 @@ def _execute_plan(decisions, snapshot, storage_dir, report) -> None:
                 meta = metas[att.parent_key]
                 if not meta.title:
                     raise ValueError(f"No title for Zotero item {att.parent_key}")
+                existing_id = find_existing_paper(meta, papers_by_doi, papers_by_title)
+                if existing_id is not None:
+                    # Already in the DB (DOI/title match, just no zotero_key):
+                    # attach the PDF instead of creating a duplicate.
+                    _attach_to_existing_paper(
+                        existing_id, att, storage_dir, pdf_store, report)
+                    continue
                 created = PaperService.create(
-                    title=meta.title, year=meta.year, doi=meta.doi,
+                    title=meta.title, year=meta.year, doi=normalize_doi(meta.doi),
                     journal=meta.journal, authors=meta.authors,
                 )
                 with get_session() as session:
@@ -375,6 +452,34 @@ def _execute_plan(decisions, snapshot, storage_dir, report) -> None:
             logger.error(f"Failed to tag imports into {SWEEP_COLLECTION}: {e}")
             report["errors"].append(
                 {"collection": SWEEP_COLLECTION, "error": str(e)})
+
+
+def _attach_to_existing_paper(paper_id: int, att: ZoteroAttachment,
+                              storage_dir: Path, pdf_store: Path,
+                              report: dict) -> None:
+    """Attach a new_import PDF to a paper that already exists (dedupe hit).
+
+    Records the zotero_key on the paper so future runs map it directly.
+    The PDF is only linked when the paper has none yet.
+    """
+    from literature_core.database import get_session
+    from literature_core.models import Paper
+    from services.pdf_service import PDFService
+
+    with get_session() as session:
+        paper = session.query(Paper).filter(Paper.id == paper_id).first()
+        if not paper.zotero_key:
+            paper.zotero_key = att.parent_key
+        has_pdf = bool(paper.file_path)
+        paper_dict = {"id": paper.id, "doi": paper.doi, "arxiv_id": paper.arxiv_id}
+
+    entry = {"paper_id": paper_id, "file": None, "matched_existing": True}
+    if not has_pdf:
+        src = _storage_pdf_path(storage_dir, att)
+        dest = _copy_into_store(src, paper_dict, pdf_store)
+        PDFService.link_local_pdf(paper_id, str(dest))
+        entry["file"] = dest.name
+    report["attached"].append(entry)
 
 
 def _execute_localize(localize_plan: list[dict], report: dict) -> None:

@@ -26,10 +26,13 @@ import httpx
 import xml.etree.ElementTree as ET
 from typing import Optional, List, Dict, Any, Tuple
 from dataclasses import dataclass
-from loguru import logger
 from dotenv import load_dotenv
 
+from literature_core import get_logger
+
 load_dotenv()
+
+logger = get_logger(__name__)
 
 
 # Retry configuration for exponential backoff
@@ -363,7 +366,7 @@ class ExternalSearchService:
                         if loc.get("url_for_pdf"):
                             return loc["url_for_pdf"]
             except Exception as e:
-                print(f"Unpaywall error: {e}")
+                logger.warning(f"Unpaywall error: {e}")
         return None
 
     # ==================== CrossRef ====================
@@ -1263,7 +1266,7 @@ class ExternalSearchService:
             try:
                 response = await client.get(base_url, params=params)
                 if response.status_code != 200:
-                    print(f"arXiv returned {response.status_code}")
+                    logger.warning(f"arXiv returned {response.status_code}")
                     return results
 
                 # Parse XML response
@@ -1327,7 +1330,7 @@ class ExternalSearchService:
                     ))
 
             except Exception as e:
-                print(f"arXiv error: {e}")
+                logger.error(f"arXiv error: {e}")
 
         return results
 
@@ -1354,7 +1357,7 @@ class ExternalSearchService:
             try:
                 response = await client.get(base_url, params=params)
                 if response.status_code != 200:
-                    print(f"Springer returned {response.status_code}")
+                    logger.warning(f"Springer returned {response.status_code}")
                     return results
 
                 data = response.json()
@@ -1403,7 +1406,7 @@ class ExternalSearchService:
                     ))
 
             except Exception as e:
-                print(f"Springer error: {e}")
+                logger.error(f"Springer error: {e}")
 
         return results
 
@@ -1561,7 +1564,7 @@ class ExternalSearchService:
                 # Get PMIDs
                 response = await client.get(search_url, params=params)
                 if response.status_code != 200:
-                    print(f"PubMed search returned {response.status_code}")
+                    logger.warning(f"PubMed search returned {response.status_code}")
                     return results
 
                 data = response.json()
@@ -1651,7 +1654,7 @@ class ExternalSearchService:
                     ))
 
             except Exception as e:
-                print(f"PubMed error: {e}")
+                logger.error(f"PubMed error: {e}")
 
         return results
 
@@ -1958,7 +1961,7 @@ class ExternalSearchService:
                     results.append(result)
 
             except Exception as e:
-                print(f"CrossRef bibliographic error: {e}")
+                logger.error(f"CrossRef bibliographic error: {e}")
                 return None
 
         if not results:

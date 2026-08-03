@@ -468,8 +468,26 @@ async def _get_citations(arguments: dict[str, Any]) -> list[TextContent]:
         }))
 
 
+def _normalize_ref_doi(doi: str | None) -> str | None:
+    """Normalize a DOI for cross-source comparison (case, resolver prefixes)."""
+    if not doi:
+        return None
+    normalized = doi.strip().lower()
+    for prefix in ("https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "http://dx.doi.org/", "doi:"):
+        if normalized.startswith(prefix):
+            normalized = normalized[len(prefix):]
+            break
+    return normalized or None
+
+
 async def _find_common_references(arguments: dict[str, Any]) -> list[TextContent]:
-    """Find papers sharing common references."""
+    """Find papers sharing common references.
+
+    Uses the local paper_references table (indexed parsed_doi) to count shared
+    references across the library — zero external API calls on that path. The
+    external API is only consulted once, for the source paper's own reference
+    list, when it has no locally extracted references.
+    """
     paper_id = arguments["paper_id"]
     min_shared = arguments.get("min_shared", 2)
     limit = arguments.get("limit", 10)
@@ -479,54 +497,73 @@ async def _find_common_references(arguments: dict[str, Any]) -> list[TextContent
     if not paper:
         return _to_response(error(f"Paper {paper_id} not found", code="NOT_FOUND"))
 
-    doi = paper.get("doi")
-    title = paper.get("title")
+    from literature_core import get_session, Paper
 
-    if not doi and not title:
-        return _to_response(error("Paper has no DOI or title for lookup", code="INVALID_INPUT"))
+    # Get references of the source paper — prefer locally extracted references
+    reference_source = "local"
+    with get_session() as session:
+        rows = (
+            session.query(PaperReference.parsed_doi)
+            .filter(PaperReference.paper_id == paper_id)
+            .all()
+        )
+    source_reference_count = len(rows)
+    source_ref_dois = {d for d in (_normalize_ref_doi(r[0]) for r in rows) if d}
 
-    # Get references of the source paper
-    service = ExternalSearchService()
-    source_refs = await service.get_paper_references(doi=doi, title=title, limit=100)
+    # Fall back to a single external API call only if no local references exist
+    if not source_ref_dois:
+        doi = paper.get("doi")
+        title = paper.get("title")
 
-    if not source_refs:
+        if not doi and not title:
+            return _to_response(error("Paper has no DOI or title for lookup", code="INVALID_INPUT"))
+
+        service = ExternalSearchService()
+        source_refs = await service.get_paper_references(doi=doi, title=title, limit=100)
+        reference_source = "external"
+        source_reference_count = len(source_refs)
+        source_ref_dois = {d for d in (_normalize_ref_doi(r.doi) for r in source_refs) if d}
+
+    if not source_ref_dois:
         return _to_response(success({
             "paper_id": paper_id,
             "message": "Could not retrieve references for this paper",
             "related_papers": [],
         }))
 
-    # Get DOIs of source references
-    source_ref_dois = {r.doi for r in source_refs if r.doi}
-
-    # Find other papers in library that cite the same references
-    from literature_core import get_session, Paper
-
+    # Find other library papers citing the same references, from the local
+    # paper_references table in a single query (no per-paper API calls).
     related_papers = []
     with get_session() as session:
-        # Get all papers with DOIs (excluding the source)
-        library_papers = (
-            session.query(Paper)
-            .filter(Paper.doi.isnot(None), Paper.id != paper_id)
-            .limit(50)  # Limit to avoid too many API calls
+        ref_rows = (
+            session.query(PaperReference.paper_id, PaperReference.parsed_doi)
+            .filter(
+                PaperReference.parsed_doi.isnot(None),
+                PaperReference.paper_id != paper_id,
+            )
             .all()
         )
 
-        for lib_paper in library_papers:
-            # Get references for this paper
-            lib_refs = await service.get_paper_references(doi=lib_paper.doi, limit=100)
-            lib_ref_dois = {r.doi for r in lib_refs if r.doi}
+        shared_by_paper: dict[int, set[str]] = {}
+        for other_paper_id, ref_doi in ref_rows:
+            normalized = _normalize_ref_doi(ref_doi)
+            if normalized and normalized in source_ref_dois:
+                shared_by_paper.setdefault(other_paper_id, set()).add(normalized)
 
-            # Count shared references
-            shared = source_ref_dois & lib_ref_dois
-            if len(shared) >= min_shared:
+        related_ids = [
+            pid for pid, shared in shared_by_paper.items() if len(shared) >= min_shared
+        ]
+        if related_ids:
+            lib_papers = session.query(Paper).filter(Paper.id.in_(related_ids)).all()
+            for lib_paper in lib_papers:
+                shared = shared_by_paper[lib_paper.id]
                 related_papers.append({
                     "id": lib_paper.id,
                     "title": lib_paper.title,
                     "year": lib_paper.year,
                     "doi": lib_paper.doi,
                     "shared_references": len(shared),
-                    "shared_dois": list(shared)[:5],  # Include up to 5 example DOIs
+                    "shared_dois": sorted(shared)[:5],  # Include up to 5 example DOIs
                 })
 
     # Sort by number of shared references
@@ -534,7 +571,8 @@ async def _find_common_references(arguments: dict[str, Any]) -> list[TextContent
 
     return _to_response(success({
         "paper_id": paper_id,
-        "source_reference_count": len(source_refs),
+        "reference_source": reference_source,
+        "source_reference_count": source_reference_count,
         "related_paper_count": len(related_papers[:limit]),
         "related_papers": related_papers[:limit],
     }))

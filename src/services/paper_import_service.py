@@ -724,25 +724,40 @@ class PaperImportService:
                     )
 
             # Check title similarity (fuzzy match)
-            # Only check recent papers to avoid O(n) on full database
-            recent_papers = (
-                session.query(Paper)
-                .filter(Paper.title.isnot(None))
+            # Only fetch (id, title) — full rows (with abstracts) are not needed.
+            # Narrow candidates by title length: SequenceMatcher ratio is bounded
+            # by 2*min(l1,l2)/(l1+l2), so titles outside the length window below
+            # can never exceed the similarity threshold. A small slack absorbs
+            # whitespace differences between stored and normalized titles.
+            # Only check recent papers to avoid O(n) on full database.
+            from sqlalchemy import func
+
+            normalized_title = title.lower().strip()
+            threshold = cls.TITLE_SIMILARITY_THRESHOLD
+            title_len = len(normalized_title)
+            min_len = max(int(title_len * threshold / (2 - threshold)) - 10, 1)
+            max_len = int(title_len * (2 - threshold) / threshold) + 10
+
+            recent_titles = (
+                session.query(Paper.id, Paper.title)
+                .filter(
+                    Paper.title.isnot(None),
+                    func.length(Paper.title).between(min_len, max_len),
+                )
                 .order_by(Paper.date_added.desc())
                 .limit(1000)
                 .all()
             )
 
-            normalized_title = title.lower().strip()
-            for paper in recent_papers:
-                paper_title = (paper.title or "").lower().strip()
+            for paper_id, paper_title_raw in recent_titles:
+                paper_title = (paper_title_raw or "").lower().strip()
                 similarity = SequenceMatcher(None, normalized_title, paper_title).ratio()
-                if similarity > cls.TITLE_SIMILARITY_THRESHOLD:
+                if similarity > threshold:
                     return DuplicateCheck(
                         is_duplicate=True,
                         match_type="title_similarity",
-                        existing_paper_id=paper.id,
-                        existing_paper_title=paper.title,
+                        existing_paper_id=paper_id,
+                        existing_paper_title=paper_title_raw,
                         similarity=round(similarity, 3),
                     )
 
