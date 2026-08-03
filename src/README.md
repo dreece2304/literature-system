@@ -22,26 +22,30 @@ src/
 ├── mcp_server/          # MCP Server for Claude Code integration
 │   ├── server.py        # Main MCP server entry point
 │   ├── tools/           # MCP tool implementations
-│   │   ├── papers.py    # Paper management tools
-│   │   ├── search.py    # Search tools
+│   │   ├── papers.py    # Paper CRUD, store_extraction
+│   │   ├── search.py    # Unified search tool
 │   │   ├── collections.py
 │   │   ├── notes.py
-│   │   ├── citations.py
-│   │   ├── external.py
-│   │   ├── pdf.py
-│   │   ├── import_export.py
-│   │   ├── project.py
-│   │   ├── browser_pdf.py
-│   │   └── zotero.py
+│   │   ├── citations.py # Manuscript analysis, citation formatting
+│   │   ├── external.py  # External API lookups
+│   │   ├── pdf.py       # acquire_pdf, manage_pdf
+│   │   ├── import_export.py  # import_paper, export
+│   │   ├── project.py   # manage_bibtex, citation health
+│   │   ├── discovery.py # semantic_find, embeddings
+│   │   ├── extraction.py     # AI extraction, PDF processing queue
+│   │   ├── validation.py     # Paper validation
+│   │   ├── citation_network.py  # Citation graph, claim citations
+│   │   └── browser_pdf.py    # Internal helpers for pdf.py (no tools)
 │   └── resources/       # MCP resource handlers
 │
 ├── embeddings/          # Vector search infrastructure
 │   ├── generator.py     # Sentence transformer embeddings
+│   ├── chunker.py       # Text chunking
 │   └── vectorstore.py   # ChromaDB vector store
 │
-├── extractors/          # External data sources
-│   ├── zotero_sync.py   # Zotero web API sync
-│   └── zotero_local_api.py  # Zotero local connector API
+├── extractors/          # UNUSED legacy package (nothing imports it)
+│   ├── metadata_extractor.py  # Regex DOI/arXiv metadata parsing (unused)
+│   └── pdf_extractor.py       # PDF text extraction (unused; live path is PDFService)
 │
 ├── context/             # Context detection
 │   └── parser.py        # LaTeX/Markdown manuscript parser
@@ -51,7 +55,9 @@ src/
 │   └── ai_settings.py   # AI/embedding-specific settings
 │
 └── scripts/             # Utility scripts
-    └── health_check.py  # System health verification
+    ├── health_check.py  # System health verification
+    ├── zotero_import.py # Offline Zotero import (reads zotero.sqlite snapshot)
+    └── ...              # backup, maintenance, reindex, batch extraction
 ```
 
 ## Running the MCP Server
@@ -88,9 +94,13 @@ Settings are loaded from environment variables with the `LITCORE_` prefix:
 - `LITCORE_CHROMA_PATH` - ChromaDB vector store
 - `LITCORE_ZOTERO_API_KEY` - Zotero web API key
 
-See `literature_core/config.py` for all options.
+See `literature_core/config.py` for all options. AI/embedding settings use the `OLLAMA_`,
+`EMBEDDING_`, and `RERANKER_` prefixes (see `config/ai_settings.py`).
+
+Note: `data/config/settings.yml` and `data/config/credentials.yml` are legacy files from the
+old Zotero sync (archive/zotero) and are not read by any current code. Editing them has no
+effect; use the environment variables above instead.
 
 ## Data Directories
 
 - `data/` - Runtime data (database, vectorstore, PDFs)
-- `infrastructure/literature-database/data/` - Legacy location (still has some data)

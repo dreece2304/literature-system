@@ -1,6 +1,6 @@
 # Literature Management System Architecture
 
-## Directory Structure (Updated January 2026)
+## Directory Structure (Updated July 2026)
 
 ```
 research/
@@ -21,13 +21,17 @@ research/
 │   │   ├── search_service.py         # FTS5, RRF fusion
 │   │   ├── unified_search_service.py # Smart search facade (acronyms, spelling)
 │   │   ├── embedding_service.py      # ChromaDB vector search
+│   │   ├── reranking_service.py      # Cross-encoder re-ranking
+│   │   ├── search_diagnostics_service.py # Search health diagnostics
 │   │   ├── collection_service.py     # Collection management
 │   │   ├── note_service.py           # Notes on papers
 │   │   ├── pdf_service.py            # PDF acquisition & management
 │   │   ├── citation_service.py       # BibTeX, citations, manuscript scanning
 │   │   ├── import_export_service.py  # Import/export operations
+│   │   ├── paper_import_service.py   # Import wizard (duplicate check, enrichment)
 │   │   ├── external_search.py        # CrossRef, Semantic Scholar, arXiv APIs
 │   │   ├── extraction_service.py     # AI-powered extraction (Ollama/Claude)
+│   │   ├── extraction_prompts.py     # Extraction prompt templates
 │   │   ├── validation_service.py     # Paper validation
 │   │   └── search_constants.py       # Domain constants (ACRONYM_EXPANSIONS, etc.)
 │   │
@@ -38,16 +42,16 @@ research/
 │   │   │   ├── search.py             # Unified search tool with modes
 │   │   │   ├── collections.py        # Collection management
 │   │   │   ├── notes.py              # Note management
-│   │   │   ├── pdf.py                # PDF acquisition
+│   │   │   ├── pdf.py                # PDF acquisition (acquire_pdf, manage_pdf)
 │   │   │   ├── external.py           # External API lookups
 │   │   │   ├── project.py            # LaTeX/BibTeX project tools
-│   │   │   ├── discovery.py          # Paper similarity
+│   │   │   ├── citations.py          # Manuscript analysis, citation formatting
+│   │   │   ├── discovery.py          # semantic_find, embeddings, reading queue
 │   │   │   ├── extraction.py         # AI extraction, PDF processing queue
-│   │   │   ├── import_export.py      # BibTeX import/export
+│   │   │   ├── import_export.py      # import_paper, export, enrichment queue
 │   │   │   ├── validation.py         # Paper validation
-│   │   │   ├── citation_network.py   # Citation graph analysis
-│   │   │   ├── browser_pdf.py        # Browser-based PDF queue
-│   │   │   └── zotero.py             # Zotero sync
+│   │   │   ├── citation_network.py   # Citation graph, claim citations
+│   │   │   └── browser_pdf.py        # Internal helpers for pdf.py (no tools)
 │   │   └── resources/                # MCP resources
 │   │
 │   ├── embeddings/                   # Vector search
@@ -55,10 +59,9 @@ research/
 │   │   ├── vectorstore.py            # VectorStore, ChunkVectorStore (ChromaDB)
 │   │   └── chunker.py                # Text chunking logic
 │   │
-│   ├── extractors/                   # Data extractors
-│   │   ├── zotero_sync.py            # Zotero web API sync
-│   │   ├── zotero_local_api.py       # Zotero local API
-│   │   └── pdf_extractor.py          # PDF text extraction
+│   ├── extractors/                   # UNUSED legacy package (no imports from src/)
+│   │   ├── metadata_extractor.py     # Regex DOI/arXiv metadata parsing (unused)
+│   │   └── pdf_extractor.py          # PDF text extraction (unused; live path is PDFService)
 │   │
 │   ├── config/                       # Application settings
 │   │   └── ai_settings.py            # Ollama/LLM configuration
@@ -68,17 +71,19 @@ research/
 │   │   └── env.py                    # Alembic environment
 │   │
 │   └── scripts/                      # CLI utilities
+│       ├── zotero_import.py          # Offline Zotero import (reads zotero.sqlite snapshot)
 │       ├── reindex_embeddings.py     # Rebuild ChromaDB index
-│       └── check_paper_health.py     # Health checks
+│       ├── health_check.py           # Health checks
+│       └── ...                       # backup, maintenance, batch extraction, etc.
 │
 ├── data/                             # Data storage (SOURCE OF TRUTH)
-│   ├── literature.db                 # SQLite database (~493 papers)
+│   ├── literature.db                 # SQLite database (~600 papers)
 │   ├── pdfs/                         # Locally acquired PDFs
-│   ├── vectorstore/                  # ChromaDB collections (327MB)
-│   │   └── chroma.sqlite3            # Embeddings (~491 papers indexed)
-│   ├── config/                       # Runtime configuration
-│   │   ├── credentials.yml           # Zotero API key (git-ignored)
-│   │   └── settings.yml              # Zotero settings
+│   ├── vectorstore/                  # ChromaDB collections
+│   │   └── chroma.sqlite3            # Paper + chunk embeddings
+│   ├── config/                       # LEGACY — not read by any code (see note below)
+│   │   ├── credentials.yml           # Old Zotero API key file (git-ignored, unused)
+│   │   └── settings.yml              # Old Zotero settings (unused)
 │   ├── cache/                        # Search index cache
 │   └── metadata/                     # Extracted metadata
 │
@@ -135,14 +140,23 @@ The config system (`src/literature_core/config.py`) provides:
   - Database: `{PROJECT_ROOT}/data/literature.db`
   - PDFs: `{PROJECT_ROOT}/data/pdfs/`
   - Vectorstore: `{PROJECT_ROOT}/data/vectorstore/`
-  - Config: `{PROJECT_ROOT}/data/config/`
+
+AI/embedding configuration lives in `src/config/ai_settings.py` (env prefixes `OLLAMA_`,
+`EMBEDDING_`, `RERANKER_`).
+
+**Legacy config note**: `data/config/settings.yml` and `data/config/credentials.yml` are
+leftovers from the pre-refactor Zotero sync (archive/zotero) and are read by NO current code.
+Do not edit them expecting behavior changes — real configuration is `LITCORE_*` env vars plus
+`src/config/ai_settings.py`. The files are kept in place because credentials live there.
 
 ### 5. Embedding Architecture
 - **Chunk-level**: Full-text chunks for deep content search
 - **Paper-level**: Title + abstract for quick similarity
-- Model: `sentence-transformers/all-MiniLM-L6-v2` (384 dimensions)
+- Default model: `sentence-transformers/all-MiniLM-L6-v2` (384 dimensions); a dual-model
+  setup (SPECTER2 paper-level + BGE chunk-level, 768 dimensions) is configured in
+  `src/config/ai_settings.py` behind the `use_dual_models` flag
 - Storage: ChromaDB with cosine similarity
-- Stats: ~50K chunks from ~400 papers with full text
+- Stats: ~50K chunk embeddings from papers with full text
 
 ---
 
@@ -155,11 +169,13 @@ The config system (`src/literature_core/config.py`) provides:
 | `UnifiedSearchService` | Smart search facade (acronyms, spelling, mode selection) |
 | `EmbeddingService` | ChromaDB vector search (paper & chunk level) |
 | `ExtractionService` | AI extraction (Ollama), PDF processing queue, quality checks |
+| `RerankingService` | Cross-encoder re-ranking of search results |
 | `CollectionService` | Hierarchical collections |
 | `NoteService` | Paper annotations |
 | `PDFService` | PDF download, text extraction |
 | `CitationService` | BibTeX, manuscript scanning, citation health |
 | `ImportExportService` | BibTeX import/export |
+| `PaperImportService` | Import wizard (duplicate check, enrichment) |
 | `ExternalSearchService` | CrossRef, Semantic Scholar, OpenAlex, arXiv APIs |
 | `ValidationService` | Paper verification against external sources |
 
@@ -169,20 +185,23 @@ The config system (`src/literature_core/config.py`) provides:
 
 | Module | Key Tools |
 |--------|-----------|
-| papers | `list_papers`, `get_paper`, `add_paper`, `update_paper`, `store_extraction`, `get_paper_content` |
-| search | `search` (unified with mode parameter), `search_by_author`, `search_by_tag` |
-| pdf | `acquire_paper_pdf`, `get_pdf_status`, `find_duplicates` |
-| extraction | `get_pdf_processing_status`, `queue_pdf_processing`, `process_pdf_queue`, `extract_paper`, `prepare_extraction` |
-| collections | `list_collections`, `create_collection`, `add_papers_to_collection` |
-| notes | `list_notes`, `create_note`, `get_paper_notes` |
-| import_export | `import_bibtex`, `export_papers`, `import_from_external` |
-| external | `lookup_paper_metadata`, `search_external_papers`, `enrich_paper` |
-| project | `scan_tex_citations`, `citation_health_check`, `sync_bib_from_database` |
-| discovery | `find_similar_papers`, `suggest_citations_for_text` |
-| validation | `validate_paper`, `validate_papers_batch`, `get_validation_queue` |
-| citation_network | `get_paper_citations`, `get_paper_references`, `build_citation_graph` |
-| browser_pdf | `queue_pdf_download`, `get_download_queue_status`, `process_downloaded_pdfs` |
-| zotero | `sync_from_zotero`, `sync_to_zotero`, `check_zotero_connection` |
+| papers | `list_papers`, `get_paper`, `add_paper`, `update_paper`, `store_extraction`, `get_paper_content`, `get_papers_summary`, `batch_update_papers`, `batch_delete_papers` |
+| search | `search` (unified with mode parameter), `get_search_status` |
+| pdf | `acquire_pdf`, `manage_pdf`, `find_duplicates` |
+| extraction | `extract_paper`, `extract_papers_batch`, `prepare_extraction`, `get_extraction_status`, `manage_pdf_processing`, `manage_references`, `verify_extraction`, `flag_for_deep_extraction` |
+| collections | `list_collections`, `get_collection`, `create_collection`, `update_collection`, `delete_collection`, `add_papers_to_collection`, `remove_papers_from_collection`, `get_collection_children` |
+| notes | `list_notes`, `get_note`, `create_note`, `update_note`, `delete_note`, `delete_paper_notes` |
+| import_export | `import_paper`, `export`, `get_enrichment_queue` |
+| external | `lookup_paper_metadata`, `search_external_papers`, `enrich_paper`, `find_open_access_pdf`, `get_citation_count` |
+| project | `manage_bibtex`, `citation_health_check`, `scan_citations`, `manage_project` |
+| citations | `manuscript_tools`, `format_citation` |
+| discovery | `semantic_find`, `manage_embeddings`, `get_reading_queue`, `suggest_paper_tags` |
+| validation | `validate_papers`, `get_validation_status` |
+| citation_network | `get_citations`, `get_local_citations`, `find_common_references`, `build_citation_graph`, `import_references_from_paper`, `link_papers_citation`, claim-citation tools |
+| browser_pdf | (no tools — internal helpers used by `pdf.py`) |
+
+Zotero import is not an MCP tool: run `src/scripts/zotero_import.py` (offline reader of a
+`zotero.sqlite` snapshot; dry-run by default, `--execute` to apply).
 
 ---
 
@@ -231,7 +250,7 @@ Performance-critical indexes on:
 | **Deep** | Ollama | PDF chunks | Full 15-field schema + verification |
 
 ### Quick Extraction (All Papers)
-Runs automatically on import or via `store_extraction(is_quick=True)`:
+Runs automatically on import or via the `store_extraction` tool:
 - Input: Title, journal, abstract
 - Output: `paper_type`, `topics`, `one_sentence_summary`
 - Stored in: `PaperContent.paper_type`, `.topics`, `.one_sentence_summary`

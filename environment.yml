@@ -40,24 +40,34 @@ dependencies:
       # External APIs
       - httpx>=0.26.0
 
+      # Database migrations
+      - alembic>=1.13.0
+
       # PDF Processing
       - pypdf>=4.0.0
       - pdfplumber>=0.10.0
+      # OCR fallback (pdf_service.py / extraction_service.py)
+      - pdf2image>=1.17.0
+      - pytesseract>=0.3.10
 
-      # Bibliography
-      - bibtexparser>=1.4.0
+      # Search (smart mode: spell correction, synonyms)
+      - pyspellchecker>=0.8.0
+      - nltk>=3.8.0
 
-      # Zotero Integration
-      - pyzotero>=1.5.0
-
-      # Search
-      - whoosh>=2.7.0
-      - feedparser>=6.0.0
+      # Embeddings/chunking (token counting)
+      - tiktoken>=0.5.0
 
       # Utilities
       - python-dotenv>=1.0.0
       - loguru>=0.7.0
       - pyyaml>=6.0.0
+      - rich>=13.0.0     # CLI scripts + tests/conftest.py
+      - psutil>=5.9.0    # scripts/health_check.py
+
+      # NOTE: pyzotero, whoosh, feedparser, and bibtexparser were removed —
+      # nothing under src/ or tests/ imports them. pyzotero was only used by the
+      # retired Zotero sync in archive/zotero/; the live Zotero import
+      # (src/scripts/zotero_import.py) reads zotero.sqlite via stdlib sqlite3.
 
       # Testing
       - pytest>=8.0.0
