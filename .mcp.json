@@ -2,19 +2,17 @@
   "mcpServers": {
     "literature": {
       "type": "stdio",
-      "command": "/home/dreece23/miniforge3/bin/mamba",
+      "command": "${MAMBA_EXE:-mamba}",
       "args": [
         "run",
         "-n",
         "litai",
+        "--cwd",
+        "${CLAUDE_PROJECT_DIR:-.}/src",
         "python",
         "-m",
         "mcp_server.server"
-      ],
-      "cwd": "/home/dreece23/projects/research/misc/research/src",
-      "env": {
-        "PYTHONPATH": "/home/dreece23/projects/research/misc/research/src"
-      }
+      ]
     }
   }
 }

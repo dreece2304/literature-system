@@ -20,7 +20,7 @@ extend-exclude = '''
 '''
 
 [tool.pytest.ini_options]
-testpaths = ["tests", "infrastructure/*/tests"]
+testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 addopts = "-ra -q --strict-markers"
 markers = [

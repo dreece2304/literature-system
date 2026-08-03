@@ -1,0 +1,19 @@
+# Normalize line endings. The repo is developed across WSL and Windows; store
+# everything as LF in git and check out LF so tooling (flake8, pytest, diffs)
+# behaves identically on both.
+* text=auto eol=lf
+
+# Explicit binaries - never touch these.
+*.pdf   binary
+*.db    binary
+*.sqlite binary
+*.sqlite3 binary
+*.pickle binary
+*.gguf  binary
+*.bin   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+
+# Notebooks: text, but keep diffs readable rather than merged automatically.
+*.ipynb text eol=lf -merge

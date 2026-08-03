@@ -38,22 +38,38 @@ state. Moving machines = clone + restore data + rebase paths.
 
 ## MCP registration on the new machine
 
-Register the server in Claude Code/Desktop with **cwd and PYTHONPATH pinned
-to the project**; the server breaks when the local-scope config drifts off
-the project root:
+Nothing to do — the repo's `.mcp.json` is already path-independent and Claude
+Code picks it up on clone:
 
 ```json
 {
   "mcpServers": {
     "literature": {
-      "command": "/path/to/mamba",
-      "args": ["run", "-n", "litai", "python", "-m", "mcp_server.server"],
-      "cwd": "/absolute/path/to/research/src",
-      "env": { "PYTHONPATH": "/absolute/path/to/research/src" }
+      "type": "stdio",
+      "command": "${MAMBA_EXE:-mamba}",
+      "args": ["run", "-n", "litai",
+               "--cwd", "${CLAUDE_PROJECT_DIR:-.}/src",
+               "python", "-m", "mcp_server.server"]
     }
   }
 }
 ```
+
+`mamba run --cwd src` is what makes this work: Python puts the working
+directory on `sys.path` for `-m`, so `mcp_server` resolves without a
+`PYTHONPATH` entry, and `literature_core` finds the project root by walking up
+to the `.git` directory rather than trusting the caller's cwd.
+
+Two caveats:
+
+- `MAMBA_EXE` is exported by mamba's shell init. If Claude Code is launched
+  from an environment that lacks it, the fallback `mamba` must be a real
+  executable on `PATH` — a shell *function* (what `mamba init` usually
+  installs) is not enough. Set `MAMBA_EXE` or substitute the absolute path.
+- Prefer this project-scoped `.mcp.json` over a local-scope entry in
+  `~/.claude.json`. Local-scope entries carry absolute `cwd`/`PYTHONPATH`
+  values that silently drift off the project root and break the server; if one
+  already exists for `literature`, delete it so the project config wins.
 
 ## Machine-specific settings to review
 

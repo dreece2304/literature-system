@@ -1,19 +1,28 @@
-# Research - Literature Management System
+# Research — Literature Management System
 
-A unified research environment with intelligent literature management accessible via MCP (Model Context Protocol) for Claude Code and Claude Desktop.
+Intelligent literature management for a research library, exposed to Claude Code
+and Claude Desktop over MCP (Model Context Protocol). Papers, PDFs, full-text and
+semantic search, citation graphs, and local-LLM extraction all run against a
+single SQLite database plus a ChromaDB vector store.
 
 ## Quick Start
 
-### 1. Verify Setup
+### 1. Environment
 
 ```bash
-cd src
-mamba run -n litai python -m scripts.health_check
+mamba env create -f environment.yml   # creates the `litai` env
+```
+
+### 2. Verify setup
+
+```bash
+cd src && mamba run -n litai python -m scripts.health_check
 ```
 
 Expected output:
+
 ```
-[PASS] Database: Database OK: 418 papers
+[PASS] Database: Database OK: 601 papers
 [PASS] Services: PaperService OK
 [PASS] Embeddings: OK
 [PASS] Keyword Search: OK
@@ -21,99 +30,102 @@ Expected output:
 ALL CHECKS PASSED
 ```
 
-### 2. Use with Claude Code
+### 3. Use with Claude Code
 
-The MCP server is configured in `.mcp.json`. Claude Code will automatically connect to the literature server when you open this project.
+`.mcp.json` in the repo root registers the server; Claude Code connects
+automatically when you open this project. The config is path-independent — it
+resolves `${MAMBA_EXE}` and `${CLAUDE_PROJECT_DIR}` at launch, so it needs no
+edits when the repo moves or is cloned onto another machine.
 
-Available commands:
-- Search papers: "Find papers about ALD precursor chemistry"
-- Generate citations: "Generate BibTeX for papers 42, 55, 78"
-- Check thesis: "Verify citations in my chapter.tex"
-- Enrich metadata: "Get citation count for paper 123"
+Then just ask, in natural language:
 
-## Architecture
+- "Find papers about ALD precursor chemistry"
+- "Generate BibTeX for papers 42, 55, 78"
+- "Verify the citations in my chapter.tex"
+- "Get the citation count for paper 123"
+
+## Layout
 
 ```
 research/
-├── src/                    # Consolidated source code
-│   ├── literature_core/    # Database models, ORM, config
-│   ├── services/           # Business logic layer
-│   ├── mcp_server/         # MCP server for Claude
-│   ├── embeddings/         # Vector search (ChromaDB)
-│   ├── extractors/         # Zotero sync
-│   └── scripts/            # Utilities (health_check, backup)
-├── tests/                  # Comprehensive test suite
-│   ├── integration/        # MCP tool integration tests
-│   ├── unit/               # Service layer unit tests
-│   └── fixtures/           # Shared test fixtures
-├── data/                   # Runtime data
-│   ├── sqlite/             # SQLite database
+├── src/
+│   ├── literature_core/    # SQLAlchemy models, DB session, config, constants
+│   ├── services/           # Business logic (search, papers, extraction, ...)
+│   ├── mcp_server/         # MCP server + tool modules (thin wrappers)
+│   ├── embeddings/         # ChromaDB vector store and generator
+│   ├── context/            # Manuscript parsing
+│   ├── config/             # AI/Ollama settings
+│   ├── scripts/            # Operational scripts (health_check, backup, ...)
+│   └── alembic/            # Database migrations
+├── tests/                  # unit/, integration/, fixtures/
+├── data/                   # Runtime state (git-ignored)
+│   ├── literature.db       # SQLite database
 │   ├── pdfs/               # PDF storage
-│   └── embeddings/         # ChromaDB vectors
-├── docs/                   # Documentation
-├── archive/                # Archived legacy code
+│   └── vectorstore/        # ChromaDB embeddings
+├── docs/                   # Documentation (see below)
+├── notebooks/              # Exploratory notebooks
 └── environment.yml         # Conda environment spec
 ```
 
-## Database Statistics
+## Library Snapshot
 
 | Metric | Count |
 |--------|-------|
-| Total Papers | 418 |
-| Papers with Full Text | 365 |
-| Papers with PDFs | 373 |
-| Collections | 3 |
+| Papers | 601 |
+| Papers with PDFs | 473 |
+| Papers with chunked text | 475 |
+| Collections | 6 |
 
-## MCP Integration
+## Search
 
-See [docs/MCP_USAGE.md](docs/MCP_USAGE.md) for detailed integration guide.
-
-### Claude Code (.mcp.json)
-
-```json
-{
-  "mcpServers": {
-    "literature": {
-      "type": "stdio",
-      "command": "/path/to/mamba",
-      "args": ["run", "-n", "litai", "python", "-m", "mcp_server.server"],
-      "cwd": "/path/to/research/src"
-    }
-  }
-}
-```
-
-## Search Capabilities
-
-The system features **hybrid search** combining keyword (BM25) and semantic (vector) search:
+Search is a single `search` tool with a `mode` parameter, backed by SQLite FTS5
+(BM25) and ChromaDB vectors fused with Reciprocal Rank Fusion:
 
 ```
-# Recommended: Hybrid search for comprehensive discovery
-hybrid_search("ALD precursor chemistry")
-
-# Keyword-only: When you need exact term matches
-keyword_search("hafnium oxide")
-
-# Semantic: Find conceptually similar papers
-semantic_search("thin film growth mechanisms")
-
-# Check search health
-get_search_status(detailed=true)
+search("ALD precursor chemistry")                  # mode="smart" (default)
+search("hafnium oxide", mode="keyword")            # exact term matching
+search("thin film growth mechanisms", mode="semantic")
+search("area-selective deposition", mode="hybrid") # BM25 + vectors via RRF
+get_search_status(detailed=true)                   # search health
 ```
 
-See [Search Architecture](docs/SEARCH.md) for details on FTS5, ChromaDB, and Reciprocal Rank Fusion.
+`smart` mode adds acronym expansion, spelling correction, and automatic mode
+selection on top of the above.
+
+## Common Commands
+
+```bash
+# Tests (from repo root)
+mamba run -n litai python -m pytest tests/ -q
+
+# Lint
+mamba run -n litai python -m flake8 src/
+
+# Database migrations (from src/)
+mamba run -n litai alembic upgrade head
+
+# Data integrity
+mamba run -n litai python -m scripts.integrity_check
+mamba run -n litai python -m scripts.paper_health_check
+
+# Enrichment batch runner (chunk -> deep-extract -> verify)
+mamba run -n litai python -m scripts.enrich_pipeline --stage all --limit 20
+```
 
 ## Documentation
 
-### Workflow Guides (for Claude)
-- [Paper Import Workflow](docs/PAPER_IMPORT_WORKFLOW.md) - Importing, processing, and completing papers
-- [Research Workflow](docs/RESEARCH_WORKFLOW.md) - Search, citations, and manuscript support
-- [Claude Extraction Workflow](docs/CLAUDE_EXTRACTION_WORKFLOW.md) - AI-powered paper extraction
+- [Architecture](docs/ARCHITECTURE.md) — schema, services, data flow, config
+- [Workflows](docs/WORKFLOWS.md) — import and query pipelines
+- [Tool Reference](docs/TOOL_REFERENCE.md) — all MCP tool signatures
+- [Porting](docs/PORTING.md) — moving the system to another machine
+- [Source Guide](src/README.md) — code structure
+- [Claude Guidelines](CLAUDE.md) — conventions for AI agent sessions
 
-### Reference
-- [MCP Integration Guide](docs/MCP_USAGE.md) - How to use with Claude
-- [Tool Reference](docs/TOOL_REFERENCE.md) - All MCP tool signatures
-- [Search Architecture](docs/SEARCH.md) - FTS5, ChromaDB, hybrid search
-- [Source Code Guide](src/README.md) - Code structure
-- [Development Commands](docs/DEVELOPMENT_COMMANDS.md) - Dev workflow
-- [Claude Governance](CLAUDE.md) - AI agent guidelines
+Superseded design docs are kept under `docs/archive/` for reference.
+
+## Requirements
+
+- Python 3.11 via mamba/conda (`litai` environment)
+- Ollama for local-LLM extraction — optional; every other feature degrades
+  gracefully without it
+- GPU optional; embeddings run CPU-only, just slower
