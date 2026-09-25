@@ -55,9 +55,9 @@ def get_backup_dir(output_dir: str) -> Path:
 def backup_database(backup_dir: Path) -> Optional[str]:
     """Backup SQLite database."""
     try:
-        from config.settings import Settings
+        from literature_core.config import settings
 
-        db_path = Path(Settings.DATABASE_PATH)
+        db_path = Path(settings.database_path)
         if not db_path.exists():
             return None
 
@@ -84,9 +84,9 @@ def backup_database(backup_dir: Path) -> Optional[str]:
 def backup_pdfs(backup_dir: Path, compress: bool = False) -> Optional[str]:
     """Backup PDF storage directory."""
     try:
-        from config.settings import Settings
+        from literature_core.config import settings
 
-        pdf_path = Path(Settings.PDF_STORAGE_PATH)
+        pdf_path = Path(settings.pdf_storage_path)
         if not pdf_path.exists():
             return None
 
@@ -107,17 +107,15 @@ def backup_pdfs(backup_dir: Path, compress: bool = False) -> Optional[str]:
 def backup_chroma(backup_dir: Path) -> Optional[str]:
     """Backup ChromaDB persistence directory."""
     try:
-        from config.ai_settings import AIConfig
+        from literature_core.config import settings
 
-        chroma_path = Path(AIConfig.CHROMA_PATH)
+        chroma_path = Path(settings.chroma_path)
         if not chroma_path.exists():
             return None
 
         dest = backup_dir / "chroma"
         shutil.copytree(chroma_path, dest)
         return str(dest)
-    except ImportError:
-        return None
     except Exception as e:
         print(f"ChromaDB backup failed: {e}", file=sys.stderr)
         return None
@@ -127,7 +125,7 @@ def export_papers(backup_dir: Path) -> Optional[str]:
     """Export all papers to JSON."""
     try:
         from literature_core.database import get_session
-        from literature_core.models import Paper, Author, Tag
+        from literature_core.models import Paper
 
         with get_session() as session:
             papers = session.query(Paper).all()
@@ -144,11 +142,11 @@ def export_papers(backup_dir: Path) -> Optional[str]:
                     "journal": paper.journal,
                     "read_status": paper.read_status,
                     "rating": paper.rating,
-                    "pdf_path": paper.pdf_path,
+                    "file_path": paper.file_path,
                     "authors": [a.name for a in paper.authors],
                     "tags": [t.name for t in paper.tags],
-                    "created_at": paper.created_at.isoformat() if paper.created_at else None,
-                    "updated_at": paper.updated_at.isoformat() if paper.updated_at else None,
+                    "date_added": paper.date_added.isoformat() if paper.date_added else None,
+                    "date_modified": paper.date_modified.isoformat() if paper.date_modified else None,
                 }
                 export_data.append(paper_dict)
 

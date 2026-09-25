@@ -83,9 +83,9 @@ def check_database() -> ComponentStatus:
 def check_vector_store() -> ComponentStatus:
     """Check ChromaDB/vector store status."""
     try:
-        from config.ai_settings import AIConfig
+        from literature_core.config import settings
 
-        chroma_path = Path(AIConfig.CHROMA_PATH)
+        chroma_path = Path(settings.chroma_path)
 
         if not chroma_path.exists():
             return ComponentStatus(
@@ -108,12 +108,6 @@ def check_vector_store() -> ComponentStatus:
                 "has_data": has_data
             }
         )
-    except ImportError:
-        return ComponentStatus(
-            name="vector_store",
-            status="warning",
-            message="AI config not available"
-        )
     except Exception as e:
         return ComponentStatus(
             name="vector_store",
@@ -125,9 +119,9 @@ def check_vector_store() -> ComponentStatus:
 def check_pdf_storage() -> ComponentStatus:
     """Check PDF storage directory."""
     try:
-        from config.settings import Settings
+        from literature_core.config import settings
 
-        pdf_path = Path(Settings.PDF_STORAGE_PATH)
+        pdf_path = Path(settings.pdf_storage_path)
 
         if not pdf_path.exists():
             return ComponentStatus(
@@ -151,12 +145,6 @@ def check_pdf_storage() -> ComponentStatus:
                 "total_size_mb": round(size_mb, 2)
             }
         )
-    except ImportError:
-        return ComponentStatus(
-            name="pdf_storage",
-            status="warning",
-            message="Settings not available"
-        )
     except Exception as e:
         return ComponentStatus(
             name="pdf_storage",
@@ -167,27 +155,20 @@ def check_pdf_storage() -> ComponentStatus:
 
 def check_search_index() -> ComponentStatus:
     """Check full-text search index."""
-    try:
-        return ComponentStatus(
-            name="search_index",
-            status="ok",
-            message="Using database-based search"
-        )
-    except Exception as e:
-        return ComponentStatus(
-            name="search_index",
-            status="ok",
-            message="Using database-based search"
-        )
+    return ComponentStatus(
+        name="search_index",
+        status="ok",
+        message="Using database-based search"
+    )
 
 
 def check_disk_usage() -> ComponentStatus:
     """Check disk usage."""
     try:
-        from config.settings import Settings
+        from literature_core.config import settings
 
         # Check the database directory
-        db_path = Path(Settings.DATABASE_PATH).parent
+        db_path = Path(settings.database_path).parent
 
         total, used, free = shutil.disk_usage(db_path)
         free_gb = free / (1024**3)
@@ -268,9 +249,9 @@ def check_memory_usage() -> ComponentStatus:
 def check_zotero_integration() -> ComponentStatus:
     """Check Zotero integration status."""
     try:
-        from config.settings import Settings
+        from literature_core.config import settings
 
-        if not hasattr(Settings, 'ZOTERO_API_KEY') or not Settings.ZOTERO_API_KEY:
+        if not settings.zotero_api_key:
             return ComponentStatus(
                 name="zotero",
                 status="ok",
@@ -283,7 +264,7 @@ def check_zotero_integration() -> ComponentStatus:
             message="Zotero API key configured",
             details={"has_api_key": True}
         )
-    except Exception as e:
+    except Exception:
         return ComponentStatus(
             name="zotero",
             status="ok",
@@ -350,7 +331,7 @@ def print_report(report: HealthReport, json_output: bool = False):
     reset = "\033[0m"
 
     print(f"\n{'='*60}")
-    print(f"Literature MCP Server Health Check")
+    print("Literature MCP Server Health Check")
     print(f"Timestamp: {report.timestamp}")
     print(f"{'='*60}\n")
 
