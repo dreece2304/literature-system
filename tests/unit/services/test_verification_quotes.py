@@ -75,7 +75,7 @@ class TestBuildDocument:
                 return True
 
         rec = Recorder()
-        frac, _ = VerificationService.claim_support(
+        support = VerificationService.claim_support(
             ["synthesized claim"], ["intro chunk", "results chunk"], rec)
-        assert frac == 1.0
+        assert support.fraction == 1.0
         assert "intro chunk" in rec.docs[0] and "results chunk" in rec.docs[0]

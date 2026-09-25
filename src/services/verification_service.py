@@ -34,12 +34,26 @@ PARAPHRASE_THRESHOLD = 0.75
 
 NUM_RE = re.compile(r"\d+(?:[.,]\d+)?(?:[eE][+-]?\d+)?")
 
-# bespoke-minicheck is trained for documents up to 32K tokens. Send each claim
-# against as much of the paper as fits (not 3 small fragments) so synthesized
-# review-level findings can be supported. num_ctx must be set explicitly or
-# Ollama silently truncates to the model default.
-VERIFIER_NUM_CTX = 32768
-VERIFIER_DOC_CHAR_BUDGET = 95000  # ~29K tokens of scientific text, leaves headroom
+# bespoke-minicheck is trained for documents up to 32K tokens, but a 32K KV
+# cache does not fit alongside the weights on an 8 GB GPU. Measured on an
+# RTX 4070 Laptop (8188 MiB), one claim against a full-budget document:
+#
+#     num_ctx   VRAM     placement          time
+#      8192     5.7 GB   100% GPU            7.5 s
+#     16384     7.1 GB   12% CPU / 88% GPU  15.1 s
+#     32768     9.3 GB   34% CPU / 66% GPU  52.6 s
+#
+# Spilling to CPU costs ~7x, so a claim is checked against several windows
+# that stay resident instead of one document that does not. Whole-paper
+# coverage is preserved: MAX_WINDOWS * WINDOW_CHARS still spans ~92K chars,
+# and windows are tried best-match-first so a supported claim usually
+# resolves on the first call. num_ctx must be set explicitly or Ollama
+# silently truncates to the model default.
+VERIFIER_NUM_CTX = 8192
+VERIFIER_WINDOW_CHARS = 23000     # ~7.9K tokens of scientific text, leaves room for the claim
+VERIFIER_WINDOW_OVERLAP = 1000    # so a sentence split by a boundary is still intact in one window
+VERIFIER_MAX_WINDOWS = 4          # 4 x 23000 ~= the whole-paper budget this replaced
+VERIFIER_DOC_CHAR_BUDGET = VERIFIER_WINDOW_CHARS * VERIFIER_MAX_WINDOWS
 
 
 @dataclass
@@ -57,6 +71,27 @@ class NumberCheck:
     value: str           # as written in the claim
     matched: bool
     context: str = ""    # source window around the match
+
+
+@dataclass
+class ClaimSupport:
+    """Tier 1 result, keeping "unsupported" and "could not check" distinct.
+
+    Collapsing the two is what let an Ollama outage overwrite good extractions
+    with plausible-looking low scores: every claim came back None, every None
+    was counted as unsupported, and the composite landed in the review band
+    with an empty failures list. `fraction` is therefore computed over claims
+    that actually received a verdict.
+    """
+    fraction: float          # supported / checked (1.0 when there was nothing to check)
+    evidence: list[dict]
+    checked: int
+    unchecked: int
+
+    @property
+    def verifier_down(self) -> bool:
+        """True when claims existed but not one of them could be checked."""
+        return self.checked == 0 and self.unchecked > 0
 
 
 class MiniCheckClient:
@@ -89,10 +124,17 @@ class MiniCheckClient:
                                 "num_ctx": VERIFIER_NUM_CTX},
                 })
                 if r.status_code != 200:
+                    # Most often the model was never pulled (404). Silent Nones
+                    # here are indistinguishable from a real "No", so say why.
+                    logger.warning(
+                        f"MiniCheck HTTP {r.status_code} from {self.host} "
+                        f"for model {self.model}: {r.text[:200]}")
                     return None
                 return r.json().get("response", "")
         except Exception as e:
-            logger.warning("MiniCheck call failed", extra={"error": str(e)})
+            logger.warning(
+                f"MiniCheck call failed ({type(e).__name__}: {e}) "
+                f"host={self.host} model={self.model}")
             return None
 
     def check_claim(self, claim: str, document: str) -> bool | None:
@@ -123,10 +165,15 @@ class JudgeClient:
                     "options": {"temperature": 0.0, "num_predict": 4},
                 })
                 if r.status_code != 200:
+                    logger.warning(
+                        f"Judge HTTP {r.status_code} from {self.host} "
+                        f"for model {self.model}: {r.text[:200]}")
                     return None
                 return r.json().get("response", "").strip().lower().startswith("yes")
         except Exception as e:
-            logger.warning("Judge call failed", extra={"error": str(e)})
+            logger.warning(
+                f"Judge call failed ({type(e).__name__}: {e}) "
+                f"host={self.host} model={self.model}")
             return None
 
 
@@ -264,21 +311,65 @@ class VerificationService:
         return doc
 
     @classmethod
+    def _build_windows(cls, document: str, claim: str) -> list[str]:
+        """Cut the document into VRAM-resident windows, best match for `claim` first.
+
+        Ordering by word overlap means a claim stated plainly in one section
+        is usually confirmed by the first call; only genuinely unsupported
+        claims pay for the full sweep.
+        """
+        if len(document) <= VERIFIER_WINDOW_CHARS:
+            return [document] if document else []
+
+        step = VERIFIER_WINDOW_CHARS - VERIFIER_WINDOW_OVERLAP
+        windows = [document[i:i + VERIFIER_WINDOW_CHARS]
+                   for i in range(0, len(document), step)]
+        windows = [w for w in windows if w.strip()]
+
+        claim_words = set(re.findall(r"[a-z0-9]{4,}", claim.lower()))
+        if claim_words:
+            windows.sort(
+                key=lambda w: len(claim_words & set(re.findall(r"[a-z0-9]{4,}", w.lower()))),
+                reverse=True)
+        return windows[:VERIFIER_MAX_WINDOWS]
+
+    @classmethod
     def claim_support(cls, claims: list[str], chunks: list[str],
-                      client: MiniCheckClient) -> tuple[float, list[dict]]:
+                      client: MiniCheckClient) -> ClaimSupport:
         """Fraction of claims supported by the paper, each checked against the
-        full document (up to the verifier budget)."""
+        full document (up to the verifier budget).
+
+        A claim the verifier could not answer (None) is excluded from the
+        denominator rather than counted against the extraction.
+        """
         if not claims:
-            return 1.0, []
+            return ClaimSupport(fraction=1.0, evidence=[], checked=0, unchecked=0)
         document = cls._build_document(chunks)
         evidence = []
-        supported = 0
+        supported = checked = unchecked = 0
         for claim in claims:
-            verdict = client.check_claim(claim, document)
-            if verdict:
-                supported += 1
+            # Supported if ANY window supports it; unchecked only if EVERY
+            # window failed to answer, so an outage stays distinguishable
+            # from a claim the paper genuinely does not support.
+            answered = found = False
+            for window in cls._build_windows(document, claim):
+                v = client.check_claim(claim, window)
+                if v is None:
+                    continue
+                answered = True
+                if v:
+                    found = True
+                    break
+            verdict = found if answered else None
+            if verdict is None:
+                unchecked += 1
+            else:
+                checked += 1
+                supported += bool(verdict)
             evidence.append({"claim": claim, "supported": verdict})
-        return supported / len(claims), evidence
+        return ClaimSupport(
+            fraction=supported / checked if checked else 1.0,
+            evidence=evidence, checked=checked, unchecked=unchecked)
 
     # (question, verdict_that_means_pass)
     JUDGE_QUESTIONS = [
@@ -319,6 +410,18 @@ class VerificationService:
             summary = content.deep_one_sentence_summary or content.one_sentence_summary or ""
             findings = content.key_findings or []
 
+        # An extraction with nothing in it is a failed extraction, not a bad
+        # one. Scoring it would produce a confident-looking number describing
+        # an empty row, so refuse and surface an error. Deliberately NOT routed
+        # to "reextract": the extraction just ran and returned nothing, so an
+        # immediate blind retry would repeat it. `scripts.audit --fix`
+        # (empty_extraction_marked_complete) requeues the row for the next
+        # enrich_pipeline pass instead.
+        if not summary and not findings:
+            return {"paper_id": paper_id,
+                    "error": "extraction is empty (no summary, no findings) - "
+                             "run scripts.audit --fix to requeue it for re-extraction"}
+
         chunks = [c["content"] for c in ExtractionService.get_all_chunks(paper_id)]
         source = " ".join(chunks) or abstract
         if not source:
@@ -350,9 +453,26 @@ class VerificationService:
 
         # --- Tier 1 ---
         minicheck = minicheck or MiniCheckClient()
-        claim_frac, claim_evidence = cls.claim_support(
+        support = cls.claim_support(
             [t for t in claim_texts if t] + ([summary] if summary else []),
             chunks or [source], minicheck)
+
+        # A score computed without the NLI verifier is not a verification
+        # result. Persisting one overwrites good extractions with an artefact
+        # of the outage, so abort before touching the row.
+        if support.verifier_down:
+            logger.error(
+                "Verifier unavailable - refusing to persist a score",
+                extra={"paper_id": paper_id, "claims_unchecked": support.unchecked},
+            )
+            return {
+                "paper_id": paper_id,
+                "error": (f"verifier unavailable: {support.unchecked} claim(s) could not be "
+                          f"checked against {getattr(minicheck, 'model', 'the NLI verifier')}; "
+                          f"nothing was persisted"),
+            }
+
+        claim_frac, claim_evidence = support.fraction, support.evidence
         failures += [f"claim unsupported: {e['claim'][:80]}"
                      for e in claim_evidence if e["supported"] is False]
 
@@ -371,6 +491,7 @@ class VerificationService:
             "numeric_fidelity": round(numeric, 3), "claim_support": round(claim_frac, 3),
             "quote_grounding": round(quote_grounding, 3), "judge_pass": round(judge_frac, 3),
             "hard_gate_failed": hard_gate, "failures": failures,
+            "claims_unchecked": support.unchecked,
             "evidence": {"claims": claim_evidence, "judge": judge_answers},
         }
 

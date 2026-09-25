@@ -20,29 +20,91 @@ class FakeMiniCheck(MiniCheckClient):
 class TestClaimSupport:
     def test_supported_fraction(self):
         client = FakeMiniCheck({"claim A": True, "claim B": False})
-        frac, evidence = VerificationService.claim_support(
+        support = VerificationService.claim_support(
             ["claim A", "claim B"], ["chunk one text", "chunk two text"], client)
-        assert frac == 0.5
-        assert evidence[0]["supported"] is True and evidence[1]["supported"] is False
+        assert support.fraction == 0.5
+        assert support.checked == 2 and support.unchecked == 0
+        assert support.evidence[0]["supported"] is True
+        assert support.evidence[1]["supported"] is False
 
     def test_claim_checked_against_best_chunks_first(self):
         client = FakeMiniCheck({"the zinc film grew fast": True})
-        frac, _ = VerificationService.claim_support(
+        support = VerificationService.claim_support(
             ["the zinc film grew fast"],
             ["unrelated text about solvents", "zinc film growth was rapid"], client)
-        assert frac == 1.0
+        assert support.fraction == 1.0
         # First document tried should be the token-overlap-ranked best chunk
         assert "zinc" in client.calls[0][1]
 
-    def test_failed_calls_dont_count_as_supported(self):
+    def test_unreachable_verifier_is_not_scored_as_unsupported(self):
+        """A None verdict means "could not check", NOT "claim is false".
+
+        Scoring None as unsupported is what let an Ollama outage write
+        plausible-looking low scores over 49 good extractions.
+        """
         client = FakeMiniCheck({})  # returns None for everything
-        frac, evidence = VerificationService.claim_support(["c1"], ["chunk"], client)
-        assert frac == 0.0 and evidence[0]["supported"] is None
+        support = VerificationService.claim_support(["c1"], ["chunk"], client)
+        assert support.checked == 0 and support.unchecked == 1
+        assert support.verifier_down is True
+        assert support.evidence[0]["supported"] is None
+
+    def test_partial_failure_scores_only_checked_claims(self):
+        client = FakeMiniCheck({"c1": True, "c2": False})  # c3 -> None
+        support = VerificationService.claim_support(["c1", "c2", "c3"], ["chunk"], client)
+        assert support.checked == 2 and support.unchecked == 1
+        assert support.fraction == 0.5          # 1 of 2 checked, c3 excluded
+        assert support.verifier_down is False
 
     def test_no_claims_is_full_support(self):
         client = FakeMiniCheck({})
-        frac, evidence = VerificationService.claim_support([], ["chunk"], client)
-        assert frac == 1.0 and evidence == []
+        support = VerificationService.claim_support([], ["chunk"], client)
+        assert support.fraction == 1.0 and support.evidence == []
+        assert support.verifier_down is False   # nothing to check != verifier down
+
+
+class TestWindowedChecking:
+    """A claim is checked against VRAM-sized windows, best match first."""
+
+    def test_supported_by_a_later_window_still_counts(self):
+        from services.verification_service import VERIFIER_WINDOW_CHARS
+
+        # Only the tail of the paper mentions zinc; the claim must still pass.
+        chunks = ["filler about solvents. " * 2000, "the zinc film grew rapidly"]
+        assert len("".join(chunks)) > VERIFIER_WINDOW_CHARS
+
+        class OnlyZinc(MiniCheckClient):
+            def __init__(self):
+                self.calls = []
+
+            def check_claim(self, claim, document):
+                self.calls.append(document)
+                return "zinc" in document
+
+        client = OnlyZinc()
+        support = VerificationService.claim_support(
+            ["the zinc film grew rapidly"], chunks, client)
+        assert support.fraction == 1.0 and support.checked == 1
+
+    def test_stops_at_the_first_supporting_window(self):
+        chunks = ["zinc film growth was rapid. " * 3000]
+
+        class AlwaysYes(MiniCheckClient):
+            def __init__(self):
+                self.calls = []
+
+            def check_claim(self, claim, document):
+                self.calls.append(document)
+                return True
+
+        client = AlwaysYes()
+        VerificationService.claim_support(["zinc film growth"], chunks, client)
+        assert len(client.calls) == 1, "should not sweep windows once supported"
+
+    def test_all_windows_unanswerable_is_unchecked_not_unsupported(self):
+        chunks = ["some long paper text. " * 3000]
+        client = FakeMiniCheck({})  # every window returns None
+        support = VerificationService.claim_support(["a claim"], chunks, client)
+        assert support.verifier_down is True and support.checked == 0
 
 
 class TestMiniCheckClientParse:

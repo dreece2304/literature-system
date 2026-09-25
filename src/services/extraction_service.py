@@ -1752,34 +1752,46 @@ class ExtractionService:
             PaperContent.paper_id == paper_id
         ).first()
 
+        # Tier-specific fields land in their own columns so a deep pass never
+        # silently overwrites the quick tier, matching PaperService.store_extraction.
+        # This path previously stamped deep_extraction_date while writing the
+        # summary to the quick columns, leaving every deep_* column empty.
         if content:
-            content.paper_type = extraction.paper_type
-            content.topics = extraction.topics
-            content.one_sentence_summary = extraction.one_sentence_summary
             content.key_findings = extraction.key_findings
             content.methodology_summary = extraction.methodology_summary
-            content.extractor_model = extraction.extractor_model
             content.extraction_depth = extraction_depth
             content.schema_version = "2.0"
             if is_quick:
+                content.paper_type = extraction.paper_type
+                content.topics = extraction.topics
+                content.one_sentence_summary = extraction.one_sentence_summary
+                content.extractor_model = extraction.extractor_model
                 content.quick_extraction_date = now
             else:
+                content.deep_paper_type = extraction.paper_type
+                content.deep_topics = extraction.topics
+                content.deep_one_sentence_summary = extraction.one_sentence_summary
+                content.deep_extractor_model = extraction.extractor_model
                 content.deep_extraction_date = now
             if structured_data:
                 content.structured_data = structured_data
         else:
             content = PaperContent(
                 paper_id=paper_id,
-                paper_type=extraction.paper_type,
-                topics=extraction.topics,
-                one_sentence_summary=extraction.one_sentence_summary,
                 key_findings=extraction.key_findings,
                 methodology_summary=extraction.methodology_summary,
-                extractor_model=extraction.extractor_model,
                 extraction_depth=extraction_depth,
                 schema_version="2.0",
+                paper_type=extraction.paper_type if is_quick else None,
+                topics=extraction.topics if is_quick else None,
+                one_sentence_summary=extraction.one_sentence_summary if is_quick else None,
+                extractor_model=extraction.extractor_model if is_quick else None,
                 quick_extraction_date=now if is_quick else None,
-                deep_extraction_date=now if not is_quick else None,
+                deep_paper_type=None if is_quick else extraction.paper_type,
+                deep_topics=None if is_quick else extraction.topics,
+                deep_one_sentence_summary=None if is_quick else extraction.one_sentence_summary,
+                deep_extractor_model=None if is_quick else extraction.extractor_model,
+                deep_extraction_date=None if is_quick else now,
                 structured_data=structured_data if structured_data else None,
             )
             session.add(content)

@@ -36,6 +36,35 @@ STRUCTURED_FORMAT = (
     '"logger": "%(name)s", "message": "%(message)s"}'
 )
 
+# Attributes the logging module puts on every LogRecord. Anything else was
+# supplied by a caller via extra={...}.
+_STANDARD_RECORD_ATTRS = frozenset((
+    "args", "asctime", "created", "exc_info", "exc_text", "filename",
+    "funcName", "levelname", "levelno", "lineno", "message", "module",
+    "msecs", "msg", "name", "pathname", "process", "processName",
+    "relativeCreated", "stack_info", "stacklevel", "thread", "threadName",
+    "taskName",
+))
+
+
+class ExtraFormatter(logging.Formatter):
+    """Formatter that actually renders `extra={...}` metadata.
+
+    Every format string here interpolates named fields only, so anything
+    passed via `extra=` was silently dropped - including the exception text
+    on error logs, which made failures undiagnosable from the console. This
+    appends the caller-supplied fields as `key=value` pairs instead.
+    """
+
+    def format(self, record: logging.LogRecord) -> str:
+        base = super().format(record)
+        extras = {k: v for k, v in record.__dict__.items()
+                  if k not in _STANDARD_RECORD_ATTRS and not k.startswith("_")}
+        if not extras:
+            return base
+        rendered = " ".join(f"{k}={v}" for k, v in sorted(extras.items()))
+        return f"{base} | {rendered}"
+
 
 def setup_logging(
     level: str = "INFO",
@@ -74,11 +103,14 @@ def setup_logging(
         file_handler = logging.FileHandler(log_file)
         handlers.append(file_handler)
 
+    # Attach the formatter that renders extra={...} rather than dropping it.
+    formatter = ExtraFormatter(fmt=log_format, datefmt=DEFAULT_DATE_FORMAT)
+    for handler in handlers:
+        handler.setFormatter(formatter)
+
     # Configure root logger
     logging.basicConfig(
         level=getattr(logging, level.upper()),
-        format=log_format,
-        datefmt=DEFAULT_DATE_FORMAT,
         handlers=handlers,
         force=True,  # Override any existing configuration
     )
