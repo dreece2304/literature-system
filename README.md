@@ -104,11 +104,11 @@ mamba run -n litai python -m flake8 src/
 # Database migrations (from src/)
 mamba run -n litai alembic upgrade head
 
-# Data integrity
-mamba run -n litai python -m scripts.integrity_check
-mamba run -n litai python -m scripts.paper_health_check
+# Data audit (silent failures + orphans; --fix repairs the fixable ones)
+mamba run -n litai python -m scripts.audit
+mamba run -n litai python -m scripts.audit --fix
 
-# Enrichment batch runner (chunk -> deep-extract -> verify)
+# Enrichment batch runner (chunk -> embed -> deep-extract -> verify)
 mamba run -n litai python -m scripts.enrich_pipeline --stage all --limit 20
 ```
 

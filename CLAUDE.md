@@ -28,10 +28,10 @@ research/
 │   │   ├── fts.py              # Full-text search
 │   │   └── config.py           # Path configuration
 │   ├── embeddings/             # Vector search (ChromaDB)
-│   ├── extractors/             # UNUSED legacy (metadata_extractor.py, pdf_extractor.py)
 │   ├── config/                 # AI settings
 │   │   └── ai_settings.py      # Ollama configuration
-│   └── alembic/                # Database migrations
+│   ├── alembic/                # Database migrations
+│   └── scripts/                # Operational scripts (audit, enrich_pipeline, health_check, backup, maintenance)
 ├── tests/                      # Test suite
 │   ├── unit/                   # Unit tests
 │   ├── integration/            # Integration tests
@@ -41,11 +41,10 @@ research/
 │   ├── pdfs/                   # PDF storage
 │   ├── vectorstore/            # ChromaDB embeddings
 │   └── config/                 # LEGACY yml files (unused; real config = LITCORE_* env vars)
-├── docs/                       # Documentation
+└── docs/                       # Documentation
 │   ├── ARCHITECTURE.md         # Technical deep-dive
 │   ├── WORKFLOWS.md            # Import & Query workflows
 │   └── TOOL_REFERENCE.md       # MCP tool documentation
-└── archive/                    # Archived code and scripts
 ```
 
 ## Development Commands
@@ -71,9 +70,18 @@ cd src && /home/dreece23/miniforge3/bin/mamba run -n litai alembic upgrade head
 ```
 
 ### Enrichment Batch Runner
-Backfill chunks, deep-extract, and verify in one resumable pass (`--dry-run` available):
+Backfill chunks, embed, deep-extract, and verify in one resumable pass (`--dry-run` available):
 ```bash
 cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.enrich_pipeline --stage all --limit 20
+```
+
+### Data Audit
+Finds work recorded as complete that never happened (outage-written verification scores,
+empty extractions marked comprehensive, chunk-count drift) plus orphans and FTS drift.
+`--fix` requeues empty extractions and clears outage-written verification rows.
+```bash
+cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.audit
+cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.audit --fix
 ```
 
 ## Code Style

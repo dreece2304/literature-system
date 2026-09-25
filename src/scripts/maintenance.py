@@ -2,17 +2,17 @@
 """Combined maintenance runner for Literature MCP Server.
 
 Runs all maintenance tasks in sequence:
-- Health check
-- Integrity check
+- Health check (infrastructure: database, vector store, disk)
+- Data audit (scripts.audit: silent failures and structural damage)
 - Reindex (optional)
 - Backup (optional)
 
 Usage:
-    python -m scripts.maintenance              # Run health + integrity checks
+    python -m scripts.maintenance              # Run health check + data audit
     python -m scripts.maintenance --all        # Run all maintenance tasks
     python -m scripts.maintenance --reindex    # Include reindexing
     python -m scripts.maintenance --backup     # Include backup
-    python -m scripts.maintenance --fix        # Auto-fix issues
+    python -m scripts.maintenance --fix        # Repair audit findings (same as audit --fix)
 """
 import argparse
 import json
@@ -35,7 +35,7 @@ class MaintenanceReport:
     overall_status: str
     tasks_run: List[str]
     health_report: Optional[dict]
-    integrity_report: Optional[dict]
+    audit_report: Optional[dict]
     reindex_report: Optional[dict]
     backup_report: Optional[dict]
     duration_seconds: float
@@ -55,12 +55,23 @@ def run_health_check(verbose: bool = False) -> dict:
         }
 
 
-def run_integrity_check(fix: bool = False, verbose: bool = False) -> dict:
-    """Run integrity check and return report."""
+def run_audit_task(fix: bool = False) -> dict:
+    """Run the data audit and adapt its AuditReport to a plain dict."""
     try:
-        from scripts.integrity_check import run_integrity_check as integrity_check
-        report = integrity_check(fix=fix, verbose=verbose)
-        return asdict(report)
+        from scripts.audit import ERROR, WARN, run_audit
+        report = run_audit(fix=fix)
+        active = [f for f in report.findings if f.count]
+        return {
+            "issues_found": sum(f.count for f in active),
+            "issues_fixed": sum(report.fixed.values()),
+            "summary": {
+                "errors": sum(1 for f in active if f.severity == ERROR),
+                "warnings": sum(1 for f in active if f.severity == WARN),
+                "info": 0,
+            },
+            "findings": [asdict(f) for f in active],
+            "fixed": dict(report.fixed),
+        }
     except Exception as e:
         return {
             "issues_found": -1,
@@ -71,8 +82,8 @@ def run_integrity_check(fix: bool = False, verbose: bool = False) -> dict:
 def run_reindex(mode: str = "incremental", verbose: bool = False) -> dict:
     """Run reindexing and return report."""
     try:
-        from scripts.reindex import run_reindex as reindex
-        result = reindex(mode=mode, verbose=verbose)
+        from scripts.reindex import run_simple
+        result = run_simple(mode=mode, verbose=verbose)
         return asdict(result)
     except Exception as e:
         return {
@@ -114,7 +125,7 @@ def run_maintenance(
 
     tasks_run = []
     health_report = None
-    integrity_report = None
+    audit_report = None
     reindex_report = None
     backup_report = None
 
@@ -124,11 +135,11 @@ def run_maintenance(
     health_report = run_health_check(verbose=verbose)
     tasks_run.append("health_check")
 
-    # Always run integrity check
+    # Always run the data audit
     if verbose:
-        print("Running integrity check...", file=sys.stderr)
-    integrity_report = run_integrity_check(fix=fix_issues, verbose=verbose)
-    tasks_run.append("integrity_check")
+        print("Running data audit...", file=sys.stderr)
+    audit_report = run_audit_task(fix=fix_issues)
+    tasks_run.append("audit")
 
     # Optional: reindex
     if run_reindex:
@@ -148,12 +159,12 @@ def run_maintenance(
     statuses = []
     if health_report:
         statuses.append(health_report.get("overall_status", "unknown"))
-    if integrity_report:
-        if integrity_report.get("error"):
+    if audit_report:
+        if audit_report.get("error"):
             statuses.append("error")
-        elif integrity_report.get("summary", {}).get("errors", 0) > 0:
+        elif audit_report.get("summary", {}).get("errors", 0) > 0:
             statuses.append("error")
-        elif integrity_report.get("summary", {}).get("warnings", 0) > 0:
+        elif audit_report.get("summary", {}).get("warnings", 0) > 0:
             statuses.append("warning")
         else:
             statuses.append("ok")
@@ -169,8 +180,8 @@ def run_maintenance(
     summary = {
         "tasks_completed": len(tasks_run),
         "health_status": health_report.get("overall_status") if health_report else None,
-        "integrity_issues": integrity_report.get("issues_found", 0) if integrity_report else None,
-        "integrity_fixed": integrity_report.get("issues_fixed", 0) if integrity_report else None,
+        "audit_issues": audit_report.get("issues_found", 0) if audit_report else None,
+        "audit_fixed": audit_report.get("issues_fixed", 0) if audit_report else None,
         "papers_reindexed": reindex_report.get("papers_processed", 0) if reindex_report else None,
         "backup_size_mb": backup_report.get("total_size_mb") if backup_report else None,
     }
@@ -182,7 +193,7 @@ def run_maintenance(
         overall_status=overall_status,
         tasks_run=tasks_run,
         health_report=health_report,
-        integrity_report=integrity_report,
+        audit_report=audit_report,
         reindex_report=reindex_report,
         backup_report=backup_report,
         duration_seconds=round(duration, 2),
@@ -229,26 +240,30 @@ def print_report(report: MaintenanceReport, json_output: bool = False):
                 print(f"  {comp_color}•{reset} {comp['name']}: {comp['message']}")
         print()
 
-    # Integrity check results
-    if report.integrity_report:
+    # Data audit results
+    if report.audit_report:
         print(f"{'-'*40}")
-        print("INTEGRITY CHECK")
+        print("DATA AUDIT")
         print(f"{'-'*40}")
 
-        if report.integrity_report.get("error"):
-            print(f"Error: {report.integrity_report['error']}")
+        if report.audit_report.get("error"):
+            print(f"Error: {report.audit_report['error']}")
         else:
-            issues = report.integrity_report.get("issues_found", 0)
-            fixed = report.integrity_report.get("issues_fixed", 0)
+            issues = report.audit_report.get("issues_found", 0)
+            fixed = report.audit_report.get("issues_fixed", 0)
             print(f"Issues Found: {issues}")
             if fixed > 0:
                 print(f"Issues Fixed: {fixed}")
 
-            summary = report.integrity_report.get("summary", {})
+            summary = report.audit_report.get("summary", {})
             if summary:
                 print(f"  Errors: {summary.get('errors', 0)}")
                 print(f"  Warnings: {summary.get('warnings', 0)}")
                 print(f"  Info: {summary.get('info', 0)}")
+            for f in report.audit_report.get("findings", []):
+                print(f"  {f['count']:>6}  {f['description']}")
+            for key, rows in report.audit_report.get("fixed", {}).items():
+                print(f"  fixed {key}: {rows} row(s)")
         print()
 
     # Reindex results
@@ -322,7 +337,7 @@ def main():
     parser.add_argument(
         "--fix",
         action="store_true",
-        help="Auto-fix integrity issues"
+        help="Repair audit findings (same as scripts.audit --fix)"
     )
     parser.add_argument(
         "--json", "-j",

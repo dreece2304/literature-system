@@ -215,9 +215,9 @@ Quick and deep extractions are stored separately (not overwritten):
 
 ## Enrichment Batch (Overnight)
 
-Backfills chunks, deep-extracts, and verifies extractions in one resumable
-pass — designed to run unattended overnight, one Ollama model resident per
-stage.
+Backfills chunks, embeds, deep-extracts, and verifies extractions in one
+resumable pass — designed to run unattended overnight, one Ollama model
+resident per stage.
 
 ```bash
 # 1. Pull the models used across stages (once, or after an upgrade)
@@ -226,18 +226,30 @@ ollama pull qwen3:4b-instruct-2507-q4_K_M     # quick extraction
 ollama pull bespoke-minicheck:7b              # Tier 1 NLI claim verification
 ollama pull llama3.1:8b                       # Tier 2 cross-family judge
 
-# 2. Run the pipeline (chunk backfill → deep extraction → verification)
+# 2. Run the pipeline (chunk backfill → embed → deep extraction → verification)
 cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.enrich_pipeline --stage all --limit 20
 
 # Dry run first to see what would be processed, with no writes:
 cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.enrich_pipeline --stage all --dry-run
 ```
 
+- `embed` runs before the LLM stages so semantic search covers a paper as soon
+  as it is chunked; the stage picks papers missing paper- or chunk-level vectors.
+- `extract` and `verify` preflight Ollama and the judge model first; a failed
+  preflight aborts the stage with exit 1 and prints the `ollama serve` /
+  `ollama pull` command to run. `backfill` and `embed` never need Ollama.
+
 ```python
 # 3. Inspect the review queue — papers with verification_score below the
 #    accept threshold, worst first
 verify_extraction(scope="queue", limit=20)
 # → [{paper_id, title, verification_score, routing, failures}, ...]
+```
+
+```bash
+# 4. Audit after a run — catches work recorded as complete that never happened
+cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.audit
+cd src && /home/dreece23/miniforge3/bin/mamba run -n litai python -m scripts.audit --fix   # requeue / clear
 ```
 
 **Routing thresholds** (`VerificationService`):
